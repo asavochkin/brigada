@@ -1,0 +1,5 @@
+.idea/
+.DS_Store
+# local notes of the human, not published
+AGENTS.local.md
+CLAUDE.local.md

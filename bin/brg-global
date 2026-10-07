@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# brg — global entry point for the human (installed by brigada/install.sh).
+# Inside a project: runs the nearest .brigada/bin/brg found upwards from cwd.
+# `brg init [dir]`: runs the brigada repo's bin/brg (without dir — the project
+# that owns the nearest .brigada, else the current directory).
+# Agents keep calling `bash .brigada/bin/brg` as README says; this is for people.
+
+BRIGADA_HOME="@BRIGADA_HOME@"
+REPO_BRG="$BRIGADA_HOME/bin/brg"
+
+find_root() {
+  d=$PWD
+  while :; do
+    if [ -f "$d/.brigada/bin/brg" ]; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+    [ "$d" = / ] && return 1
+    d=$(dirname "$d")
+  done
+}
+
+if [ ! -f "$REPO_BRG" ]; then
+  echo "brg: не найден $REPO_BRG — переустанови: bash <путь к brigada>/install.sh" >&2
+  exit 1
+fi
+
+ROOT=$(find_root)
+
+if [ "${1:-}" = init ]; then
+  shift
+  if [ $# -eq 0 ] && [ -n "$ROOT" ]; then
+    set -- "$ROOT"
+  fi
+  exec bash "$REPO_BRG" init "$@"
+fi
+
+if [ -z "$ROOT" ]; then
+  exec bash "$REPO_BRG" "$@"
+fi
+
+if [ -t 2 ] && ! cmp -s "$ROOT/.brigada/bin/brg" "$REPO_BRG"; then
+  echo "── brg в проекте отличается от $REPO_BRG — обновить: brg init" >&2
+fi
+exec bash "$ROOT/.brigada/bin/brg" "$@"

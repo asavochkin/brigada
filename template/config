@@ -1,0 +1,42 @@
+# brigada — настройки (key: value; комментарии — с #).
+# brg читает встроенные значения → config.default (обновляет brg init) → config (этот файл);
+# значение из config (этого файла) важнее любого значения по умолчанию.
+
+# Таймаут brg wait по харнессу агента, секунды (DESIGN §5.1). Должен быть меньше
+# лимита команды харнесса: модель может не передать увеличенный таймаут инструмента.
+# Поиск: в config — wait_timeout.<харнесс>.<платформа> (darwin, linux, msys, wsl), затем
+# wait_timeout.<харнесс>; нет — те же ключи в config.default, затем встроенные; нет и их —
+# wait_timeout.default. Так wait_timeout.codex из config действует и на Windows.
+wait_timeout.default: 100
+wait_timeout.claude: 100
+wait_timeout.opencode: 100
+# Codex на macOS/Linux «паркует» команду через 10–30 с — wait должен вернуться раньше.
+wait_timeout.codex: 25
+# Codex на Windows (Git Bash, brg.cmd): unified_exec обычно выключен, команда блокирующая.
+wait_timeout.codex.msys: 100
+
+# Как часто живой wait обновляет Last-Seen агента, секунды.
+heartbeat: 30
+# Нет wait и вызовов brg дольше asleep_after — asleep; дольше gone_after — gone (секунды).
+asleep_after: 900
+gone_after: 3600
+# who/status: «возможно выпал» — ни wait, ни вызовов brg дольше max(таймаут wait + 60,
+# dropout_after) секунд (агент, молча пишущий код несколько минут, — не выпал).
+dropout_after: 300
+
+# Блокировка, чей владелец мёртв или которая старше lock_stale секунд, снимается.
+# Должно быть намного больше любой критической секции brg.
+lock_stale: 30
+
+# Лимит тела сообщения, байт. Больше — положить в файл и прислать путь.
+msg_max_bytes: 8192
+# Лимит вывода wait/read, байт (inline-вывод харнессов ограничен).
+wait_output_max: 20000
+
+# brg run: лимит времени команды по умолчанию, секунды (--timeout переопределяет);
+# по истечении команда и все её процессы останавливаются, статус timeout.
+run_timeout: 1800
+# brg run: раннер подаёт признаки жизни каждую секунду. Молчащий дольше runner_stale
+# секунд считается мёртвым, даже если его pid жив (завис или pid занят другим процессом):
+# следующий в очереди снимает его. Должно быть больше lock_stale.
+runner_stale: 60

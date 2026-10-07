@@ -1,0 +1,9 @@
+# Line endings are fixed whatever core.autocrlf says (Windows: autocrlf=true would
+# turn bin/brg into CRLF and bash would refuse it; cmd.exe needs CRLF in .cmd).
+# brg init copies bin/ and template/ into projects byte for byte.
+* text=auto
+bin/brg text eol=lf
+*.sh text eol=lf
+template/* text eol=lf
+*.cmd text eol=crlf
+bin/brg-global text eol=lf
