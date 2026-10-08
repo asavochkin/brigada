@@ -56,7 +56,7 @@ $out"
   assert_contains "$out" "✓ утилиты: head -c, date +%s, дробный sleep, kill -0, set -m и kill группе процессов"
   assert_contains "$out" "✓ mkdir атомарен"
   assert_contains "$out" "✓ mv поверх файла, открытого другим процессом на чтение, — успешно"
-  assert_contains "$out" "✓ .git/info/exclude: переписка и рантайм brigada не коммитятся"
+  assert_contains "$out" "✓ .git/info/exclude: .brigada/ — каталог brigada не коммитится"
   assert_contains "$out" "✓ блокировки: протухших и зависших нет"
   assert_contains "$out" "✓ brg run: мёртвых и зависших раннеров нет"
   assert_contains "$out" "✓ wait: живых 1"
@@ -194,8 +194,13 @@ test_doctor_platform_config_git() {
   mkdir -p "$P/.git/info"
   out=$(brg doctor)
   assert_eq 1 "$?"
-  assert_contains "$(fails "$out")" "✗ .git/info/exclude: нет .brigada/tasks/ .brigada/lobby/ .brigada/run/ .brigada/agents/"
+  assert_contains "$(fails "$out")" "✗ .git/info/exclude: нет .brigada/ — git add -A закоммитит служебный каталог brigada"
   assert_contains "$out" "init $P"
+  # only the lines of brg ≤ 0.2.0 (tasks/lobby/run/agents) — not enough
+  printf '.brigada/tasks/\n.brigada/lobby/\n.brigada/run/\n.brigada/agents/\n' >"$P/.git/info/exclude"
+  assert_contains "$(fails "$(brg doctor)")" "✗ .git/info/exclude: исключены только переписка и рантайм"
+  printf '.brigada/\n' >"$P/.git/info/exclude"
+  assert_contains "$(brg doctor)" "✓ .git/info/exclude: .brigada/ — каталог brigada не коммитится"
   # no .brigada at all: a clear error, not a crash
   out=$(cd "$(mk_tmpdir)" && bash "$BRG_SRC" doctor 2>&1)
   assert_eq 1 "$?"

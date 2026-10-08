@@ -70,31 +70,37 @@ test_reinit_updates_code_and_docs_but_keeps_state() {
 }
 
 test_git_exclude_added_once_and_keeps_content() {
-  local p ex out n
+  local p ex out
   p=$(mk_tmpdir)
   mkdir -p "$p/.git/info"
   printf '*.log' >"$p/.git/info/exclude" # no trailing newline
   out=$(bash "$BRG_SRC" init "$p")
-  assert_contains "$out" "добавлено в .git/info/exclude: .brigada/tasks/ .brigada/lobby/ .brigada/run/ .brigada/agents/"
+  assert_contains "$out" "добавлено в .git/info/exclude: .brigada/ (весь каталог brigada не коммитится)"
   ex=$(cat "$p/.git/info/exclude")
   assert_eq "*.log" "$(printf '%s\n' "$ex" | head -n 1)" "old content kept on its own line"
   out=$(bash "$BRG_SRC" init "$p")
   assert_contains "$out" ".git/info/exclude уже настроен"
-  for n in .brigada/tasks/ .brigada/lobby/ .brigada/run/ .brigada/agents/; do
-    assert_eq 1 "$(awk -v l="$n" '$0 == l' "$p/.git/info/exclude" | wc -l | tr -d ' ')" "$n once"
-  done
-  assert_eq 0 "$(awk '/\.brigada\/(bin|common)/' "$p/.git/info/exclude" | wc -l | tr -d ' ')" "bin/common stay tracked"
-  assert_eq 6 "$(wc -l <"$p/.git/info/exclude" | tr -d ' ')" "line count after two inits"
+  assert_eq 1 "$(awk '$0 == ".brigada/"' "$p/.git/info/exclude" | wc -l | tr -d ' ')" ".brigada/ once"
+  assert_eq 3 "$(wc -l <"$p/.git/info/exclude" | tr -d ' ')" "line count after two inits"
 }
 
-test_git_exclude_partial_and_worktree() {
+# brg ≤ 0.2.0 excluded only tasks/lobby/run/agents: init replaces those lines
+# (and their comment) with .brigada/, keeping the rest with its line endings.
+test_git_exclude_migrates_old_lines_and_worktree() {
   local p w out
   p=$(mk_tmpdir)
   mkdir -p "$p/.git/info"
-  printf '.brigada/run/\n' >"$p/.git/info/exclude"
+  printf '*.log\n# brigada: переписка и рантайм не коммитятся\n.brigada/tasks/\n.brigada/lobby/\n.brigada/run/\n.brigada/agents/\nbuild/\r\n' >"$p/.git/info/exclude"
   out=$(bash "$BRG_SRC" init "$p")
-  assert_contains "$out" "добавлено в .git/info/exclude: .brigada/tasks/ .brigada/lobby/ .brigada/agents/"
-  assert_eq 1 "$(awk '$0 == ".brigada/run/"' "$p/.git/info/exclude" | wc -l | tr -d ' ')"
+  assert_contains "$out" "заменены на .brigada/ — весь каталог"
+  assert_contains "$out" "git rm -r --cached .brigada"
+  assert_eq "$(printf '*.log\nbuild/\r\n# brigada: служебный каталог агентов (brg init) не коммитится\n.brigada/\n')" "$(cat "$p/.git/info/exclude")"
+  out=$(bash "$BRG_SRC" init "$p")
+  assert_contains "$out" ".git/info/exclude уже настроен"
+  # old lines next to .brigada/ (added by hand): only the old lines go
+  printf '.brigada/run/\n.brigada/\n' >"$p/.git/info/exclude"
+  bash "$BRG_SRC" init "$p" >/dev/null || fail init
+  assert_eq ".brigada/" "$(cat "$p/.git/info/exclude")"
   # worktree: .git is a file "gitdir: …", info/exclude lives in the common dir
   w=$(mk_tmpdir)
   mkdir -p "$p/.git/worktrees/wt"

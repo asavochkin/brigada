@@ -17,7 +17,7 @@ _brg_crlf=x
 case ${#_brg_crlf} in 1) ;; *) printf '%s\n' "brg: ОШИБКА: у файла $0 окончания строк CRLF (Windows) — bash его не выполнит." "Причина — git с core.autocrlf=true. Это .brigada/bin/brg — переустанови: bash <brigada>/bin/brg init <проект>. Это сам репозиторий brigada — удали bin/brg и восстанови: git checkout -- bin/brg (по .gitattributes он запишется с LF) или скачай brigada заново. Проверка: bash <brigada>/bin/brg doctor <проект>." >&2; exit 2 ;; esac #
 unset _brg_crlf
 
-BRG_VERSION=0.2.0
+BRG_VERSION=0.2.1
 # the caller's locale, restored for commands started by `brg run`
 _brg_lc_set=${LC_ALL+1}
 _brg_lc=${LC_ALL-}
@@ -1656,10 +1656,37 @@ git_dir_v() {
   GD_NOTE=
   eval "$1=\$_gd_d"
 }
-GIT_EXCLUDES=".brigada/tasks/ .brigada/lobby/ .brigada/run/ .brigada/agents/"
+# The whole .brigada is kept out of git (DESIGN §3). Up to 0.2.0 init excluded only
+# the correspondence and the runtime: those lines (and their comment) are replaced.
+GIT_EXCLUDE=.brigada/
+GIT_EXCLUDES_OLD=".brigada/tasks/ .brigada/lobby/ .brigada/run/ .brigada/agents/"
+GIT_EXCLUDE_OLD_NOTE='# brigada: переписка и рантайм не коммитятся'
+GIT_EXCLUDE_NOTE='# brigada: служебный каталог агентов (brg init) не коммитится'
+
+# git_exclude_scan FILE → GE_FOUND (has .brigada/), GE_OLD (has lines of old brg),
+# GE_KEEP (the file without those old lines, original line endings kept)
+git_exclude_scan() {
+  local line l
+  GE_FOUND= GE_OLD= GE_KEEP=
+  [ -f "$1" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    l=${line%"$CR"}
+    [ "$l" = "$GIT_EXCLUDE" ] && GE_FOUND=1
+    if [ "$l" = "$GIT_EXCLUDE_OLD_NOTE" ]; then
+      GE_OLD=1
+      continue
+    fi
+    case $l in .brigada/*/) case " $GIT_EXCLUDES_OLD " in *" $l "*)
+      GE_OLD=1
+      continue
+      ;;
+    esac ;; esac
+    GE_KEEP=$GE_KEEP$line$NL
+  done <"$1"
+}
 
 git_exclude() { # PROJECT → GIT_NOTE
-  local gd ex line need found added= tl
+  local gd ex rel tl
   git_dir_v gd "$1"
   if [ -z "$gd" ]; then
     GIT_NOTE=$GD_NOTE
@@ -1667,28 +1694,23 @@ git_exclude() { # PROJECT → GIT_NOTE
   fi
   mkdir -p "$gd/info" 2>/dev/null
   ex=$gd/info/exclude
-  for need in $GIT_EXCLUDES; do
-    found=
-    if [ -f "$ex" ]; then
-      while IFS= read -r line || [ -n "$line" ]; do
-        [ "${line%"$CR"}" = "$need" ] && {
-          found=1
-          break
-        }
-      done <"$ex"
+  rel=${ex#"$1"/}
+  git_exclude_scan "$ex"
+  if [ -n "$GE_OLD" ]; then
+    # rewrite without the old lines (tmp + mv), .brigada/ in place or at the end
+    [ -n "$GE_FOUND" ] || GE_KEEP="$GE_KEEP$GIT_EXCLUDE_NOTE$NL$GIT_EXCLUDE$NL"
+    printf '%s' "$GE_KEEP" >"$ex.brg.$$" && mv_retry "$ex.brg.$$" "$ex"
+    GIT_NOTE="в $rel строки brigada (.brigada/tasks/, lobby/, run/, agents/) заменены на $GIT_EXCLUDE — весь каталог. Если части .brigada (bin/, config, common/, README.md) уже в git — убери их из индекса, файлы останутся: git rm -r --cached .brigada"
+  elif [ -n "$GE_FOUND" ]; then
+    GIT_NOTE="$rel уже настроен"
+  else
+    if [ -s "$ex" ]; then
+      tl=$(tail -c 1 "$ex")
+      [ -n "$tl" ] && printf '\n' >>"$ex"
     fi
-    [ -n "$found" ] && continue
-    if [ -z "$added" ]; then
-      if [ -s "$ex" ]; then
-        tl=$(tail -c 1 "$ex")
-        [ -n "$tl" ] && printf '\n' >>"$ex"
-      fi
-      printf '# brigada: переписка и рантайм не коммитятся\n' >>"$ex"
-    fi
-    printf '%s\n' "$need" >>"$ex"
-    added="$added $need"
-  done
-  if [ -n "$added" ]; then GIT_NOTE="добавлено в ${ex#"$1"/}:$added"; else GIT_NOTE="${ex#"$1"/} уже настроен"; fi
+    printf '%s\n%s\n' "$GIT_EXCLUDE_NOTE" "$GIT_EXCLUDE" >>"$ex"
+    GIT_NOTE="добавлено в $rel: $GIT_EXCLUDE (весь каталог brigada не коммитится)"
+  fi
 }
 
 cmd_init() {
@@ -2944,26 +2966,19 @@ dr_fs() {
 }
 
 dr_git() {
-  local gd ex need missing= line found
+  local gd x
   git_dir_v gd "$PROJ"
   if [ -z "$gd" ]; then
     dr_ok "git: $GD_NOTE"
     return 0
   fi
-  ex=$gd/info/exclude
-  for need in $GIT_EXCLUDES; do
-    found=
-    if [ -f "$ex" ]; then
-      while IFS= read -r line || [ -n "$line" ]; do
-        [ "${line%"$CR"}" = "$need" ] && found=1 && break
-      done <"$ex"
-    fi
-    [ -n "$found" ] || missing="$missing $need"
-  done
-  if [ -n "$missing" ]; then
-    dr_fail ".git/info/exclude: нет$missing — git add -A закоммитит переписку и рантайм" "Повтори init (допишет сам): bash /путь/к/brigada/bin/brg init $PROJ"
+  git_exclude_scan "$gd/info/exclude"
+  if [ -n "$GE_FOUND" ]; then
+    dr_ok ".git/info/exclude: $GIT_EXCLUDE — каталог brigada не коммитится"
   else
-    dr_ok ".git/info/exclude: переписка и рантайм brigada не коммитятся"
+    x="нет $GIT_EXCLUDE — git add -A закоммитит служебный каталог brigada (переписку, рантайм, копию brg)"
+    [ -n "$GE_OLD" ] && x="исключены только переписка и рантайм (brg до 0.2.1), нет $GIT_EXCLUDE — git add -A закоммитит bin/, config, common/, README.md"
+    dr_fail ".git/info/exclude: $x" "Повтори init (поправит сам): bash /путь/к/brigada/bin/brg init $PROJ"
   fi
 }
 
