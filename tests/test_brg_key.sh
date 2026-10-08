@@ -153,6 +153,10 @@ test_key_status_without_key_does_not_confirm_identity() {
   assert_contains "$out" "wait агента $a работает (pid $pw). Если ты не делал join в этом чате — ты не $a: сделай join."
   assert_not_contains "$out" "Мой wait"
   assert_contains "$out" "Имя без ключа — только просмотр"
+  assert_contains "$out" "роль $a: host и lead"
+  assert_not_contains "$out" "твоя роль"
+  assert_not_contains "$out" "Мои подзадачи"
+  assert_not_contains "$(brg task show --as "$a")" "Твоя роль"
   assert_eq "── NEXT: если ты не делал join в этом чате — bash $BRG join --harness <харнесс> --model <модель>; иначе продолжай под полным именем из своего join" "$(printf '%s\n' "$out" | tail -n 1)"
   no_bare_as "$out" "$a"
   # with the key — as before

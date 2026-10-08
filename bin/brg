@@ -1039,11 +1039,12 @@ role_v() {
 
 # task_info_lines NAME — the active task block for join/status (ACT_*/TK_* loaded)
 task_info_lines() {
-  local role plan=" (пока нет — его пишет lead)" sum=
+  local role plan=" (пока нет — его пишет lead)" sum= rl="твоя роль"
   role_v role "$1"
+  [ -n "${AS_NOKEY:-}" ] && rl="роль $1" # no key: do not confirm the identity
   [ -f "$ACT_DIR/shared/plan.md" ] && plan=
   [ -s "$ACT_DIR/summary.md" ] && sum=" · итог: $RROOT/tasks/$ACT_NAME/summary.md"
-  echo "Активная задача: $ACT_ID «$TK_TITLE» · host $TK_HOST · lead $TK_LEAD · твоя роль: $role"
+  echo "Активная задача: $ACT_ID «$TK_TITLE» · host $TK_HOST · lead $TK_LEAD · $rl: $role"
   echo "  Постановка: $RROOT/tasks/$ACT_NAME/brief.md · план: $RROOT/tasks/$ACT_NAME/shared/plan.md$plan$sum"
   echo "  История переписки задачи: $BRG read --as ${ASN:-$1} --channel $ACT_ID --since 0"
 }
@@ -1845,7 +1846,7 @@ cmd_join() {
       lock_release roster
       wait_timeout_v T "$P_HARNESS" "$P_PLATFORM"
       idle_calc "$re"
-      NEXT_ON_ERR="если это твой wait — дождись его конца (обычно ≤ $T с) и повтори $BRG join --as $re --harness $h; иначе $BRG join --harness $h --model ${m:-<модель>}"
+      NEXT_ON_ERR="если это твой wait и ключ потерян — дождись его конца (обычно ≤ $T с) и через $ID_P с после него повтори $BRG join --as $re --harness $h; иначе $BRG join --harness $h --model ${m:-<модель>}"
       die "имя $re занято: его wait сейчас работает (pid $WI_PID)" \
         "Если это твой wait и ты знаешь своё полное имя (с ключом; оно в последней строке NEXT:) — переподключаться не нужно, продолжай под ним. Если ключ потерян — дождись конца этого wait (обычно ≤ $T с) и повтори $BRG join --as $re --harness $h через $ID_P с после него." \
         "Если это другой агент — подключись под новым именем: $BRG join --harness $h --model ${m:-<модель>}"
@@ -3716,7 +3717,7 @@ task_show() {
   echo "host $TK_HOST · lead $TK_LEAD · создана $TK_CREATED ($TK_CREATED_BY)${TK_CLOSED:+ · завершена $TK_CLOSED ($TK_CLOSED_BY)}"
   if [ -n "$AGENT" ]; then
     role_v role "$AGENT"
-    echo "Твоя роль: $role"
+    if [ -n "${AS_NOKEY:-}" ]; then echo "Роль $AGENT: $role"; else echo "Твоя роль: $role"; fi
   fi
   echo "Каталог: $RROOT/tasks/$name/"
   plan="нет (его пишет lead: shared/plan.md)"
@@ -4769,7 +4770,8 @@ item_show() {
 
 # my_items_lines — AGENT's items in work and their reservations (for status)
 my_items_lines() {
-  local id st as ti pa ce cr no re hi shown ct=0 cc=0 cd=0 mine= age
+  local id st as ti pa ce cr no re hi shown ct=0 cc=0 cd=0 mine= age my="Мои подзадачи"
+  [ -n "${AS_NOKEY:-}" ] && my="Подзадачи $AGENT" # no key: do not confirm the identity
   item_table "$ACT_DIR"
   [ -n "$IT_TABLE" ] || {
     echo "Подзадачи: нет (lead добавляет: $BRG item add)"
@@ -4788,9 +4790,9 @@ $IT_TABLE
 BRG_MI_EOF
   echo "Подзадачи $ACT_ID: todo $ct · в работе $cc · готово $cd ($BRG item list)"
   if [ -n "$mine" ]; then
-    printf 'Мои подзадачи и резервирования:\n%s' "$mine"
+    printf '%s и резервирования:\n%s' "$my" "$mine"
   else
-    if [ "$ct" -gt 0 ]; then echo "Мои подзадачи: нет — свободные: $BRG item list --status todo"; else echo "Мои подзадачи: нет"; fi
+    if [ "$ct" -gt 0 ]; then echo "$my: нет — свободные: $BRG item list --status todo"; else echo "$my: нет"; fi
   fi
 }
 
@@ -5755,7 +5757,8 @@ run_cancel() {
 # my_runs_lines — AGENT's runs in the queue or running (for status); a run whose
 # runner turns out dead is settled (killed) and its message goes to wait
 my_runs_lines() {
-  local f x out= lost=
+  local f x out= lost= my="Мои прогоны"
+  [ -n "${AS_NOKEY:-}" ] && my="Прогоны $AGENT" # no key: do not confirm the identity
   for f in "$ACT_DIR"/shared/runs/R[0-9]*; do
     [ -f "$f" ] || continue
     case ${f##*/} in *.*) continue ;; esac
@@ -5771,8 +5774,8 @@ my_runs_lines() {
     [ "$RH" = stale ] && x="$x · раннер не отвечает $RH_AGE с"
     out="$out${out:+; }$x"
   done
-  [ -n "$out" ] && echo "Мои прогоны (результат придёт сообщением): $out"
-  [ -n "$lost" ] && echo "Мои прогоны с умершим раннером: $lost — отмечены killed, сообщение придёт в wait."
+  [ -n "$out" ] && echo "$my (результат придёт сообщением): $out"
+  [ -n "$lost" ] && echo "$my с умершим раннером: $lost — отмечены killed, сообщение придёт в wait."
   return 0
 }
 
