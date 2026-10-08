@@ -465,6 +465,7 @@ a.re:hover, a.lnk:hover { text-decoration: underline; }
       var f = hv(x, "From"), to;
       if (num(hv(x, "Id")) <= id || hv(x, "Kind") === "system" || exp.indexOf(f) < 0 || yes.indexOf(f) >= 0) return;
       to = names(hv(x, "To"));
+      if (num(hv(x, "Epoch")) > rb) return; // a reply counts only before the deadline (DESIGN §8)
       if (hv(x, "Re") === String(id) || to.indexOf("all") >= 0 || to.indexOf(from) >= 0) yes.push(f);
     });
     return { rb: rb, yes: yes, no: exp.filter(function (e) { return yes.indexOf(e) < 0; }) };

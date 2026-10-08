@@ -111,6 +111,30 @@ test_board_escaping() {
 }
 
 # The same with gawk / mawk as awk (PATH shim), when the system has them.
+# A LF in a file name (written into .brigada by hand) must not split a directive:
+# the text after it would reach data.js as code.
+test_board_newline_in_file_names() {
+  local a d
+  new_proj
+  a=$(join_as claude)
+  task_new_as "$a" "Задача"
+  printf 'Id: 1\nFrom: x\n\nhi\n' >"$B/lobby/messages/000001"$'\n''pX]};globalThis.PWNED=1;t={a:[Math.msg'
+  d=$(tdir T001)
+  printf 'Id: I001\nTitle: x\nStatus: todo\n\n' >"$d/items/I001"$'\n''pY;globalThis.PWNED=2;//'
+  mkdir -p "$B/tasks/T000-x"$'\n''pZ;globalThis.PWNED=3;//'
+  brg board --once >/dev/null || fail board
+  assert_not_contains "$(bdata)" "PWNED"
+  if has_node; then
+    node -e '
+      const vm = require("vm"), fs = require("fs");
+      const ctx = { window: {} }; ctx.globalThis = ctx;
+      vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), ctx);
+      if (ctx.PWNED) throw new Error("executed: " + ctx.PWNED);
+      if (!ctx.window.BRG_BOARD) throw new Error("no BRG_BOARD");
+    ' "$B/run/board/data.js" || fail "node: data.js"
+  fi
+}
+
 test_board_escaping_other_awks() {
   local a x p sh ran=
   new_proj

@@ -1784,7 +1784,7 @@ cmd_init() {
   echo "git: $GIT_NOTE"
   echo "Дальше скажи агенту: «подключись к .brigada, прочитай инструкцию в .brigada/README.md»."
   echo "Смотреть переписку: bash .brigada/bin/brg tail -f · кто онлайн: bash .brigada/bin/brg who (у агента «возможно выпал» — напиши ему в его чат «продолжай»)"
-  echo "Доска в браузере: bash .brigada/bin/brg board — откроется по адресу из первой строки"
+  echo "Доска в браузере: bash .brigada/bin/brg board — открой в браузере адрес из первой строки"
   echo "Проверка среды (Windows, блокировки, раннеры): bash .brigada/bin/brg doctor; из PowerShell/cmd — .\\.brigada\\bin\\brg.cmd doctor"
 }
 
@@ -6416,7 +6416,10 @@ board_warn() {
 # board_write NAME — the manifest BJ[] through AWK_JSON into run/board/NAME (tmp + mv)
 board_write() {
   local t=$BD/.tmp.$1.$$ i
-  printf '%s\n' "${BJ[@]}" | awk "$AWK_JSON" >"$t" 2>/dev/null
+  # one directive per line: a LF inside an element (a file name from a glob, the
+  # path of .brigada) would start a forged directive — such a path becomes "?"
+  # (it no longer exists: read as missing); texts are already one-line (bjs/bjx)
+  printf '%s\n' "${BJ[@]//$NL/?}" | awk "$AWK_JSON" >"$t" 2>/dev/null
   if [ $? -ne 0 ] || [ ! -s "$t" ]; then
     rm -f "$t"
     board_warn "не удалось собрать $1"
