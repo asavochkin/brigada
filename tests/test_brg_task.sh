@@ -37,16 +37,16 @@ BRG_EOF
   assert_eq T001 "$(hdr "$d/task" Id)"
   assert_eq "Починить логин в Auth-Module!" "$(hdr "$d/task" Title)"
   assert_eq active "$(hdr "$d/task" Status)"
-  assert_eq "$A" "$(hdr "$d/task" Host)"
-  assert_eq "$A" "$(hdr "$d/task" Lead)"
-  assert_eq "$A" "$(hdr "$d/task" Created-By)"
+  assert_eq "${A%%.*}" "$(hdr "$d/task" Host)"
+  assert_eq "${A%%.*}" "$(hdr "$d/task" Lead)"
+  assert_eq "${A%%.*}" "$(hdr "$d/task" Created-By)"
   # the announcement: lobby, system, to all, wakes
   f=$(msg_file 4)
   assert_eq system "$(hdr "$f" Kind)"
-  assert_eq "$A" "$(hdr "$f" From)"
+  assert_eq "${A%%.*}" "$(hdr "$f" From)"
   assert_eq all "$(hdr "$f" To)"
   assert_eq "" "$(hdr "$f" Wake)"
-  assert_contains "$(cat "$f")" "новая задача T001: «Починить логин в Auth-Module!» · host и lead: $A. Прочитай постановку: .brigada/tasks/T001-auth-module/brief.md"
+  assert_contains "$(cat "$f")" "новая задача T001: «Починить логин в Auth-Module!» · host и lead: ${A%%.*}. Прочитай постановку: .brigada/tasks/T001-auth-module/brief.md"
   assert_contains "$(metrics_of "$A" task.new)" "id=T001 cancel_current=0"
 }
 
@@ -96,7 +96,7 @@ test_task_new_reaches_both_waiting_agents() {
   [ $((t1 - t0)) -le 2 ] || fail "slow: $((t1 - t0)) s"
   for x in wb wc; do
     assert_contains "$(cat "$P/$x")" "── lobby · 1 новое"
-    assert_contains "$(cat "$P/$x")" "[система] $A → all"
+    assert_contains "$(cat "$P/$x")" "[система] ${A%%.*} → all"
     assert_contains "$(cat "$P/$x")" "новая задача T001: «Общая задача»"
   done
   # the next wait listens to T001 too, from the start of the channel
@@ -104,7 +104,7 @@ test_task_new_reaches_both_waiting_agents() {
   assert_eq T001 "$(hdr "$(tmsg T001 1)" Channel)" "send goes to the task by default"
   out=$(brg wait --as "$Bn" --timeout 2)
   assert_contains "$out" "── T001 · 1 новое"
-  assert_contains "$out" "#1 $A → all"
+  assert_contains "$out" "#1 ${A%%.*} → all"
   assert_contains "$out" "  суть задачи для всех"
   assert_eq "0/1" "$(tcursor "$Bn" T001)"
   out=$(brg wait --as "$C" --timeout 2)
@@ -122,7 +122,7 @@ test_running_wait_switches_channels() {
   printf 'итог\n' >"$(tdir T001)/summary.md"
   brg task close --as "$A" >/dev/null || fail "close"
   wait_pid $WP 3 || fail "wait did not return on close"
-  assert_contains "$(cat "$P/wb")" "задача T001 «Первая» закрыта (lead $A). Итог: итог."
+  assert_contains "$(cat "$P/wb")" "задача T001 «Первая» закрыта (lead ${A%%.*}). Итог: итог."
   # after close: lobby only; send defaults to lobby
   out=$(printf 'в лобби\n' | brg send --as "$A")
   assert_contains "$out" "→ all (lobby)"
@@ -140,7 +140,7 @@ test_second_task_refused_then_cancel_current() {
   printf 'x\n' >"$d1/reservations/fake"
   out=$(printf 'другая\n' | brg task new --as "$Bn" --title "Вторая" 2>&1)
   assert_eq 1 "$?" "second task without --cancel-current"
-  assert_contains "$out" "уже есть активная задача T001 «Первая задача» (host $A, lead $A)"
+  assert_contains "$out" "уже есть активная задача T001 «Первая задача» (host ${A%%.*}, lead ${A%%.*})"
   assert_contains "$out" "--cancel-current"
   assert_contains "$out" "── NEXT:"
   assert_eq T001 "$(cat "$B/tasks/active")"
@@ -149,17 +149,17 @@ test_second_task_refused_then_cancel_current() {
   assert_contains "$out" "── задача T001 отменена: всем отправлено «прекрати правки»."
   assert_contains "$out" "── создана задача T002 «Вторая»"
   assert_eq cancelled "$(hdr "$d1/task" Status)"
-  assert_eq "$Bn" "$(hdr "$d1/task" Closed-By)"
+  assert_eq "${Bn%%.*}" "$(hdr "$d1/task" Closed-By)"
   assert_eq "" "$(ls -A "$d1/reservations")" "reservations released"
   assert_eq "$(basename "$(tdir T002)")" "$(cat "$B/tasks/active")"
   h=$(cat "$B/common/history.md")
   assert_contains "$h" "- T001 · cancelled · «Первая задача» · "
-  assert_contains "$h" " · host $A · lead $A · отменил $Bn · итог: — · .brigada/tasks/T001/"
+  assert_contains "$h" " · host ${A%%.*} · lead ${A%%.*} · отменил ${Bn%%.*} · итог: — · .brigada/tasks/T001/"
   # C gets "cancelled" first, then "new task", in one batch
   out=$(brg wait --as "$C" --timeout 1)
   assert_contains "$out" "── lobby · 3 новых"
-  assert_contains "$out" "задача T001 «Первая задача» отменена ($Bn): прекрати правки, не продолжай работу по ней."
-  assert_contains "$out" "новая задача T002: «Вторая» · host и lead: $Bn"
+  assert_contains "$out" "задача T001 «Первая задача» отменена (${Bn%%.*}): прекрати правки, не продолжай работу по ней."
+  assert_contains "$out" "новая задача T002: «Вторая» · host и lead: ${Bn%%.*}"
   case $out in *"отменена"*"новая задача T002"*) ;; *) fail "order: $out" ;; esac
 }
 
@@ -170,7 +170,7 @@ test_task_close_rules_and_history() {
   d=$(tdir T001)
   out=$(brg task close --as "$Bn" 2>&1)
   assert_eq 1 "$?" "close by non-lead"
-  assert_contains "$out" "закрыть задачу T001 может только lead ($A)"
+  assert_contains "$out" "закрыть задачу T001 может только lead (${A%%.*})"
   out=$(brg task close --as "$A" 2>&1)
   assert_eq 1 "$?" "close without summary.md"
   assert_contains "$out" "нет итога: .brigada/tasks/T001/summary.md пуст или не создан"
@@ -185,12 +185,12 @@ test_task_close_rules_and_history() {
   assert_contains "$out" "── задача T001 «Закрываемая» закрыта."
   assert_eq "── NEXT: bash $BRG wait --as $A" "$(printf '%s\n' "$out" | tail -n 1)"
   assert_eq done "$(hdr "$d/task" Status)"
-  assert_eq "$A" "$(hdr "$d/task" Closed-By)"
+  assert_eq "${A%%.*}" "$(hdr "$d/task" Closed-By)"
   assert_file_not_exists "$B/tasks/active"
   h=$(cat "$B/common/history.md")
   assert_contains "$h" "# История задач"
-  assert_contains "$h" "- T001 · done · «Закрываемая» · $(hdr "$d/task" Created) → $(hdr "$d/task" Closed) · host $A · lead $A · итог: Логин чинится:** пустой пароль отвергается. · .brigada/tasks/T001/summary.md"
-  assert_contains "$(brg wait --as "$C" --timeout 1)" "задача T001 «Закрываемая» закрыта (lead $A). Итог: Логин чинится:** пустой пароль отвергается."
+  assert_contains "$h" "- T001 · done · «Закрываемая» · $(hdr "$d/task" Created) → $(hdr "$d/task" Closed) · host ${A%%.*} · lead ${A%%.*} · итог: Логин чинится:** пустой пароль отвергается. · .brigada/tasks/T001/summary.md"
+  assert_contains "$(brg wait --as "$C" --timeout 1)" "задача T001 «Закрываемая» закрыта (lead ${A%%.*}). Итог: Логин чинится:** пустой пароль отвергается."
   out=$(brg task close --as "$A" 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "нет активной задачи"
@@ -214,7 +214,7 @@ test_task_cancel_permissions_and_human() {
   task_new_as "$A" "Отменяемая"
   out=$(brg task cancel --as "$C" 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "отменить задачу T001 может host ($A), lead ($A) или человек"
+  assert_contains "$out" "отменить задачу T001 может host (${A%%.*}), lead (${A%%.*}) или человек"
   out=$(brg task cancel 2>&1)
   assert_eq 1 "$?" "no --as: not silently the human"
   assert_contains "$out" "нужно имя агента"
@@ -228,10 +228,10 @@ test_task_cancel_permissions_and_human() {
   assert_contains "$out" "#5 [система] human → all"
   assert_contains "$out" "прекрати правки"
   task_new_as "$A" "Вторая"
-  brg lead give "$Bn" --as "$A" >/dev/null || fail "lead give"
+  brg lead give "${Bn%%.*}" --as "$A" >/dev/null || fail "lead give"
   out=$(brg task cancel --as "$Bn") # the lead may cancel too
   assert_contains "$out" "отменена"
-  assert_contains "$(cat "$B/common/history.md")" "отменил $Bn"
+  assert_contains "$(cat "$B/common/history.md")" "отменил ${Bn%%.*}"
 }
 
 test_task_show_list_who() {
@@ -245,7 +245,7 @@ test_task_show_list_who() {
 вторая строка"
   out=$(brg task show --as "$Bn")
   assert_contains "$out" "── T001 «Show me» · active"
-  assert_contains "$out" "host $A · lead $A · создана "
+  assert_contains "$out" "host ${A%%.*} · lead ${A%%.*} · создана "
   assert_contains "$out" "Твоя роль: участник"
   assert_contains "$out" "План: нет"
   assert_contains "$out" "первая строка
@@ -257,8 +257,8 @@ test_task_show_list_who() {
   out=$(brg task show T9 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "нет задачи T009"
-  assert_contains "$(brg task list)" "T001 · active · «Show me» · host $A · lead $A · "
-  assert_contains "$(brg who)" "── задача T001 «Show me» · host $A · lead $A"
+  assert_contains "$(brg task list)" "T001 · active · «Show me» · host ${A%%.*} · lead ${A%%.*} · "
+  assert_contains "$(brg who)" "── задача T001 «Show me» · host ${A%%.*} · lead ${A%%.*}"
   out=$(brg task 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "нужна подкоманда"
@@ -273,12 +273,12 @@ test_status_shows_task_role_and_deadlines() {
   printf 'вопрос\n' | brg send --as "$A" --reply-by 1h >/dev/null || fail send
   send_as "$Bn" "мой ответ" --re 1
   out=$(brg status --as "$A")
-  assert_contains "$out" "Активная задача: T001 «Статус» · host $A · lead $A · твоя роль: host и lead"
+  assert_contains "$out" "Активная задача: T001 «Статус» · host ${A%%.*} · lead ${A%%.*} · твоя роль: host и lead"
   assert_contains "$out" "Постановка: .brigada/tasks/T001/brief.md · план: .brigada/tasks/T001/shared/plan.md (пока нет"
   assert_contains "$out" "История переписки задачи: bash $BRG read --as $A --channel T001 --since 0"
   assert_contains "$out" "T001: новых для тебя 1"
   assert_contains "$out" "Мой дедлайн по #1 (T001): до "
-  assert_contains "$out" "ответили: $Bn · ждём: $C"
+  assert_contains "$out" "ответили: ${Bn%%.*} · ждём: ${C%%.*}"
   assert_contains "$(brg status --as "$C")" "твоя роль: участник"
 }
 
@@ -291,9 +291,10 @@ test_agent_joining_mid_task() {
   send_as "$A" "старое 1"
   send_as "$A" "старое 2"
   out=$(brg join --harness claude --model m)
-  d=claude-2
+  d=$(printf '%s\n' "$out" | sed -n 's/^── подключён: \([^ ]*\) .*/\1/p')
+  assert_eq claude-2 "$(base_of "$d")"
   assert_contains "$out" "── подключён: $d "
-  assert_contains "$out" "Активная задача: T001 «Посреди» · host $A · lead $A · твоя роль: участник"
+  assert_contains "$out" "Активная задача: T001 «Посреди» · host ${A%%.*} · lead ${A%%.*} · твоя роль: участник"
   assert_contains "$out" "Постановка: .brigada/tasks/T001/brief.md"
   assert_contains "$out" "История переписки задачи: bash $BRG read --as $d --channel T001 --since 0"
   assert_contains "$out" "Правила совместной работы: .brigada/PROTOCOL.md"
@@ -350,10 +351,10 @@ test_tail_merges_lobby_and_task() {
   task_new_as "$A" "Хвост"
   send_as "$Bn" "сообщение в задаче"
   out=$(brg tail)
-  assert_contains "$out" "lobby #4 [система] $A → all · "
-  assert_contains "$out" "T001 #1 $Bn → all · "
+  assert_contains "$out" "lobby #4 [система] ${A%%.*} → all · "
+  assert_contains "$out" "T001 #1 ${Bn%%.*} → all · "
   out=$(brg tail T001)
-  assert_contains "$out" "#1 $Bn → all · "
+  assert_contains "$out" "#1 ${Bn%%.*} → all · "
   assert_not_contains "$out" "lobby"
   # -f follows the switch to a new task
   BRG_TICK=0.2 bash "$BRG" tail -f >"$P/tail" 2>&1 &
@@ -374,49 +375,49 @@ test_lead_and_host_give_take() {
   d=$(tdir T001)
   out=$(brg lead take --as "$Bn" 2>&1)
   assert_eq 1 "$?" "take while the lead is active"
-  assert_contains "$out" "lead $A активен (working) — взять роль можно, только если он asleep или gone"
+  assert_contains "$out" "lead ${A%%.*} активен (working) — взять роль можно, только если он asleep или gone"
   start_wait "$A" "$P/wa" --timeout 20
   out=$(brg lead take --as "$Bn" 2>&1)
   assert_eq 1 "$?" "take while the lead is waiting"
   assert_contains "$out" "активен (waiting)"
   kill -TERM $WP
   wait_pid $WP 3 || fail "wait hung"
-  out=$(brg lead give "$C" --as "$Bn" 2>&1)
+  out=$(brg lead give "${C%%.*}" --as "$Bn" 2>&1)
   assert_eq 1 "$?" "give by a non-lead"
-  assert_contains "$out" "передать lead может только текущий lead ($A)"
+  assert_contains "$out" "передать lead может только текущий lead (${A%%.*})"
   # asleep lead → take passes
-  printf '%s\n' $(($(date -u +%s) - 90)) >"$B/run/seen/$A" # > asleep_after (60)
+  printf '%s\n' $(($(date -u +%s) - 90)) >"$B/run/seen/${A%%.*}" # > asleep_after (60)
   out=$(brg lead take --as "$Bn")
   assert_eq 0 "$?"
-  assert_contains "$out" "── lead задачи T001: $A → $Bn."
+  assert_contains "$out" "── lead задачи T001: ${A%%.*} → ${Bn%%.*}."
   assert_contains "$out" "Теперь ты ведёшь работу"
-  assert_eq "$Bn" "$(hdr "$d/task" Lead)"
-  assert_eq "$A" "$(hdr "$d/task" Host)"
+  assert_eq "${Bn%%.*}" "$(hdr "$d/task" Lead)"
+  assert_eq "${A%%.*}" "$(hdr "$d/task" Host)"
   f=$(tmsg T001 1)
   assert_eq system "$(hdr "$f" Kind)"
-  assert_contains "$(cat "$f")" "lead задачи T001: $A → $Bn (взял $Bn: $A — asleep)"
+  assert_contains "$(cat "$f")" "lead задачи T001: ${A%%.*} → ${Bn%%.*} (взял ${Bn%%.*}: ${A%%.*} — asleep)"
   assert_contains "$(brg lead take --as "$Bn")" "ты уже lead"
   # give: to a gone agent refused, to a live one passes; the new lead is woken
   brg leave --as "$C" >/dev/null
-  out=$(brg lead give "$C" --as "$Bn" 2>&1)
+  out=$(brg lead give "${C%%.*}" --as "$Bn" 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "$C — gone"
-  out=$(brg lead give "$A" --as "$Bn")
-  assert_contains "$out" "── lead задачи T001: $Bn → $A."
-  assert_contains "$(brg wait --as "$A" --timeout 1)" "lead задачи T001: $Bn → $A (передал $Bn)"
+  assert_contains "$out" "${C%%.*} — gone"
+  out=$(brg lead give "${A%%.*}" --as "$Bn")
+  assert_contains "$out" "── lead задачи T001: ${Bn%%.*} → ${A%%.*}."
+  assert_contains "$(brg wait --as "$A" --timeout 1)" "lead задачи T001: ${Bn%%.*} → ${A%%.*} (передал ${Bn%%.*})"
   # host: give/take the same way
-  out=$(brg host give "$Bn" --as "$A")
-  assert_contains "$out" "── host задачи T001: $A → $Bn."
-  assert_eq "$Bn" "$(hdr "$d/task" Host)"
+  out=$(brg host give "${Bn%%.*}" --as "$A")
+  assert_contains "$out" "── host задачи T001: ${A%%.*} → ${Bn%%.*}."
+  assert_eq "${Bn%%.*}" "$(hdr "$d/task" Host)"
   out=$(brg host take --as "$A" 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "host $Bn активен"
+  assert_contains "$out" "host ${Bn%%.*} активен"
   # a gone (left) lead can be replaced
-  brg lead give "$Bn" --as "$A" >/dev/null || fail "give back"
+  brg lead give "${Bn%%.*}" --as "$A" >/dev/null || fail "give back"
   brg leave --as "$Bn" >/dev/null
   out=$(brg lead take --as "$A")
-  assert_contains "$out" "$Bn → $A"
-  assert_contains "$(cat "$(tmsg T001 5)")" "(взял $A: $Bn — gone)"
+  assert_contains "$out" "${Bn%%.*} → ${A%%.*}"
+  assert_contains "$(cat "$(tmsg T001 5)")" "(взял ${A%%.*}: ${Bn%%.*} — gone)"
   out=$(brg lead give 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "кому передать"
@@ -439,31 +440,31 @@ test_leave_of_role_holder_wakes() {
   assert_contains "$out" "Ты был host и lead задачи T001"
   f=$(msg_file 6)
   assert_eq "" "$(hdr "$f" Wake)" "role holder's leave wakes"
-  assert_contains "$(cat "$f")" "$A отключился (был host и lead задачи T001 — роль может взять любой: bash $BRG host take, bash $BRG lead take --as <имя>)"
+  assert_contains "$(cat "$f")" "${A%%.*} отключился (был host и lead задачи T001 — роль может взять любой: bash $BRG host take, bash $BRG lead take --as <имя>)"
   wait_pid $pb 3 || fail "B's wait was not woken by the lead's leave"
   out=$(cat "$P/wb")
-  assert_contains "$out" "#5 [система] $C → all"
-  assert_contains "$out" "#6 [система] $A → all"
+  assert_contains "$out" "#5 [система] ${C%%.*} → all"
+  assert_contains "$out" "#6 [система] ${A%%.*} → all"
   assert_contains "$out" "lead take --as <имя>"
   out=$(brg lead take --as "$Bn")
-  assert_contains "$out" "── lead задачи T001: $A → $Bn."
+  assert_contains "$out" "── lead задачи T001: ${A%%.*} → ${Bn%%.*}."
 }
 
 test_task_new_lifts_stop() {
   local out
   three_agents
   brg stop >/dev/null
-  : >"$B/run/stopped.$A"
-  : >"$B/run/stopped.$C"
+  : >"$B/run/stopped.${A%%.*}"
+  : >"$B/run/stopped.${C%%.*}"
   out=$(printf 'x\n' | brg task new --as "$A" --title "После стопа")
   assert_contains "$out" "Общий стоп снят."
   assert_file_not_exists "$B/run/stopped"
-  assert_file_not_exists "$B/run/stopped.$A" "the host's own stop is lifted"
-  assert_file_exists "$B/run/stopped.$C" "other per-agent stops stay"
+  assert_file_not_exists "$B/run/stopped.${A%%.*}" "the host's own stop is lifted"
+  assert_file_exists "$B/run/stopped.${C%%.*}" "other per-agent stops stay"
 }
 
 test_join_as_returns_under_the_same_name() {
-  local out
+  local out old k
   three_agents
   task_new_as "$A" "Возврат"
   send_as "$A" "до ухода"
@@ -475,35 +476,58 @@ test_join_as_returns_under_the_same_name() {
   # another harness: refused
   out=$(brg join --as "$Bn" --harness claude 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "агент $Bn подключался из харнесса codex, а ты — claude"
+  assert_contains "$out" "агент ${Bn%%.*} подключался из харнесса codex, а ты — claude"
   out=$(brg join --as ghost-3 --harness codex 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "нет агента ghost-3"
-  # the same harness: Left lifted, model kept unless given, cursors kept
+  # the same harness (after leave — at once): Left lifted, model kept unless given,
+  # cursors kept, a new key; the full name is accepted too
+  old=$Bn
   out=$(brg join --as "$Bn" --harness codex-cli)
   assert_eq 0 "$?"
+  k=$(hdr "$B/agents/${Bn%%.*}" Key)
+  Bn=${Bn%%.*}.$k
+  [ "$Bn" != "$old" ] || fail "the key did not change"
   assert_contains "$out" "── переподключён: $Bn (codex · m · "
   assert_contains "$out" "Активная задача: T001 «Возврат»"
   assert_eq "── NEXT: bash $BRG wait --as $Bn" "$(printf '%s\n' "$out" | tail -n 1)"
-  assert_eq "" "$(hdr "$B/agents/$Bn" Left)"
-  [ -n "$(hdr "$B/agents/$Bn" Rejoined)" ] || fail "no Rejoined"
-  assert_eq m "$(hdr "$B/agents/$Bn" Model)"
+  assert_eq "" "$(hdr "$B/agents/${Bn%%.*}" Left)"
+  [ -n "$(hdr "$B/agents/${Bn%%.*}" Rejoined)" ] || fail "no Rejoined"
+  assert_eq m "$(hdr "$B/agents/${Bn%%.*}" Model)"
+  assert_eq 1 "$(awk '/^Key: /' "$B/agents/${Bn%%.*}" | wc -l | tr -d ' ')" "one Key"
   assert_eq "1/1" "$(tcursor "$Bn" T001)" "cursor kept"
+  # the old key no longer works
+  out=$(brg wait --as "$old" --timeout 0)
+  assert_eq 0 "$?"
+  assert_contains "$out" "ключ устарел или с ошибкой"
   out=$(brg wait --as "$Bn" --timeout 1)
   assert_contains "$out" "  пока его не было"
   assert_not_contains "$out" "до ухода"
-  assert_contains "$(cat "$(msg_file 6)")" "$Bn вернулся (codex, m, "
+  assert_contains "$(cat "$(msg_file 6)")" "${Bn%%.*} переподключён новой сессией (codex, m, "
+  assert_contains "$(cat "$(msg_file 6)")" "прежний ключ недействителен"
+  assert_not_contains "$(cat "$(msg_file 6)")" "$k"
   # a live wait under that name: refused
   start_wait "$Bn" "$P/wb" --timeout 20
   out=$(brg join --as "$Bn" --harness codex --model new 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "имя $Bn занято: его wait сейчас работает (pid $WP)"
-  assert_contains "$out" "status --as $Bn"
+  assert_contains "$out" "имя ${Bn%%.*} занято: его wait сейчас работает (pid $WP)"
+  assert_contains "$out" "Если ключ потерян — дождись конца этого wait (обычно ≤ 2 с) и повтори"
+  assert_not_contains "$out" "status --as"
   kill -TERM $WP
   wait_pid $WP 3 || fail "wait hung"
-  out=$(brg join --as "$Bn" --harness codex --model new)
-  assert_contains "$out" "── переподключён: $Bn (codex · new · "
-  assert_eq new "$(hdr "$B/agents/$Bn" Model)"
+  # the wait just ended: the agent is active — refused until it drops out
+  out=$(brg join --as "${Bn%%.*}" --harness codex --model new 2>&1)
+  assert_eq 1 "$?"
+  assert_contains "$out" "${Bn%%.*} активен (последний вызов "
+  assert_contains "$out" "он в последней строке NEXT"
+  assert_contains "$out" "иначе подожди "
+  assert_contains "$out" "── NEXT: bash $BRG join --harness codex --model new (новое имя)"
+  brg wait --as "$Bn" --timeout 0 >/dev/null # the key still works
+  dropped "$Bn"
+  out=$(brg join --as "${Bn%%.*}" --harness codex --model new)
+  assert_contains "$out" "── переподключён: ${Bn%%.*}."
+  assert_contains "$out" " (codex · new · "
+  assert_eq new "$(hdr "$B/agents/${Bn%%.*}" Model)"
 }
 
 # A returning agent that had left joins mid-task (from the end); one that never
@@ -516,7 +540,9 @@ test_join_as_task_cursor_start() {
   send_as "$A" "раннее"
   brg join --as "$C" --harness opencode >/dev/null || fail "rejoin C"
   assert_eq "1/1" "$(tcursor "$C" T001)"
-  brg join --as "$Bn" --harness codex >/dev/null || fail "rejoin Bn"
+  dropped "$Bn"
+  Bn=$(rejoin_as "$Bn" codex)
+  [ -n "$Bn" ] || fail "rejoin Bn"
   assert_eq "-" "$(tcursor "$Bn" T001)"
   out=$(brg wait --as "$Bn" --timeout 1)
   assert_contains "$out" "  раннее"
@@ -536,7 +562,7 @@ drain_case() { # HOW: close | cancel | cancel-current
   pb=$WP
   kill -STOP $pb
   send_as "$A" "ФИНАЛ: всё смёрджено"
-  send_as "$A" "лично C, не для B" --to "$C"
+  send_as "$A" "лично C, не для B" --to "${C%%.*}"
   case $1 in
     close)
       printf 'итог\n' >"$(tdir T001)/summary.md"
@@ -595,7 +621,8 @@ test_drain_after_close_for_busy_agents() {
   assert_contains "$out" "── T001 (закрыта) · 1 новое"
   assert_contains "$out" "  последнее слово"
   assert_contains "$(brg status --as "$Bn")" "T001 (закрыта): новых для тебя 0 · выдано последним wait"
-  brg join --as "$C" --harness opencode >/dev/null || fail rejoin
+  C=$(rejoin_as "$C" opencode)
+  [ -n "$C" ] || fail rejoin
   assert_eq "1/1" "$(tcursor "$C" T001)" "back after leave: finished task skipped"
   ack_all "$C"
   ack_all "$d"

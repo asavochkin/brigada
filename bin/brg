@@ -17,7 +17,7 @@ _brg_crlf=x
 case ${#_brg_crlf} in 1) ;; *) printf '%s\n' "brg: ОШИБКА: у файла $0 окончания строк CRLF (Windows) — bash его не выполнит." "Причина — git с core.autocrlf=true. Это .brigada/bin/brg — переустанови: bash <brigada>/bin/brg init <проект>. Это сам репозиторий brigada — удали bin/brg и восстанови: git checkout -- bin/brg (по .gitattributes он запишется с LF) или скачай brigada заново. Проверка: bash <brigada>/bin/brg doctor <проект>." >&2; exit 2 ;; esac #
 unset _brg_crlf
 
-BRG_VERSION=0.1.0
+BRG_VERSION=0.2.0
 # the caller's locale, restored for commands started by `brg run`
 _brg_lc_set=${LC_ALL+1}
 _brg_lc=${LC_ALL-}
@@ -247,7 +247,9 @@ detect_platform() {
 
 # ── output, errors, metrics ────────────────────────────────────────────────
 CMD=
-AGENT=
+AGENT=     # the base name (all state lives under it: DESIGN §3)
+ASN=       # the caller's full name (base.key) — only for --as hints and NEXT lines
+AS_NOKEY=  # 1: a read command called with the base name of a keyed agent
 WAIT_MODE=
 NEXT_ON_ERR= # NEXT line printed with every error (DESIGN §5: agents must not fall out of the loop)
 
@@ -275,7 +277,7 @@ usage_die() {
 metric() {
   [ -d "$RUN" ] || return 0
   [ -n "$NOW" ] || get_now
-  printf '%s %s %s\n' "$NOW" "${AGENT:--}" "$*" >>"$RUN/metrics.log" 2>/dev/null
+  printf '%s %s %s%s\n' "$NOW" "${AGENT:--}" "$*" "${AS_NOKEY:+ nokey=1}" >>"$RUN/metrics.log" 2>/dev/null
 }
 
 need_val() { # "$@" of the option loop: OPT VALUE
@@ -678,13 +680,14 @@ release_all() {
 }
 
 # ── roster ─────────────────────────────────────────────────────────────────
-profile_read() { # FILE → P_HARNESS P_MODEL P_PLATFORM P_LEFT P_JOINED (epoch)
+profile_read() { # FILE → P_KEY P_HARNESS P_MODEL P_PLATFORM P_LEFT P_JOINED (epoch)
   local line
-  P_HARNESS= P_MODEL= P_PLATFORM= P_LEFT= P_JOINED=
+  P_KEY= P_HARNESS= P_MODEL= P_PLATFORM= P_LEFT= P_JOINED=
   [ -f "$1" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     case $line in
       '') break ;;
+      Key:*) P_KEY=${line#Key: } ;;
       Harness:*) P_HARNESS=${line#Harness: } ;;
       Model:*) P_MODEL=${line#Model: } ;;
       Platform:*) P_PLATFORM=${line#Platform: } ;;
@@ -706,32 +709,71 @@ list_agents() { # → AGENT_NAMES (space-separated)
   done
 }
 
-# need_agent — resolve --as / BRG_AS into AGENT (+ A_* profile fields)
+# Session key (DESIGN §3): join gives "<base>.<key>"; the key lives only in the
+# profile (Key:) and is checked by need_agent. Harness names are [a-z0-9], so the
+# first dot splits a full name.
+KEY_ABC=abcdefghijkmnpqrstuvwxyz23456789 # 32 chars: [a-z2-9] without l and o
+key_gen_v() { # VAR — a fresh key: 6 chars of KEY_ABC
+  local _kg_k= _kg_i
+  for _kg_i in 1 2 3 4 5 6; do _kg_k=$_kg_k${KEY_ABC:$((RANDOM % 32)):1}; done
+  eval "$1=\$_kg_k"
+}
+key_ok() { # KEY — 0 if it has the form of a key: [a-z2-9]{6}
+  case $1 in [a-z2-9][a-z2-9][a-z2-9][a-z2-9][a-z2-9][a-z2-9]) return 0 ;; esac
+  return 1
+}
+
+# need_agent write|read — resolve --as / BRG_AS into AGENT (the base name: all
+# state lives under it), ASN (the full name, for --as hints and NEXT) and A_*.
+# Commands that change state ("write") need the session key; "read" commands also
+# take the bare base name (subagents) — then AS_NOKEY=1: no Last-Seen, hints with
+# a placeholder. A wrong key is refused by every command. A profile without Key:
+# (joined before 0.2.0) takes the bare name everywhere. On a refusal NEXT is join:
+# "fix and repeat with --as <same name>" would loop the agent.
 need_agent() {
-  local n=${OPT_AS:-${BRG_AS:-}}
+  local n=${OPT_AS:-${BRG_AS:-}} b k= dot= j="$BRG join --harness <харнесс> --model <модель>"
   if [ -z "$n" ]; then
     die "нужно имя агента: --as <имя> (или переменная BRG_AS)" \
-      "Имя выдаёт join: $BRG join --harness <харнесс> --model <модель>"
+      "Имя выдаёт join: $j"
   fi
-  if ! valid_name "$n" || [ ! -f "$ROOT/agents/$n" ]; then
-    [ "$CMD" = wait ] && NEXT_ON_ERR="$BRG join --harness <харнесс> --model <модель>"
+  b=${n%%.*}
+  case $n in *.*) dot=1 k=${n#*.} ;; esac
+  if ! valid_name "$n" || [ ! -f "$ROOT/agents/$b" ]; then
+    NEXT_ON_ERR=$j
     die "неизвестный агент: $n" \
-      "Подключись (имя выдаст join): $BRG join --harness <харнесс> --model <модель>"
+      "Подключись (имя выдаст join): $j"
   fi
-  AGENT=$n
-  AGENT_FILE=$ROOT/agents/$n
-  profile_read "$AGENT_FILE"
+  profile_read "$ROOT/agents/$b"
+  AS_NOKEY=
+  if [ -n "$dot" ]; then
+    if [ -z "$P_KEY" ] || [ "$k" != "$P_KEY" ] || ! key_ok "$k"; then
+      NEXT_ON_ERR=$j
+      die "ключ устарел или с ошибкой: под именем $b переподключилась другая сессия" \
+        "Сверь имя с выводом своего join в этом чате (полное имя повторяется в последней строке NEXT:). Если ты не делал join в этом чате — сделай join (получишь новое имя)."
+    fi
+  elif [ -n "$P_KEY" ]; then
+    if [ "${1:-write}" != read ]; then
+      NEXT_ON_ERR=$j
+      die "имя $b занято другой сессией" \
+        "Твоё имя — только из вывода твоего join в этом чате (полное, с ключом после точки: $b.<ключ>); не видишь его — сделай join (получишь новое имя)."
+    fi
+    AS_NOKEY=1
+  fi
+  AGENT=$b
+  AGENT_FILE=$ROOT/agents/$b
+  if [ -n "$AS_NOKEY" ]; then ASN='<твоё имя из join>'; else ASN=$n; fi
   A_HARNESS=$P_HARNESS A_MODEL=$P_MODEL A_PLATFORM=$P_PLATFORM
   if [ -n "$P_LEFT" ]; then
-    [ "$CMD" = wait ] && NEXT_ON_ERR="заверши ход (или, если человек просит вернуться: $BRG join --as $n --harness $A_HARNESS)"
-    die "агент $n отключён (brg leave)" \
-      "Вернуться под тем же именем (курсоры сохранены): $BRG join --as $n --harness ${A_HARNESS:-<харнесс>}"
+    NEXT_ON_ERR="заверши ход (или, если человек просит вернуться: $BRG join --as $b --harness ${A_HARNESS:-<харнесс>})"
+    die "агент $b отключён (brg leave)" \
+      "Вернуться под тем же именем (курсоры сохранены, ключ будет новый): $BRG join --as $b --harness ${A_HARNESS:-<харнесс>}"
   fi
 }
 
-touch_seen() { # [NAME] — Last-Seen := now
+touch_seen() { # [NAME] — Last-Seen := now (not for a read command without the key)
   local n=${1:-$AGENT} f
   [ -n "$n" ] || return 0
+  [ -z "${1:-}" ] && [ -n "$AS_NOKEY" ] && return 0
   [ -n "$NOW" ] || get_now
   f=$RUN/seen/$n
   printf '%s\n' "$NOW" >"$RUN/seen/.tmp.$n.$$" 2>/dev/null && mv_retry "$RUN/seen/.tmp.$n.$$" "$f"
@@ -792,6 +834,25 @@ wait_last_mark() {
   printf '%s\n' "$NOW" >"$RUN/wait/.tmp.last.$n.$$" 2>/dev/null && mv_retry "$RUN/wait/.tmp.last.$n.$$" "$RUN/wait/$n.last"
 }
 
+# idle_calc NAME — right after agent_state NAME: ID_D — seconds since the agent was
+# last in its wait loop (wait/<name>.last, the heartbeat of a killed wait, else
+# Joined-Epoch; -1 if unknown), ID_T — its wait timeout + 60 s, ID_P — the dropout
+# threshold max(ID_T, dropout_after).
+idle_calc() {
+  local l=
+  [ -f "$RUN/wait/$1.last" ] && IFS= read -r l <"$RUN/wait/$1.last"
+  is_uint "$l" || l=0
+  [ -n "$WI_HBE" ] && [ "$WI_HBE" -gt "$l" ] && l=$WI_HBE
+  [ "$l" -gt 0 ] || { is_uint "$P_JOINED" && l=$P_JOINED; }
+  wait_timeout_v ID_T "$P_HARNESS" "$P_PLATFORM"
+  ID_T=$((ID_T + 60))
+  ID_P=$ID_T
+  [ "$DROPOUT_AFTER" -gt "$ID_P" ] && ID_P=$DROPOUT_AFTER
+  ID_D=-1
+  [ "$l" -gt 0 ] && ID_D=$((NOW - l))
+  return 0
+}
+
 # idle_note_v VAR NAME SEP — right after agent_state NAME: for an agent without a live
 # wait (working/asleep) once that lasts longer than its wait timeout + 60 s:
 # "<SEP>без wait 5 мин"; plus "<SEP>возможно выпал" if neither a wait nor a brg call
@@ -800,7 +861,7 @@ wait_last_mark() {
 # §5.3 — the human tells it "продолжай"); not for an agent the human stopped. ""
 # otherwise. The states themselves (asleep/gone) do not change.
 idle_note_v() {
-  local _id_r= _id_l= _id_t _id_d _id_x _id_p
+  local _id_r= _id_x
   case $ST in
     working | asleep) ;;
     *)
@@ -808,22 +869,12 @@ idle_note_v() {
       return 0
       ;;
   esac
-  [ -f "$RUN/wait/$2.last" ] && IFS= read -r _id_l <"$RUN/wait/$2.last"
-  is_uint "$_id_l" || _id_l=0
-  [ -n "$WI_HBE" ] && [ "$WI_HBE" -gt "$_id_l" ] && _id_l=$WI_HBE
-  [ "$_id_l" -gt 0 ] || { is_uint "$P_JOINED" && _id_l=$P_JOINED; }
-  if [ "$_id_l" -gt 0 ]; then
-    wait_timeout_v _id_t "$P_HARNESS" "$P_PLATFORM"
-    _id_t=$((_id_t + 60))
-    _id_p=$_id_t
-    [ "$DROPOUT_AFTER" -gt "$_id_p" ] && _id_p=$DROPOUT_AFTER
-    _id_d=$((NOW - _id_l))
-    if [ "$_id_d" -gt "$_id_t" ]; then
-      dur_v _id_x "$_id_d"
-      _id_r="$3без wait $_id_x"
-      if [ "$_id_d" -gt "$_id_p" ] && [ $((NOW - ST_SEEN)) -gt "$_id_p" ] && [ ! -e "$RUN/stopped" ] && [ ! -e "$RUN/stopped.$2" ]; then
-        _id_r="$_id_r${3}возможно выпал"
-      fi
+  idle_calc "$2"
+  if [ "$ID_D" -gt "$ID_T" ]; then
+    dur_v _id_x "$ID_D"
+    _id_r="$3без wait $_id_x"
+    if [ "$ID_D" -gt "$ID_P" ] && [ $((NOW - ST_SEEN)) -gt "$ID_P" ] && [ ! -e "$RUN/stopped" ] && [ ! -e "$RUN/stopped.$2" ]; then
+      _id_r="$_id_r${3}возможно выпал"
     fi
   fi
   eval "$1=\$_id_r"
@@ -961,7 +1012,7 @@ task_info_lines() {
   [ -s "$ACT_DIR/summary.md" ] && sum=" · итог: $RROOT/tasks/$ACT_NAME/summary.md"
   echo "Активная задача: $ACT_ID «$TK_TITLE» · host $TK_HOST · lead $TK_LEAD · твоя роль: $role"
   echo "  Постановка: $RROOT/tasks/$ACT_NAME/brief.md · план: $RROOT/tasks/$ACT_NAME/shared/plan.md$plan$sum"
-  echo "  История переписки задачи: $BRG read --as $1 --channel $ACT_ID --since 0"
+  echo "  История переписки задачи: $BRG read --as ${ASN:-$1} --channel $ACT_ID --since 0"
 }
 
 # ── channels ───────────────────────────────────────────────────────────────
@@ -1305,6 +1356,7 @@ check_to() {
     x=${rest%%,*}
     rest=${rest#*,}
     [ -n "$x" ] || continue
+    case $x in ?*.*) x=${x%%.*} ;; esac # a full name (base.key) names the same agent
     case ",$out," in *",$x,"*) continue ;; esac
     case $x in
       all) die "all нельзя смешивать с именами: $1" ;;
@@ -1430,7 +1482,7 @@ usage_line_v() { # VAR CMD
   local _ul_u
   case $2 in
     init) _ul_u="bash /путь/к/brigada/bin/brg init [каталог_проекта]" ;;
-    join) _ul_u="$BRG join --harness <claude|codex|opencode|…> --model <модель>  |  вернуться под старым именем: $BRG join --as <имя> --harness <тот же> [--model <модель>]" ;;
+    join) _ul_u="$BRG join --harness <claude|codex|opencode|…> --model <модель>  |  вернуться под старым именем (ключ будет новый): $BRG join --as <имя> --harness <тот же> [--model <модель>]" ;;
     leave) _ul_u="$BRG leave --as <имя>" ;;
     send) _ul_u="$BRG send --as <имя> [--to all|<имя>[,<имя>]|human] [--re N] [--reply-by 5m|90s|1h] [--channel lobby|T00N] [--file F] <<'BRG_EOF' … BRG_EOF" ;;
     wait) _ul_u="$BRG wait --as <имя> [--timeout S]" ;;
@@ -1456,7 +1508,7 @@ usage_print() {
   usage_line_v u "$1"
   printf 'Использование: %s\n' "$u"
   case $1 in
-    join) echo "Подключиться к бригаде: выдаёт имя (<харнесс>-<n>), кто онлайн, активную задачу, таймаут wait и NEXT. --as — вернуться под старым именем (тот же харнесс; курсоры сохраняются)." ;;
+    join) echo "Подключиться к бригаде: выдаёт полное имя <харнесс>-<n>.<ключ> (например, claude-1.k7f3q9) — его целиком передавай в --as каждой команды; кто онлайн, активную задачу, таймаут wait и NEXT. --as — вернуться под старым именем, если потерян ключ (тот же харнесс; курсоры сохраняются; ключ новый, прежний перестаёт работать); разрешено, только когда прежняя сессия «выпала» — ни wait, ни вызовов brg дольше max(таймаут wait + 60 с, dropout_after) — или asleep/gone, или после leave." ;;
     leave) echo "Отключиться (тихое системное сообщение в lobby). Живой wait агента завершится на ближайшем тике." ;;
     send) echo "Отправить сообщение (тело — stdin или --file; CRLF→LF; лимит msg_max_bytes). По умолчанию --to all, канал — активная задача (нет задачи — lobby). --reply-by: по сроку твой wait вернёт сводку, кто ответил." ;;
     wait) echo "Ждать сообщений (последнее действие каждого шага). Слушает lobby и активную задачу. Всегда код 0, последняя строка — NEXT (кроме STOP/SUPERSEDED)." ;;
@@ -1464,7 +1516,7 @@ usage_print() {
     who) echo "Кто подключён: имя · харнесс · модель · состояние · когда был активен; активная задача. «без wait N мин» — wait не идёт дольше таймаута wait + 60 с; «возможно выпал» — ни wait, ни вызовов brg дольше dropout_after (по умолчанию 5 мин): модель могла завершить ход — человеку: напиши агенту в его чат «продолжай»." ;;
     tail) echo "Переписка в читаемом виде: без канала — lobby и активная задача (следит за сменой задачи); -f — следить (Ctrl-C — выход)." ;;
     say) echo "Сообщение от human (по умолчанию всем, в канал активной задачи); снимает общий стоп и стоп названных агентов." ;;
-    status) echo "Кто я, задача и моя роль, непрочитанное (без сдвига курсора), мои дедлайны, жив ли мой wait, NEXT." ;;
+    status) echo "Кто я, задача и моя роль, непрочитанное (без сдвига курсора), мои дедлайны, жив ли мой wait, NEXT. С именем без ключа — только просмотр (не подтверждает, что ты этот агент)." ;;
     stop) echo "Остановить бригаду (или одного агента): wait возвращает STOP сразу и на ближайшем тике." ;;
     resume) echo "Снять стоп (весь или одного агента)." ;;
     init) echo "Создать/обновить <проект>/.brigada: bin/brg, README.md, PROTOCOL.md, config.default, VERSION; состояние и config не трогает." ;;
@@ -1497,6 +1549,8 @@ cmd_help() {
 brg $BRG_VERSION — транспорт бригады агентов. Из корня проекта: bash .brigada/bin/brg <команда> …
 
 Агентам:
+  <имя> — полное имя из своего join, с ключом (claude-1.k7f3q9); без ключа команды, меняющие
+  состояние, отказывают; команды чтения (read, status, who, task/item/run show|list) — принимают
   join --harness <h> --model <m>     подключиться, получить имя (--as <имя> — вернуться под старым)
   wait --as <имя> [--timeout S]      ждать сообщений — последнее действие каждого шага
   send --as <имя> [--to all|<имя>[,<имя>]|human] [--re N] [--reply-by 5m] [--channel C] [--file F]
@@ -1684,11 +1738,15 @@ norm_harness_v() { # VAR RAW
   eval "$1=\$_nh_h"
 }
 
-# join: a new agent (name <harness>-<n>) or, with --as, the same agent back after
-# it lost its context: same harness only; Left is lifted; cursors are kept.
-# Refused while that name has a live wait (someone is using it right now).
+# join: a new agent (name <harness>-<n>, printed with its session key: DESIGN §3)
+# or, with --as (bare or full name), the same agent back after it lost its context
+# or its key: same harness only; Left is lifted; cursors are kept; a new key — the
+# old one stops working. Refused while that name has a live wait, and while the
+# agent has not dropped out (silence — no wait, no brg call — longer than
+# max(wait timeout + 60 s, dropout_after), or asleep/gone/left): otherwise a session
+# that skipped join could take the name, with its roles, from a working agent.
 cmd_join() {
-  local raw_h= m= h n k f conflicts= T hint online s re= line prof was_left=
+  local raw_h= m= h n k f conflicts= T hint online s re= line prof was_left= key q
   NEXT_ON_ERR="$BRG join --harness <claude|codex|opencode|…> --model <модель>"
   while [ $# -gt 0 ]; do
     case $1 in
@@ -1708,6 +1766,8 @@ cmd_join() {
       *) usage_die "неизвестный параметр: $1" ;;
     esac
   done
+  # a full name is fine: the key is dropped (a new one is issued anyway)
+  [ -n "$re" ] && valid_name "$re" && re=${re%%.*}
   [ -z "$re" ] || NEXT_ON_ERR="$BRG join --as $re --harness <тот же харнесс> (или новое имя: $BRG join --harness <харнесс> --model <модель>)"
   [ -n "$raw_h" ] || usage_die "нужен --harness (claude, codex, opencode или короткое имя своего харнесса)"
   [ -n "$m" ] || [ -n "$re" ] || usage_die "нужна --model (если не знаешь — --model unknown)"
@@ -1750,23 +1810,42 @@ cmd_join() {
     wait_info "$re"
     if [ -n "$WI_ALIVE" ]; then
       lock_release roster
-      NEXT_ON_ERR="$BRG status --as $re — если это ты; иначе $BRG join --harness $h --model ${m:-<модель>}"
+      wait_timeout_v T "$P_HARNESS" "$P_PLATFORM"
+      idle_calc "$re"
+      NEXT_ON_ERR="если это твой wait — дождись его конца (обычно ≤ $T с) и повтори $BRG join --as $re --harness $h; иначе $BRG join --harness $h --model ${m:-<модель>}"
       die "имя $re занято: его wait сейчас работает (pid $WI_PID)" \
-        "Если это твой wait, оставшийся от прошлой сессии (например, ушёл в фон), — переподключаться не нужно: продолжай под этим именем ($BRG status --as $re, затем $BRG wait --as $re — старый wait завершится с SUPERSEDED)." \
+        "Если это твой wait и ты знаешь своё полное имя (с ключом; оно в последней строке NEXT:) — переподключаться не нужно, продолжай под ним. Если ключ потерян — дождись конца этого wait (обычно ≤ $T с) и повтори $BRG join --as $re --harness $h через $ID_P с после него." \
         "Если это другой агент — подключись под новым именем: $BRG join --harness $h --model ${m:-<модель>}"
+    fi
+    # Back only once the agent has dropped out (as "возможно выпал" in who) or is
+    # asleep/gone/left. The stop flag does not matter.
+    if [ -z "$P_LEFT" ]; then
+      agent_state "$re"
+      if [ "$ST" = working ]; then
+        idle_calc "$re"
+        q=$((NOW - ST_SEEN))
+        [ "$ID_D" -ge 0 ] && [ "$ID_D" -lt "$q" ] && q=$ID_D
+        if [ "$q" -le "$ID_P" ]; then
+          lock_release roster
+          NEXT_ON_ERR="$BRG join --harness $h --model ${m:-<модель>} (новое имя) — или, если $re это ты, продолжай под полным именем из последней строки NEXT:"
+          die "$re активен (последний вызов $q с назад)" \
+            "Если это ты и ключ потерян — он в последней строке NEXT: (имя вида $re.<ключ>); иначе подожди $((ID_P - q + 1)) с и повтори $BRG join --as $re --harness $h или подключись под новым именем: $BRG join --harness $h --model ${m:-<модель>}"
+        fi
+      fi
     fi
     [ -n "$m" ] || m=$P_MODEL
     was_left=$P_LEFT
     AGENT=$re
+    key_gen_v key
     prof=
     while IFS= read -r line || [ -n "$line" ]; do
       case $line in
         '') break ;;
-        Model:* | Platform:* | Left:* | Rejoined:*) ;;
+        Key:* | Model:* | Platform:* | Left:* | Rejoined:*) ;;
         *) prof=$prof$line$NL ;;
       esac
     done <"$ROOT/agents/$re"
-    prof="${prof}Model: $m${NL}Platform: $PLATFORM${NL}Rejoined: $ISO$NL"
+    prof="${prof}Model: $m${NL}Platform: $PLATFORM${NL}Rejoined: $ISO${NL}Key: $key$NL"
   else
     n=0
     for f in "$ROOT/agents/$h"-*; do
@@ -1776,9 +1855,11 @@ cmd_join() {
       is_uint "$k" && [ "$k" -gt "$n" ] && n=$k
     done
     AGENT=$h-$((n + 1))
-    printf -v prof 'Name: %s\nHarness: %s\nModel: %s\nPlatform: %s\nJoined: %s\nJoined-Epoch: %s\n' \
-      "$AGENT" "$h" "$m" "$PLATFORM" "$ISO" "$NOW"
+    key_gen_v key
+    printf -v prof 'Name: %s\nKey: %s\nHarness: %s\nModel: %s\nPlatform: %s\nJoined: %s\nJoined-Epoch: %s\n' \
+      "$AGENT" "$key" "$h" "$m" "$PLATFORM" "$ISO" "$NOW"
   fi
+  ASN=$AGENT.$key
   f=$ROOT/agents/.tmp.$AGENT.$$
   if ! printf '%s' "$prof" >"$f" || ! mv_retry "$f" "$ROOT/agents/$AGENT"; then
     rm -f "$f"
@@ -1803,7 +1884,7 @@ cmd_join() {
   fi
   # back after leave: tasks finished meanwhile are not drained to it
   [ -n "$was_left" ] && skip_finished_tasks
-  if [ -n "$re" ]; then BODY="$AGENT вернулся ($h, $m, $PLATFORM)"; else BODY="$AGENT подключился ($h, $m, $PLATFORM)"; fi
+  if [ -n "$re" ]; then BODY="$AGENT переподключён новой сессией ($h, $m, $PLATFORM); прежний ключ недействителен"; else BODY="$AGENT подключился ($h, $m, $PLATFORM)"; fi
   # Quiet for everyone but the host of the active task: it is the one to bring a
   # newcomer (or a returning agent) into the work.
   MSG_EXTRA=$QUIET
@@ -1818,9 +1899,9 @@ cmd_join() {
   online_v online "$AGENT"
   metric join harness="$h" model="${m// /_}" platform="$PLATFORM" rejoin="${re:+1}"
   if [ -n "$re" ]; then
-    echo "── переподключён: $AGENT ($h · $m · $PLATFORM). Имя прежнее (--as $AGENT); курсоры сохранены — непрочитанное придёт в wait."
+    echo "── переподключён: $ASN ($h · $m · $PLATFORM). Ключ новый, прежний недействителен. Твоё имя — целиком, с ключом после точки: передавай его в каждой команде (--as $ASN). Курсоры сохранены — непрочитанное придёт в wait."
   else
-    echo "── подключён: $AGENT ($h · $m · $PLATFORM). Запомни имя: оно нужно в каждой команде (--as $AGENT)."
+    echo "── подключён: $ASN ($h · $m · $PLATFORM). Твоё имя — целиком, с ключом после точки: передавай его в каждой команде (--as $ASN). Другие видят тебя как $AGENT, но без ключа команды, меняющие состояние, не примут."
   fi
   echo "Онлайн: ${online:-никого}"
   if active_task; then
@@ -1831,11 +1912,11 @@ cmd_join() {
   fi
   echo "Правила совместной работы: $RROOT/PROTOCOL.md — прочитай один раз сейчас."
   [ -e "$RUN/stopped.$AGENT" ] && echo "ВНИМАНИЕ: человек остановил $AGENT (stop) — wait вернёт STOP. Снять может только человек: $BRG resume $AGENT"
-  echo "Ожидание: $BRG wait --as $AGENT — возвращается при сообщениях или через $T с."
+  echo "Ожидание: $BRG wait --as $ASN — возвращается при сообщениях или через $T с."
   echo "Таймаут инструмента: $hint"
   win_note
   echo "Правило: последнее действие каждого шага — wait; никогда не завершай ход (кроме STOP)."
-  echo "── NEXT: $BRG wait --as $AGENT"
+  echo "── NEXT: $BRG wait --as $ASN"
 }
 
 # roles_note_v VAR NAME — "lead задачи T001" etc. for an agent holding a role ("" otherwise)
@@ -1866,7 +1947,7 @@ cmd_leave() {
     esac
   done
   need_root
-  need_agent
+  need_agent write
   get_now_iso
   lock_acquire roster
   f=$ROOT/agents/.tmp.$AGENT.$$
@@ -2000,8 +2081,8 @@ cmd_send() {
     esac
   done
   need_root
-  need_agent
-  NEXT_ON_ERR="исправь команду и повтори: $BRG send --as $AGENT [--to all|<имя>|human] <<'BRG_EOF' … BRG_EOF; закончив шаг — $BRG wait --as $AGENT"
+  need_agent write
+  NEXT_ON_ERR="исправь команду и повтори: $BRG send --as $ASN [--to all|<имя>|human] <<'BRG_EOF' … BRG_EOF; закончив шаг — $BRG wait --as $ASN"
   default_channel
   chan_writable "${c:-$DEFCHAN}"
   c=$CHAN_ID
@@ -2048,7 +2129,7 @@ cmd_send() {
     echo "Внимание: дедлайн не установлен — кроме тебя адресатов нет."
   fi
   [ -n "$TO_WARN" ] && echo "Внимание: $TO_WARN"
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $AGENT"
+  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
 }
 
 cmd_say() {
@@ -2151,8 +2232,8 @@ cmd_read() {
     esac
   done
   need_root
-  need_agent
-  NEXT_ON_ERR="$BRG read --as $AGENT [--channel C] [--since N] [--all]"
+  need_agent read
+  NEXT_ON_ERR="$BRG read --as $ASN [--channel C] [--since N] [--all]"
   [ -z "$since" ] || { is_uint "$since" && [ ${#since} -le 15 ]; } || usage_die "--since — номер сообщения: $since"
   if [ -n "$c" ]; then
     chan_dir d "$c" || die "нет канала: $c"
@@ -2192,11 +2273,11 @@ cmd_read() {
       force=0
     fi
     if [ "$FMT_REST" -gt 0 ]; then
-      echo "── ещё $FMT_REST в $x не показано (лимит вывода): $BRG read --as $AGENT --since $last --channel $x${all:+ --all}"
+      echo "── ещё $FMT_REST в $x не показано (лимит вывода): $BRG read --as $ASN --since $last --channel $x${all:+ --all}"
     fi
   done
   metric read channels="${chans// /,}" since="${since:-acked}"
-  echo "── NEXT: курсор не сдвинут; закончив шаг — $BRG wait --as $AGENT"
+  echo "── NEXT: курсор не сдвинут; закончив шаг — $BRG wait --as $ASN"
 }
 
 # tail: one channel, or (default) lobby + the active task, each header prefixed
@@ -2324,7 +2405,7 @@ cmd_who() {
   need_root
   get_now
   if [ -n "${OPT_AS:-}" ]; then
-    need_agent
+    need_agent read
     touch_seen
   fi
   # items in work per agent: " name name name " (one word per claimed item)
@@ -2411,18 +2492,26 @@ cmd_status() {
     esac
   done
   need_root
-  need_agent
+  need_agent read
   get_now
   touch_seen
   detect_platform
   wait_timeout_v T "$A_HARNESS" "$A_PLATFORM"
   harness_hint_v hint "$A_HARNESS" "$T" "$A_PLATFORM"
   echo "── status: $AGENT · $A_HARNESS · $A_MODEL · платформа $A_PLATFORM (сейчас $PLATFORM)"
+  [ -z "$AS_NOKEY" ] || echo "Имя без ключа — только просмотр, это не подтверждение личности. Твоё имя — только из вывода твоего join в этом чате (полное, с ключом после точки: $AGENT.<ключ>)."
   [ "$A_PLATFORM" = "$PLATFORM" ] || echo "ВНИМАНИЕ: платформа не совпадает с записанной при join."
   echo "Таймаут wait: $T с. Таймаут инструмента: $hint"
   win_note
   agent_state "$AGENT"
-  if [ -n "$WI_ALIVE" ]; then
+  if [ -n "$AS_NOKEY" ]; then
+    if [ -n "$WI_ALIVE" ]; then
+      echo "wait агента $AGENT работает (pid $WI_PID). Если ты не делал join в этом чате — ты не $AGENT: сделай join."
+    else
+      idle_note_v idle "$AGENT" " · "
+      echo "wait агента $AGENT: не запущен$idle"
+    fi
+  elif [ -n "$WI_ALIVE" ]; then
     echo "Мой wait: работает (pid $WI_PID) — второй не запускай, дождись его вывода."
   else
     idle_note_v idle "$AGENT" " · "
@@ -2447,7 +2536,7 @@ cmd_status() {
     new=$FMT_TOTAL
     q=$((FMT_TOTAL - FMT_WAKE))
     pend_from=
-    [ "$CUR_PEND" -gt "$CUR_ACK" ] && pend_from=" · выдано последним wait и ждёт подтверждения: #$((CUR_ACK + 1))…#$CUR_PEND (повторить: $BRG read --as $AGENT)"
+    [ "$CUR_PEND" -gt "$CUR_ACK" ] && pend_from=" · выдано последним wait и ждёт подтверждения: #$((CUR_ACK + 1))…#$CUR_PEND (повторить: $BRG read --as $ASN)"
     [ "$q" -gt 0 ] && new="$new (из них тихих $q — придут с ближайшей будящей пачкой)"
     echo "$c$nt: новых для тебя $new$pend_from"
   done
@@ -2456,10 +2545,12 @@ cmd_status() {
   online_v online "$AGENT"
   echo "Онлайн: ${online:-никого}"
   metric status
-  if [ -e "$RUN/stopped" ] || [ -e "$RUN/stopped.$AGENT" ]; then
+  if [ -n "$AS_NOKEY" ]; then
+    echo "── NEXT: если ты не делал join в этом чате — $BRG join --harness <харнесс> --model <модель>; иначе продолжай под полным именем из своего join"
+  elif [ -e "$RUN/stopped" ] || [ -e "$RUN/stopped.$AGENT" ]; then
     echo "── STOP: человек остановил ${AGENT}/бригаду. Заверши ход."
   else
-    echo "── NEXT: $BRG wait --as $AGENT"
+    echo "── NEXT: $BRG wait --as $ASN"
   fi
 }
 
@@ -2477,7 +2568,7 @@ cmd_stop() {
       -*) usage_die "неизвестный параметр: $1" ;;
       *)
         [ -z "$name" ] || usage_die "лишний аргумент: $1"
-        name=$1
+        case $1 in ?*.*) name=${1%%.*} ;; *) name=$1 ;; esac # the key, if any, is dropped
         shift
         ;;
     esac
@@ -2508,7 +2599,7 @@ cmd_resume() {
       -*) usage_die "неизвестный параметр: $1" ;;
       *)
         [ -z "$name" ] || usage_die "лишний аргумент: $1"
-        name=$1
+        case $1 in ?*.*) name=${1%%.*} ;; *) name=$1 ;; esac # the key, if any, is dropped
         shift
         ;;
     esac
@@ -3296,8 +3387,8 @@ task_new() {
     esac
   done
   need_root
-  need_agent
-  NEXT_ON_ERR="исправь команду и повтори: $BRG task new --as $AGENT --title \"…\" <<'BRG_EOF' (постановка человека дословно) BRG_EOF; закончив шаг — $BRG wait --as $AGENT"
+  need_agent write
+  NEXT_ON_ERR="исправь команду и повтори: $BRG task new --as $ASN --title \"…\" <<'BRG_EOF' (постановка человека дословно) BRG_EOF; закончив шаг — $BRG wait --as $ASN"
   title=${title//[[:cntrl:]]/ }
   while :; do
     case $title in ' '*) title=${title# } ;; *' ') title=${title% } ;; *) break ;; esac
@@ -3355,7 +3446,7 @@ task_new() {
   echo "Как работать — решаете сообща; проверенный порядок (PROTOCOL.md, не обязателен): перекличка с --reply-by 10m (каждый один раз ответит: модель, сильные стороны, загрузка), затем план в shared/plan.md."
   echo "Человек читает твой чат, а не переписку brg: отчёты и вопросы ему пиши обычным текстом в своём чате перед очередным wait (копия для протокола — send --to human)."
   fit_warn_print
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $AGENT"
+  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
 }
 
 task_close() {
@@ -3380,14 +3471,14 @@ task_close() {
     esac
   done
   need_root
-  need_agent
-  NEXT_ON_ERR="исправь и повтори $BRG task close --as $AGENT; закончив шаг — $BRG wait --as $AGENT"
+  need_agent write
+  NEXT_ON_ERR="исправь и повтори $BRG task close --as $ASN; закончив шаг — $BRG wait --as $ASN"
   get_now_iso
   lock_acquire task
   active_task && task_read "$ACT_DIR" || die "нет активной задачи" "Все задачи: $BRG task list"
   if [ "$TK_LEAD" != "$AGENT" ]; then
     die "закрыть задачу $ACT_ID может только lead ($TK_LEAD)" \
-      "Если $TK_LEAD asleep/gone — сначала возьми роль: $BRG lead take --as $AGENT; иначе напиши ему: $BRG send --as $AGENT --to $TK_LEAD"
+      "Если $TK_LEAD asleep/gone — сначала возьми роль: $BRG lead take --as $ASN; иначе напиши ему: $BRG send --as $ASN --to $TK_LEAD"
   fi
   if ! summary_line_v sum "$ACT_DIR/summary.md"; then
     die "нет итога: $RROOT/tasks/$ACT_NAME/summary.md пуст или не создан" \
@@ -3396,14 +3487,14 @@ task_close() {
   task_claimed_v c "$ACT_DIR"
   if [ -n "$c" ] && [ -z "$force" ]; then
     die "подзадачи ещё в работе (claimed): $c" \
-      "Дождись их завершения или закрой принудительно (claimed → cancelled): $BRG task close --as $AGENT --force"
+      "Дождись их завершения или закрой принудительно (claimed → cancelled): $BRG task close --as $ASN --force"
   fi
   t=$NOW
   x=$ISO
   task_runs_v r "$ACT_DIR"
   if [ -n "$r" ] && [ -z "$force" ]; then
     die "прогоны задачи ещё идут: $TR_DESC" \
-      "Дождись результатов (придут инициаторам сообщением; список: $BRG run list) или закрой принудительно — прогоны будут остановлены: $BRG task close --as $AGENT --force"
+      "Дождись результатов (придут инициаторам сообщением; список: $BRG run list) или закрой принудительно — прогоны будут остановлены: $BRG task close --as $ASN --force"
   fi
   [ -n "$c" ] && task_cancel_items "$ACT_DIR"
   [ -n "$r" ] && task_stop_runs "$ACT_DIR" "$AGENT" "при закрытии задачи $ACT_ID (--force)" "$r"
@@ -3426,7 +3517,7 @@ task_close() {
     runs_await "$ACT_DIR" "$r"
     echo "$RA_TEXT"
   fi
-  echo "── NEXT: $BRG wait --as $AGENT"
+  echo "── NEXT: $BRG wait --as $ASN"
 }
 
 # task cancel: host, lead or the human (--as human: explicit, so an agent that
@@ -3452,15 +3543,15 @@ task_cancel() {
     AGENT=human
     NEXT_ON_ERR=
   else
-    need_agent
-    NEXT_ON_ERR="$BRG wait --as $AGENT"
+    need_agent write
+    NEXT_ON_ERR="$BRG wait --as $ASN"
   fi
   get_now_iso
   lock_acquire task
   active_task && task_read "$ACT_DIR" || die "нет активной задачи" "Все задачи: $BRG task list"
   if [ "$AGENT" != human ] && [ "$AGENT" != "$TK_HOST" ] && [ "$AGENT" != "$TK_LEAD" ]; then
     die "отменить задачу $ACT_ID может host ($TK_HOST), lead ($TK_LEAD) или человек" \
-      "Предложи отмену host: $BRG send --as $AGENT --to $TK_HOST"
+      "Предложи отмену host: $BRG send --as $ASN --to $TK_HOST"
   fi
   task_do_cancel "$AGENT"
   lock_release task
@@ -3470,7 +3561,7 @@ task_cancel() {
     runs_await "$TD_DIR" "$TD_RUNS"
     echo "$RA_TEXT"
   fi
-  [ "$AGENT" = human ] || echo "── NEXT: $BRG wait --as $AGENT"
+  [ "$AGENT" = human ] || echo "── NEXT: $BRG wait --as $ASN"
   return 0
 }
 
@@ -3498,7 +3589,7 @@ task_show() {
   need_root
   get_now
   if [ -n "$OPT_AS" ]; then
-    need_agent
+    need_agent read
     touch_seen
   fi
   if [ -n "$id" ]; then
@@ -3525,7 +3616,7 @@ task_show() {
   else
     echo "Итог: нет (summary.md)"
   fi
-  echo "Переписка: $BRG read --as ${AGENT:-<имя>} --channel $TK_ID --since 0"
+  echo "Переписка: $BRG read --as ${ASN:-<имя>} --channel $TK_ID --since 0"
   echo "── brief.md ($RROOT/tasks/$name/brief.md) ──"
   brief=$(cat "$d/brief.md" 2>/dev/null)
   if [ ${#brief} -gt "$OUTMAX" ]; then
@@ -3537,7 +3628,7 @@ task_show() {
     echo "── конец постановки"
   fi
   metric task.show id="$TK_ID"
-  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $AGENT"
+  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
   return 0
 }
 
@@ -3597,22 +3688,22 @@ cmd_role() {
       -*) usage_die "неизвестный параметр: $1" ;;
       *)
         [ "$sub" = give ] && [ -z "$target" ] || usage_die "лишний аргумент: $1"
-        target=$1
+        case $1 in ?*.*) target=${1%%.*} ;; *) target=$1 ;; esac # the key, if any, is dropped
         shift
         ;;
     esac
   done
   [ "$sub" = take ] || [ -n "$target" ] || usage_die "кому передать: $role give <имя>"
   need_root
-  need_agent
-  NEXT_ON_ERR="$BRG wait --as $AGENT"
+  need_agent write
+  NEXT_ON_ERR="$BRG wait --as $ASN"
   get_now_iso
   lock_acquire task
   active_task && task_read "$ACT_DIR" || die "нет активной задачи — роли бывают только у неё"
   if [ "$role" = lead ]; then cur=$TK_LEAD; else cur=$TK_HOST; fi
   if [ "$sub" = give ]; then
     [ "$cur" = "$AGENT" ] || die "передать $role может только текущий $role ($cur)" \
-      "Если $cur asleep/gone — возьми роль: $BRG $role take --as $AGENT; иначе договорись с ним: $BRG send --as $AGENT --to $cur"
+      "Если $cur asleep/gone — возьми роль: $BRG $role take --as $ASN; иначе договорись с ним: $BRG send --as $ASN --to $cur"
     valid_name "$target" && [ -f "$ROOT/agents/$target" ] || die "нет такого агента: $target" "Кто подключён: $BRG who"
     [ "$target" != "$AGENT" ] || die "ты уже $role задачи $ACT_ID"
     agent_state "$target"
@@ -3624,7 +3715,7 @@ cmd_role() {
     if [ "$cur" = "$AGENT" ]; then
       lock_release task
       echo "── ты уже $role задачи $ACT_ID"
-      echo "── NEXT: $BRG wait --as $AGENT"
+      echo "── NEXT: $BRG wait --as $ASN"
       return 0
     fi
     ST=gone
@@ -3633,7 +3724,7 @@ cmd_role() {
       asleep | gone) ;;
       *)
         die "$role $cur активен ($ST) — взять роль можно, только если он asleep или gone" \
-          "Договорись с ним: $BRG send --as $AGENT --to $cur; передать роль может он сам: $BRG $role give $AGENT --as $cur"
+          "Договорись с ним: $BRG send --as $ASN --to $cur; передать роль может он сам: $BRG $role give $AGENT --as <его полное имя>"
         ;;
     esac
     new=$AGENT
@@ -3655,7 +3746,7 @@ cmd_role() {
       echo "Теперь ты host: только ты сам пишешь человеку — ход работы, вопросы, итог: обычным текстом в своём чате перед очередным wait (копия для протокола — send --to human)."
     fi
   fi
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $AGENT"
+  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
 }
 
 # ── items: subtasks and path reservations (DESIGN §7) ─────────────────────
@@ -4037,8 +4128,8 @@ model_key_v() {
 # the task lock, the active task (TK_*, ACT_*).
 item_begin() {
   need_root
-  need_agent
-  NEXT_ON_ERR="исправь команду и повтори (справка: $BRG item --help); закончив шаг — $BRG wait --as $AGENT"
+  need_agent write
+  NEXT_ON_ERR="исправь команду и повтори (справка: $BRG item --help); закончив шаг — $BRG wait --as $ASN"
   get_now_iso
   lock_acquire task
   active_task && task_read "$ACT_DIR" ||
@@ -4157,8 +4248,8 @@ item_add() {
     paths_show_v hshown "$hint"
   fi
   need_root
-  need_agent
-  NEXT_ON_ERR="исправь команду и повтори: $BRG item add --as $AGENT --title \"…\" --desc \"что сделать, критерий готовности\" [--paths \"предлагаемые пути\"] (длинное — heredoc <<'BRG_EOF' или --file); закончив шаг — $BRG wait --as $AGENT"
+  need_agent write
+  NEXT_ON_ERR="исправь команду и повтори: $BRG item add --as $ASN --title \"…\" --desc \"что сделать, критерий готовности\" [--paths \"предлагаемые пути\"] (длинное — heredoc <<'BRG_EOF' или --file); закончив шаг — $BRG wait --as $ASN"
   item_body --desc
   IT_BODY=$BODY
   item_begin
@@ -4189,7 +4280,7 @@ item_add() {
     echo "Уведомление тихое: участники увидят его вместе со следующими сообщениями. Раздав подзадачи, напиши им одно сообщение."
   fi
   fit_warn_print
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $AGENT"
+  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
 }
 
 item_claim() {
@@ -4221,7 +4312,7 @@ item_claim() {
     [ -n "$hinted" ] && x="$x (предлагаемые пути заняты — укажи свои: --paths …)"
     die "пути пересекаются с чужими резервированиями — $IT_ID $x" \
       "Конфликты (твой путь ↔ занятый):" "$RC_LINES" \
-      "Что делать: сузь --paths, возьми другую подзадачу или договорись с держателем ($BRG send --as $AGENT --to <имя>) или с lead; держатель asleep/gone — lead может $BRG item reassign."
+      "Что делать: сузь --paths, возьми другую подзадачу или договорись с держателем ($BRG send --as $ASN --to <имя>) или с lead; держатель asleep/gone — lead может $BRG item reassign."
   fi
   paths_show_v old "${IT_PATHS:-none}"
   res_write "$ACT_DIR" "$IT_ID" "$AGENT" "$PP_LIST"
@@ -4248,9 +4339,9 @@ item_claim() {
   else
     echo "── $IT_ID «$IT_TITLE» — твоя. Резервирование: $shown."
   fi
-  [ "$PP_LIST" = none ] || echo "Правь только эти пути; нужен ещё путь — повтори claim с полным списком. Тесты и сборку запускай через $BRG run --as $AGENT --item $IT_ID -- <команда>."
-  echo "Описание: $BRG item show $IT_ID. Готово — $BRG item done $IT_ID --as $AGENT --note \"что сделано, как проверено\"; бросаешь — item release."
-  echo "── NEXT: работай над $IT_ID; закончив шаг — $BRG wait --as $AGENT"
+  [ "$PP_LIST" = none ] || echo "Правь только эти пути; нужен ещё путь — повтори claim с полным списком. Тесты и сборку запускай через $BRG run --as $ASN --item $IT_ID -- <команда>."
+  echo "Описание: $BRG item show $IT_ID. Готово — $BRG item done $IT_ID --as $ASN --note \"что сделано, как проверено\"; бросаешь — item release."
+  echo "── NEXT: работай над $IT_ID; закончив шаг — $BRG wait --as $ASN"
 }
 
 item_done() {
@@ -4281,7 +4372,7 @@ item_done() {
   [ "$TK_LEAD" != "$AGENT" ] && echo "Lead $TK_LEAD получил уведомление."
   [ -n "$note$res" ] || echo "Итог не указан: если не очевиден — коротко напиши lead'у, что сделано и как проверено."
   fit_warn_print
-  echo "── NEXT: возьми следующую подзадачу ($BRG item list --status todo) или $BRG wait --as $AGENT"
+  echo "── NEXT: возьми следующую подзадачу ($BRG item list --status todo) или $BRG wait --as $ASN"
 }
 
 item_release() {
@@ -4297,7 +4388,7 @@ item_release() {
     case $ST in
       asleep | gone) by=" (lead; $IT_ASSIGNEE — $ST)" ;;
       *) die "исполнитель $IT_ASSIGNEE активен ($ST) — lead возвращает подзадачу, только если исполнитель asleep или gone" \
-        "Договорись с ним: $BRG send --as $AGENT --to $IT_ASSIGNEE" ;;
+        "Договорись с ним: $BRG send --as $ASN --to $IT_ASSIGNEE" ;;
     esac
   fi
   paths_show_v shown "$IT_PATHS"
@@ -4310,17 +4401,18 @@ item_release() {
   touch_seen
   metric item.release task="$ACT_ID" id="$IT_ID"
   echo "── $IT_ID «$IT_TITLE» снова todo, резервирование снято."
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $AGENT"
+  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
 }
 
 item_reassign() {
   local cur shown warn=
   item_opts "id to" "$@"
   [ -n "$IO_TO" ] || usage_die "кому: item reassign I00N --to <имя> --as <lead>"
+  case $IO_TO in ?*.*) IO_TO=${IO_TO%%.*} ;; esac # the key, if any, is dropped
   item_begin
   item_load "$IO_ID"
   [ "$TK_LEAD" = "$AGENT" ] || die "переназначать подзадачи может только lead ($TK_LEAD)" \
-    "Если lead asleep/gone — возьми роль: $BRG lead take --as $AGENT"
+    "Если lead asleep/gone — возьми роль: $BRG lead take --as $ASN"
   [ "$IT_STATUS" = claimed ] || die "$IT_ID — $IT_STATUS, а не в работе: исполнитель берёт её сам ($BRG item claim $IT_ID --as <имя> --paths …)"
   valid_name "$IO_TO" && [ -f "$ROOT/agents/$IO_TO" ] || die "нет такого агента: $IO_TO" "Кто подключён: $BRG who"
   cur=$IT_ASSIGNEE
@@ -4333,7 +4425,7 @@ item_reassign() {
   case $ST in
     asleep | gone) ;;
     *) die "исполнитель $cur активен ($ST) — переназначить можно, только если он asleep или gone" \
-      "Договорись с ним: $BRG send --as $AGENT --to $cur; отдать подзадачу он может сам: $BRG item release $IT_ID --as $cur" ;;
+      "Договорись с ним: $BRG send --as $ASN --to $cur; отдать подзадачу он может сам: $BRG item release $IT_ID --as <его полное имя>" ;;
   esac
   res_conflicts "$ACT_DIR" "${IT_PATHS:-none}" "$IO_TO" "$IT_ID"
   if [ -n "$RC_LINES" ]; then
@@ -4352,7 +4444,7 @@ item_reassign() {
   metric item.reassign task="$ACT_ID" id="$IT_ID" from="$cur" to="$IO_TO"
   echo "── $IT_ID «$IT_TITLE»: $cur → $IO_TO; резервирование ($shown) перешло к $IO_TO. Ему отправлено будящее сообщение."
   [ -n "$warn" ] && echo "$warn"
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $AGENT"
+  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
 }
 
 item_review() {
@@ -4364,8 +4456,8 @@ item_review() {
     *) usage_die "--verdict — ok или changes: $IO_VERDICT" ;;
   esac
   need_root
-  need_agent
-  NEXT_ON_ERR="исправь команду и повтори: $BRG item review I00N --as $AGENT --verdict ok|changes --comment \"…\" (длинное — heredoc <<'BRG_EOF' или --file); закончив шаг — $BRG wait --as $AGENT"
+  need_agent write
+  NEXT_ON_ERR="исправь команду и повтори: $BRG item review I00N --as $ASN --verdict ok|changes --comment \"…\" (длинное — heredoc <<'BRG_EOF' или --file); закончив шаг — $BRG wait --as $ASN"
   item_body --comment
   body=$BODY
   item_begin
@@ -4375,7 +4467,7 @@ item_review() {
     *) die "$IT_ID — $IT_STATUS: ревьюить нечего (ревью — для подзадач в работе или готовых)" ;;
   esac
   [ "$IT_ASSIGNEE" != "$AGENT" ] || die "$IT_ID делал ты — своё ревью не засчитывается" \
-    "Попроси ревью другого агента, лучше другой модели: $BRG send --as $AGENT --to <имя>"
+    "Попроси ревью другого агента, лучше другой модели: $BRG send --as $ASN --to <имя>"
   # same model as the assignee while another model is online: a warning, not a refusal
   profile_read "$ROOT/agents/$IT_ASSIGNEE"
   amodel=$P_MODEL
@@ -4420,7 +4512,7 @@ item_review() {
   echo "── ревью #$n по $IT_ID записано ($v); сообщение отправлено: ${to//,/, }."
   [ -n "$warn" ] && echo "$warn"
   fit_warn_print
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $AGENT"
+  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
 }
 
 item_list() {
@@ -4430,7 +4522,7 @@ item_list() {
   need_root
   get_now
   if [ -n "${OPT_AS:-}" ] || [ -n "$IO_MINE" ]; then
-    need_agent
+    need_agent read
     touch_seen
   fi
   rest=${IO_STATUS//[[:space:]]/},
@@ -4474,7 +4566,7 @@ BRG_IL_EOF
   [ "$cnt" -gt 0 ] || echo "── подзадач${IO_MINE:+ твоих}${IO_STATUS:+ со статусом $IO_STATUS} нет"
   echo "── $ACT_ID: todo $ct · в работе $cc · готово $cd · отменено $cx"
   metric item.list task="$ACT_ID"
-  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $AGENT"
+  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
   return 0
 }
 
@@ -4484,7 +4576,7 @@ item_show() {
   need_root
   get_now
   if [ -n "${OPT_AS:-}" ]; then
-    need_agent
+    need_agent read
     touch_seen
   fi
   active_task && task_read "$ACT_DIR" || die "нет активной задачи — подзадач нет" "Все задачи: $BRG task list"
@@ -4529,7 +4621,7 @@ item_show() {
     printf '%s\n' "$r"
   done
   metric item.show task="$ACT_ID" id="$IT_ID"
-  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $AGENT"
+  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
   return 0
 }
 
@@ -4991,8 +5083,8 @@ cmd_run() {
   done
   [ $# -gt 0 ] || usage_die "нужна команда: $BRG run --as <имя> -- <команда> [аргументы…]"
   need_root
-  need_agent
-  NEXT_ON_ERR="исправь команду и повтори: $BRG run --as $AGENT -- <команда>; закончив шаг — $BRG wait --as $AGENT"
+  need_agent write
+  NEXT_ON_ERR="исправь команду и повтори: $BRG run --as $ASN -- <команда>; закончив шаг — $BRG wait --as $ASN"
   # under the task lock: a run is not created in a task being closed (close refuses
   # while the task has runs in progress, cancel stops them)
   lock_acquire task
@@ -5087,8 +5179,8 @@ cmd_run() {
   if [ -z "$sync" ]; then
     echo "── $rid $pos."
     echo "Команда: $disp · лимит $x · лог: $RROOT/tasks/$ACT_NAME/shared/runs/$rid.log"
-    echo "Результат (статус, код, хвост лога) придёт тебе сообщением в wait — не опрашивай статус. Отменить: $BRG run cancel $rid --as $AGENT"
-    echo "── NEXT: продолжай другую работу; закончив шаг — $BRG wait --as $AGENT"
+    echo "Результат (статус, код, хвост лога) придёт тебе сообщением в wait — не опрашивай статус. Отменить: $BRG run cancel $rid --as $ASN"
+    echo "── NEXT: продолжай другую работу; закончив шаг — $BRG wait --as $ASN"
     return 0
   fi
   # --sync: wait here (queue included) within the wait timeout of the harness
@@ -5110,7 +5202,7 @@ cmd_run() {
     rm -f "$hf.sync"
     run_read "$hf"
     echo "── $rid не завершился за $T с (сейчас: $RN_STATUS) — результат придёт тебе сообщением в wait."
-    echo "── NEXT: продолжай другую работу; закончив шаг — $BRG wait --as $AGENT"
+    echo "── NEXT: продолжай другую работу; закончив шаг — $BRG wait --as $ASN"
     return 0
   fi
   get_now
@@ -5121,7 +5213,7 @@ cmd_run() {
   echo "Лог целиком: $RROOT/tasks/$ACT_NAME/shared/runs/$rid.log"
   dl_claim "$hf.notified" || echo "(результат также отправлен тебе сообщением)"
   rm -f "$hf.sync"
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $AGENT"
+  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
   rc=1
   case $RN_STATUS in done | failed) is_uint "$RN_EXIT" && rc=$RN_EXIT ;; esac
   [ "$rc" -le 255 ] || rc=1
@@ -5359,7 +5451,7 @@ run_list() {
   need_root
   get_now
   if [ -n "${OPT_AS:-}" ]; then
-    need_agent
+    need_agent read
     touch_seen
   fi
   # the task's runs first: a runner found dead is settled (killed) before the summary
@@ -5394,7 +5486,7 @@ run_list() {
     fi
   fi
   metric run.list
-  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $AGENT"
+  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
   return 0
 }
 
@@ -5406,7 +5498,7 @@ run_show() {
   need_root
   get_now
   if [ -n "${OPT_AS:-}" ]; then
-    need_agent
+    need_agent read
     touch_seen
   fi
   run_file_v hf "$id" || die "нет прогона $id" "Список: $BRG run list"
@@ -5432,7 +5524,7 @@ run_show() {
   if [ -n "$x" ]; then printf '%s\n' "$x"; else echo "  (пуст)"; fi
   echo "Лог целиком: $RROOT/tasks/${hf#"$ROOT"/tasks/}.log"
   metric run.show id="$RN_ID"
-  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $AGENT"
+  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
   return 0
 }
 
@@ -5472,15 +5564,15 @@ run_cancel() {
   [ -n "$RO_ID" ] || usage_die "какой прогон: run cancel R00N --as <имя>"
   run_norm_id_v id "$RO_ID" || usage_die "номер прогона вида R001: $RO_ID"
   need_root
-  need_agent
-  NEXT_ON_ERR="$BRG wait --as $AGENT"
+  need_agent write
+  NEXT_ON_ERR="$BRG wait --as $ASN"
   get_now_iso
   run_file_v hf "$id" || die "нет прогона $id" "Список: $BRG run list"
   run_read "$hf" || die "не удалось прочитать $hf"
   active_task && task_read "$ACT_DIR" && lead=$TK_LEAD
   if [ "$AGENT" != "$RN_AGENT" ] && [ "$AGENT" != "$lead" ]; then
     die "отменить $id может только его инициатор ($RN_AGENT) или lead (${lead:-нет активной задачи})" \
-      "Напиши инициатору: $BRG send --as $AGENT --to $RN_AGENT"
+      "Напиши инициатору: $BRG send --as $ASN --to $RN_AGENT"
   fi
   run_is_final "$RN_STATUS" && die "$id уже завершён: $RN_STATUS${RN_EXIT:+ (код $RN_EXIT)}" "Подробно: $BRG run show $id"
   printf '%s\n' "$AGENT" >"$hf.cancel"
@@ -5514,7 +5606,7 @@ run_cancel() {
   else
     echo "── отмена $id запрошена (сейчас: $RN_STATUS) — раннер остановит команду в ближайшие секунды."
   fi
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $AGENT"
+  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
 }
 
 # my_runs_lines — AGENT's runs in the queue or running (for status); a run whose
@@ -5797,7 +5889,7 @@ w_deliver() {
         plural_new_v pl "$FMT_SHOWN"
         out="$out── ${CH_LIST[i]}${CH_NOTE[i]} · $FMT_SHOWN $pl ─────────────────────────────$NL$FMT_TEXT"
         if [ "$FMT_REST" -gt 0 ]; then
-          out="$out── ещё $FMT_REST в ${CH_LIST[i]} не вошло (лимит вывода): придут следующим wait сразу; посмотреть: $BRG read --as $AGENT --since $FMT_LAST --channel ${CH_LIST[i]}$NL"
+          out="$out── ещё $FMT_REST в ${CH_LIST[i]} не вошло (лимит вывода): придут следующим wait сразу; посмотреть: $BRG read --as $ASN --since $FMT_LAST --channel ${CH_LIST[i]}$NL"
           CH_SHOW[i]=$FMT_LAST
         else
           CH_SHOW[i]=$SCAN_MAX
@@ -5866,9 +5958,9 @@ cmd_wait() {
   done
   [ -z "$opt_t" ] || { is_uint "$opt_t" && [ ${#opt_t} -le 9 ]; } || usage_die "--timeout — целое число секунд: $opt_t"
   need_root
-  need_agent
+  need_agent write
   if [ -n "$opt_t" ]; then T=$opt_t; else wait_timeout_v T "$A_HARNESS" "$A_PLATFORM"; fi
-  NEXT_WAIT="$BRG wait --as $AGENT"
+  NEXT_WAIT="$BRG wait --as $ASN"
   [ -n "$opt_t" ] && NEXT_WAIT="$NEXT_WAIT --timeout $opt_t"
   NEXT_ON_ERR=$NEXT_WAIT
   SELF=$$

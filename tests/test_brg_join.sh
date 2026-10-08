@@ -3,15 +3,17 @@
 . "$TESTS_DIR/brg_lib.sh"
 
 test_join_output_roster_and_system_message() {
-  local out a
+  local out a k
   new_proj
   out=$(brg join --harness Claude-Code --model "opus 4")
   assert_eq 0 "$?" "exit code"
-  assert_contains "$out" "── подключён: claude-1 (claude · opus 4 · "
+  k=$(hdr "$B/agents/claude-1" Key)
+  case $k in [a-z2-9][a-z2-9][a-z2-9][a-z2-9][a-z2-9][a-z2-9]) ;; *) fail "bad key: [$k]" ;; esac
+  assert_contains "$out" "── подключён: claude-1.$k (claude · opus 4 · "
   assert_contains "$out" "Онлайн: никого"
   assert_contains "$out" "через 3 с"
   assert_contains "$out" "timeout: 63000 (мс)"
-  assert_eq "── NEXT: bash $BRG wait --as claude-1" "$(printf '%s\n' "$out" | tail -n 1)"
+  assert_eq "── NEXT: bash $BRG wait --as claude-1.$k" "$(printf '%s\n' "$out" | tail -n 1)"
   assert_eq claude "$(hdr "$B/agents/claude-1" Harness)"
   assert_eq "opus 4" "$(hdr "$B/agents/claude-1" Model)"
   [ -n "$(hdr "$B/agents/claude-1" Platform)" ] || fail "no platform"
@@ -23,15 +25,16 @@ test_join_output_roster_and_system_message() {
   assert_eq claude-1 "$(hdr "$(msg_file 1)" From)"
   assert_contains "$(cat "$(msg_file 1)")" "claude-1 подключился (claude, opus 4, "
   out=$(brg join --harness OpenCode --model x)
-  assert_contains "$out" "── подключён: opencode-1 "
+  assert_contains "$out" "── подключён: opencode-1.$(hdr "$B/agents/opencode-1" Key) "
   assert_contains "$out" "Онлайн: claude-1 (claude, opus 4, working)"
   assert_contains "$out" "OpenCode: в инструменте shell/bash передавай timeout: 63000"
   assert_eq "1/1" "$(cursor opencode-1)"
-  assert_contains "$(brg join --harness codex-cli --model y)" "── подключён: codex-1 "
-  assert_contains "$(brg join --harness 'Gemini CLI' --model z)" "── подключён: geminicli-1 "
-  assert_eq claude-2 "$(join_as claude)"
+  assert_contains "$(brg join --harness codex-cli --model y)" "── подключён: codex-1."
+  assert_contains "$(brg join --harness 'Gemini CLI' --model z)" "── подключён: geminicli-1."
+  a=$(join_as claude)
+  assert_eq claude-2 "$(base_of "$a")"
   # the newcomer does not get its own announcement or the history
-  a=$(brg wait --as claude-2 --timeout 0)
+  a=$(brg wait --as "$a" --timeout 0)
   assert_contains "$a" "── нет новых (0 с)"
 }
 
@@ -60,7 +63,7 @@ test_join_parallel_names_are_unique() {
     i=$((i + 1))
   done
   wait
-  names=$(cat "$P"/name.* | sort)
+  names=$(cat "$P"/name.* | sed 's/\..*//' | sort)
   assert_eq "$(printf 'claude-%s\n' 1 10 2 3 4 5 6 7 8 9)" "$names" "names"
   assert_eq 10 "$(ls "$B/agents" | wc -l | tr -d ' ')" "roster size"
   assert_eq 10 "$(cat "$B/lobby/seq")" "one announcement each"
@@ -75,13 +78,13 @@ test_join_refuses_other_platform() {
   out=$(BRG_PLATFORM=WSL bash "$BRG" join --harness codex --model m 2>&1)
   assert_eq 1 "$?" "mismatch must fail"
   assert_contains "$out" "платформа WSL не совпадает"
-  assert_contains "$out" "$a (Darwin, working)"
+  assert_contains "$out" "${a%%.*} (Darwin, working)"
   assert_contains "$out" "── NEXT:"
   assert_file_not_exists "$B/agents/codex-1"
   # a gone agent does not block
   brg leave --as "$a" >/dev/null || fail "leave"
   out=$(BRG_PLATFORM=WSL bash "$BRG" join --harness codex --model m)
-  assert_contains "$out" "── подключён: codex-1 (codex · m · WSL)"
+  assert_contains "$out" "── подключён: codex-1.$(hdr "$B/agents/codex-1" Key) (codex · m · WSL)"
 }
 
 test_leave_marks_gone_and_blocks_commands() {
@@ -90,25 +93,25 @@ test_leave_marks_gone_and_blocks_commands() {
   a=$(join_as claude)
   b=$(join_as codex)
   out=$(brg leave --as "$a")
-  assert_contains "$out" "── $a отключён"
-  [ -n "$(hdr "$B/agents/$a" Left)" ] || fail "no Left header"
+  assert_contains "$out" "── ${a%%.*} отключён"
+  [ -n "$(hdr "$B/agents/${a%%.*}" Left)" ] || fail "no Left header"
   assert_eq no "$(hdr "$(msg_file 3)" Wake)" "leave notice is quiet"
   # quiet: does not wake b on its own, comes with the next waking batch
   assert_contains "$(brg wait --as "$b" --timeout 0)" "── нет новых"
   brg say "есть кто?" >/dev/null
   out=$(brg wait --as "$b" --timeout 0)
-  assert_contains "$out" "#3 [система] $a → all"
+  assert_contains "$out" "#3 [система] ${a%%.*} → all"
   assert_contains "$out" "#4 human → all"
-  assert_contains "$(brg who)" "$a · claude · m · gone (leave)"
+  assert_contains "$(brg who)" "${a%%.*} · claude · m · gone (leave)"
   out=$(printf 'x\n' | brg send --as "$a" 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "агент $a отключён"
+  assert_contains "$out" "агент ${a%%.*} отключён"
   out=$(brg wait --as "$a")
   assert_eq 0 "$?" "wait always exits 0"
-  assert_contains "$out" "агент $a отключён"
+  assert_contains "$out" "агент ${a%%.*} отключён"
   assert_contains "$out" "── NEXT: заверши ход"
-  out=$(printf 'x\n' | brg send --as "$b" --to "$a")
-  assert_contains "$out" "Внимание: $a — gone"
+  out=$(printf 'x\n' | brg send --as "$b" --to "${a%%.*}")
+  assert_contains "$out" "Внимание: ${a%%.*} — gone"
 }
 
 test_as_resolution() {
@@ -126,7 +129,7 @@ test_as_resolution() {
   assert_eq 1 "$?"
   out=$(printf 'через BRG_AS\n' | BRG_AS=$a bash "$BRG" send)
   assert_contains "$out" "── отправлено #2 → all"
-  assert_eq "$a" "$(hdr "$(msg_file 2)" From)"
+  assert_eq "${a%%.*}" "$(hdr "$(msg_file 2)" From)"
 }
 
 test_who_states() {
@@ -138,18 +141,18 @@ test_who_states() {
   d=$(join_as claude)
   brg wait --as "$a" --timeout 0 >/dev/null # the others' announcements
   start_wait "$a" "$P/wa" --timeout 20
-  printf '%s\n' $(($(date -u +%s) - 90)) >"$B/run/seen/$c"  # > asleep_after (60)
-  printf '%s\n' $(($(date -u +%s) - 500)) >"$B/run/seen/$d" # > gone_after (120)
-  : >"$B/run/stopped.$b"
+  printf '%s\n' $(($(date -u +%s) - 90)) >"$B/run/seen/${c%%.*}"  # > asleep_after (60)
+  printf '%s\n' $(($(date -u +%s) - 500)) >"$B/run/seen/${d%%.*}" # > gone_after (120)
+  : >"$B/run/stopped.${b%%.*}"
   out=$(brg who)
-  assert_contains "$out" "$a · claude · m · waiting · активен"
-  assert_contains "$out" "$b · codex · m · working (stop) · активен"
-  assert_contains "$out" "$c · opencode · m · asleep · активен 9" # 90 s (91 if a second boundary passed)
-  assert_contains "$out" "$d · claude · m · gone · активен 8 мин назад"
+  assert_contains "$out" "${a%%.*} · claude · m · waiting · активен"
+  assert_contains "$out" "${b%%.*} · codex · m · working (stop) · активен"
+  assert_contains "$out" "${c%%.*} · opencode · m · asleep · активен 9" # 90 s (91 if a second boundary passed)
+  assert_contains "$out" "${d%%.*} · claude · m · gone · активен 8 мин назад"
   # a live wait whose heartbeat went stale (pid reuse guard) is not "waiting"
   kill -STOP $WP
-  printf '%s %s\n' $WP $(($(date -u +%s) - 100)) >"$B/run/wait/$a.hb"
-  assert_contains "$(brg who)" "$a · claude · m · working"
+  printf '%s %s\n' $WP $(($(date -u +%s) - 100)) >"$B/run/wait/${a%%.*}.hb"
+  assert_contains "$(brg who)" "${a%%.*} · claude · m · working"
   kill -CONT $WP
   kill -TERM $WP
   wait_pid $WP 3 || fail "wait hung"
@@ -161,14 +164,14 @@ test_status_one_screen() {
   a=$(join_as claude)
   b=$(join_as codex)
   send_as "$b" "всем"
-  send_as "$b" "лично" --to "$a"
+  send_as "$b" "лично" --to "${a%%.*}"
   send_as "$a" "своё"
   out=$(brg status --as "$a")
-  assert_contains "$out" "── status: $a · claude · m · платформа"
+  assert_contains "$out" "── status: ${a%%.*} · claude · m · платформа"
   assert_contains "$out" "Таймаут wait: 3 с. Таймаут инструмента: Claude Code: в Bash tool передавай timeout: 63000 (мс)"
   assert_contains "$out" "Мой wait: не запущен"
   assert_contains "$out" "lobby: новых для тебя 3"
-  assert_contains "$out" "Онлайн: $b (codex, m, working)"
+  assert_contains "$out" "Онлайн: ${b%%.*} (codex, m, working)"
   assert_eq "── NEXT: bash $BRG wait --as $a" "$(printf '%s\n' "$out" | tail -n 1)"
   assert_eq "0/0" "$(cursor "$a")" "status does not move the cursor"
   brg wait --as "$a" >/dev/null
@@ -274,10 +277,10 @@ test_join_wakes_the_task_host() {
   pb=$WP
   c=$(join_as opencode)
   f=$(msg_file "$(cat "$B/lobby/seq")")
-  assert_eq "$a" "$(hdr "$f" Wake)" "wakes only the host"
+  assert_eq "${a%%.*}" "$(hdr "$f" Wake)" "wakes only the host"
   wait_pid $pa 3 || fail "the host was not woken by the join"
-  assert_contains "$(cat "$P/wa")" "$c подключился (opencode, m, "
-  assert_contains "$(cat "$P/wa")" "host $a: учти его в задаче T001"
+  assert_contains "$(cat "$P/wa")" "${c%%.*} подключился (opencode, m, "
+  assert_contains "$(cat "$P/wa")" "host ${a%%.*}: учти его в задаче T001"
   sleep 0.6
   is_alive $pb || fail "a participant woke up on the join: $(cat "$P/wb")"
   # back after leave (join --as): the same
@@ -286,13 +289,16 @@ test_join_wakes_the_task_host() {
   pa=$WP
   brg join --as "$c" --harness opencode >/dev/null || fail "rejoin"
   f=$(msg_file "$(cat "$B/lobby/seq")")
-  assert_eq "$a" "$(hdr "$f" Wake)"
+  assert_eq "${a%%.*}" "$(hdr "$f" Wake)"
   wait_pid $pa 3 || fail "the host was not woken by the return"
-  assert_contains "$(cat "$P/wa2")" "$c вернулся (opencode, m, "
+  assert_contains "$(cat "$P/wa2")" "${c%%.*} переподключён новой сессией (opencode, m, "
   is_alive $pb || fail "a participant woke up on the return"
   kill -TERM $pb
   wait_pid $pb 3 || fail "wait hung"
   # the host itself coming back: nobody to wake
+  # it has dropped out (asleep: no wait and no brg calls for longer than asleep_after)
+  printf '%s\n' $(($(date -u +%s) - 100)) >"$B/run/seen/${a%%.*}"
+  printf '%s\n' $(($(date -u +%s) - 100)) >"$B/run/wait/${a%%.*}.last"
   brg join --as "$a" --harness claude >/dev/null || fail "host rejoin"
   f=$(msg_file "$(cat "$B/lobby/seq")")
   assert_eq no "$(hdr "$f" Wake)"
@@ -315,49 +321,49 @@ test_who_shows_possible_dropouts() {
   e=$(join_as claude)
   brg wait --as "$e" --timeout 0 >/dev/null
   now=$(date -u +%s)
-  printf '%s\n' $((now - 200)) >"$B/run/wait/$a.last"
-  printf '%s\n' $((now - 100)) >"$B/run/seen/$a" # asleep, no wait, no brg calls
-  printf '%s\n' $((now - 200)) >"$B/run/wait/$b.last" # no wait, but brg calls
-  printf '%s\n' $((now - 200)) >"$B/run/wait/$d.last" # stopped by the human
-  printf '%s\n' $((now - 100)) >"$B/run/seen/$d"
-  : >"$B/run/stopped.$d"
-  printf '%s\n' $((now - 200)) >"$B/run/wait/$e.last" # a killed wait: its heartbeat is recent
-  printf '99999 %s\n' $((now - 10)) >"$B/run/wait/$e.hb"
+  printf '%s\n' $((now - 200)) >"$B/run/wait/${a%%.*}.last"
+  printf '%s\n' $((now - 100)) >"$B/run/seen/${a%%.*}" # asleep, no wait, no brg calls
+  printf '%s\n' $((now - 200)) >"$B/run/wait/${b%%.*}.last" # no wait, but brg calls
+  printf '%s\n' $((now - 200)) >"$B/run/wait/${d%%.*}.last" # stopped by the human
+  printf '%s\n' $((now - 100)) >"$B/run/seen/${d%%.*}"
+  : >"$B/run/stopped.${d%%.*}"
+  printf '%s\n' $((now - 200)) >"$B/run/wait/${e%%.*}.last" # a killed wait: its heartbeat is recent
+  printf '99999 %s\n' $((now - 10)) >"$B/run/wait/${e%%.*}.hb"
   out=$(brg who)
-  assert_contains "$out" "$a · claude · m · asleep · активен 10" # 100 s (101 if a second boundary passed)
+  assert_contains "$out" "${a%%.*} · claude · m · asleep · активен 10" # 100 s (101 if a second boundary passed)
   assert_contains "$out" " с назад · без wait 3 мин · возможно выпал"
-  assert_contains "$out" "$b · claude · m · working · активен "
-  assert_contains "$(printf '%s\n' "$out" | awk -v n="$b" 'index($0, n " ") == 1')" " · без wait 3 мин"
-  assert_not_contains "$(printf '%s\n' "$out" | awk -v n="$b" 'index($0, n " ") == 1')" "выпал"
-  assert_not_contains "$(printf '%s\n' "$out" | awk -v n="$c" 'index($0, n " ") == 1')" "без wait" "just joined"
-  assert_contains "$(printf '%s\n' "$out" | awk -v n="$d" 'index($0, n " ") == 1')" "$d · claude · m · asleep (stop) · активен 10"
-  assert_contains "$(printf '%s\n' "$out" | awk -v n="$d" 'index($0, n " ") == 1')" " с назад · без wait 3 мин"
-  assert_not_contains "$(printf '%s\n' "$out" | awk -v n="$d" 'index($0, n " ") == 1')" "выпал"
-  assert_not_contains "$(printf '%s\n' "$out" | awk -v n="$e" 'index($0, n " ") == 1')" "без wait"
+  assert_contains "$out" "${b%%.*} · claude · m · working · активен "
+  assert_contains "$(printf '%s\n' "$out" | awk -v n="${b%%.*}" 'index($0, n " ") == 1')" " · без wait 3 мин"
+  assert_not_contains "$(printf '%s\n' "$out" | awk -v n="${b%%.*}" 'index($0, n " ") == 1')" "выпал"
+  assert_not_contains "$(printf '%s\n' "$out" | awk -v n="${c%%.*}" 'index($0, n " ") == 1')" "без wait" "just joined"
+  assert_contains "$(printf '%s\n' "$out" | awk -v n="${d%%.*}" 'index($0, n " ") == 1')" "${d%%.*} · claude · m · asleep (stop) · активен 10"
+  assert_contains "$(printf '%s\n' "$out" | awk -v n="${d%%.*}" 'index($0, n " ") == 1')" " с назад · без wait 3 мин"
+  assert_not_contains "$(printf '%s\n' "$out" | awk -v n="${d%%.*}" 'index($0, n " ") == 1')" "выпал"
+  assert_not_contains "$(printf '%s\n' "$out" | awk -v n="${e%%.*}" 'index($0, n " ") == 1')" "без wait"
   assert_contains "$out" "── «возможно выпал»: ни wait, ни вызовов brg дольше 90 с (dropout_after; не меньше таймаута wait + 60 с) — модель могла завершить ход. Человеку: напиши этому агенту в его чат «продолжай»."
   out=$(brg status --as "$b")
   assert_contains "$out" "Мой wait: не запущен · без wait 3 мин"
-  assert_contains "$out" "$a (claude, m, asleep, без wait 3 мин, возможно выпал)"
+  assert_contains "$out" "${a%%.*} (claude, m, asleep, без wait 3 мин, возможно выпал)"
   # a wait of its own resets it (the finishing wait marks the time)
   brg wait --as "$a" --timeout 0 >/dev/null
   out=$(brg who)
-  assert_not_contains "$(printf '%s\n' "$out" | awk -v n="$a" 'index($0, n " ") == 1')" "без wait"
+  assert_not_contains "$(printf '%s\n' "$out" | awk -v n="${a%%.*}" 'index($0, n " ") == 1')" "без wait"
   assert_not_contains "$out" "── «возможно выпал»"
   # a left (gone) agent is not annotated
-  printf '%s\n' $((now - 200)) >"$B/run/wait/$b.last"
+  printf '%s\n' $((now - 200)) >"$B/run/wait/${b%%.*}.last"
   brg leave --as "$b" >/dev/null
-  assert_not_contains "$(brg who | awk -v n="$b" 'index($0, n " ") == 1')" "без wait"
+  assert_not_contains "$(brg who | awk -v n="${b%%.*}" 'index($0, n " ") == 1')" "без wait"
   # the default dropout_after (300 s, template config): an agent quietly writing code
   # for a few minutes is "без wait", not "возможно выпал"
   awk '!/^dropout_after:/' "$B/config" >"$B/config.tmp" && mv "$B/config.tmp" "$B/config"
   assert_eq 300 "$(BRG_SOURCE_ONLY=1 bash -c '. "$1"; cfg_load; echo "$DROPOUT_AFTER"' _ "$BRG")"
   now=$(date -u +%s)
-  printf '%s\n' $((now - 200)) >"$B/run/wait/$c.last"
-  printf '%s\n' $((now - 110)) >"$B/run/seen/$c"
-  out=$(brg who | awk -v n="$c" 'index($0, n " ") == 1')
-  assert_contains "$out" "$c · claude · m · asleep · "
+  printf '%s\n' $((now - 200)) >"$B/run/wait/${c%%.*}.last"
+  printf '%s\n' $((now - 110)) >"$B/run/seen/${c%%.*}"
+  out=$(brg who | awk -v n="${c%%.*}" 'index($0, n " ") == 1')
+  assert_contains "$out" "${c%%.*} · claude · m · asleep · "
   assert_contains "$out" " · без wait 3 мин"
   assert_not_contains "$out" "выпал"
   printf 'dropout_after: 100\n' >>"$B/config"
-  assert_contains "$(brg who | awk -v n="$c" 'index($0, n " ") == 1')" " · без wait 3 мин · возможно выпал"
+  assert_contains "$(brg who | awk -v n="${c%%.*}" 'index($0, n " ") == 1')" " · без wait 3 мин · возможно выпал"
 }

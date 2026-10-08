@@ -56,6 +56,9 @@ join() { bash "$BRG" join --harness pp --model script | sed -n 's/^── под
 A1=$(join)
 A2=$(join)
 [ -n "$A1" ] && [ -n "$A2" ] || { echo "join не удался" >&2; exit 1; }
+# full names (base.key) for --as; output, tail and metrics show the base names
+N1=${A1%%.*}
+N2=${A2%%.*}
 
 # agent ME OTHER FIRST — plays one side; FIRST=1 sends 1.
 agent() {
@@ -64,7 +67,7 @@ agent() {
   # handle FILE — act on the numbers from OTHER found in a wait output
   handle() {
     local n
-    for n in $(awk -v o="$other" '/^#[0-9]+ / { t = ($2 == o); next } t && /^  [0-9]+$/ { print $1 }' "$1"); do
+    for n in $(awk -v o="${other%%.*}" '/^#[0-9]+ / { t = ($2 == o); next } t && /^  [0-9]+$/ { print $1 }' "$1"); do
       if [ "$n" -le "$last" ]; then
         note dup "$n"
         continue
@@ -140,12 +143,12 @@ done
 T1=$(date -u +%s)
 
 # 1. the conversation, as the human sees it in tail: 1..N, no holes or duplicates
-seqcheck=$(bash "$BRG" tail lobby | awk -v a="$A1" -v b="$A2" -v n="$N" '
+seqcheck=$(bash "$BRG" tail lobby | awk -v a="$N1" -v b="$N2" -v n="$N" '
   /^#[0-9]+ / { t = ($2 == a || $2 == b); next }
   t && /^  [0-9]+$/ { k++; if ($1 + 0 != k) { print "позиция " k ": " $1; bad++ } }
   END { if (k != n) print "сообщений " k ", ожидалось " n; else if (!bad) print "OK" }')
 # 2. pauses end→start between waits of one agent (metrics.log)
-pauses=$(awk -v a="$A1" -v b="$A2" -v m="$MAX_PAUSE" '
+pauses=$(awk -v a="$N1" -v b="$N2" -v m="$MAX_PAUSE" '
   $2 != a && $2 != b { next }
   $3 == "wait.start" { starts[$2]++; if ($2 in e) { p = $1 - e[$2]; if (p > mx[$2]) mx[$2] = p; if (p > m) big++; delete e[$2] } }
   $3 == "wait" { e[$2] = $1; ends[$2]++; for (i = 4; i <= NF; i++) if ($i ~ /^result=/) r[$2 " " substr($i, 8)]++ }
@@ -161,7 +164,7 @@ ev() { cat "$P"/events.* 2>/dev/null | awk -v k="$1" '$1 == k' | wc -l | tr -d '
 
 echo "── pingpong: N=$N, wait_timeout=$WT с, тик ${BRG_TICK} с, прогон $((T1 - T0)) с"
 printf '%s\n' "$pauses" | sed '$d'
-killed=$(awk -v a="$A1" -v b="$A2" '($2 == a || $2 == b) && $3 == "wait.start" { s++ } ($2 == a || $2 == b) && $3 == "wait" { e++ } END { print s - e }' "$B/run/metrics.log")
+killed=$(awk -v a="$N1" -v b="$N2" '($2 == a || $2 == b) && $3 == "wait.start" { s++ } ($2 == a || $2 == b) && $3 == "wait" { e++ } END { print s - e }' "$B/run/metrics.log")
 echo "takeover (SUPERSEDED): $(ev superseded), SIGKILL: $(ev killed) (из них убито до записи end: $killed), дубликатов получено (at-least-once): $(ev dup), медленных шагов: $(ev slow)"
 echo "последовательность в tail: $seqcheck"
 echo "паузы > $MAX_PAUSE с: $(printf '%s\n' "$pauses" | tail -n 1)"

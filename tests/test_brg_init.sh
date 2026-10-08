@@ -59,10 +59,10 @@ test_reinit_updates_code_and_docs_but_keeps_state() {
   assert_eq "wait_timeout.claude: 7
 # свой комментарий" "$(cat "$B/config")" "config untouched"
   assert_eq "факты" "$(cat "$B/common/project.md")" "common untouched"
-  assert_file_exists "$B/agents/$a"
+  assert_file_exists "$B/agents/${a%%.*}"
   assert_eq 2 "$(cat "$B/lobby/seq")" "seq kept"
   assert_contains "$(cat "$(msg_file 2)")" "сообщение до reinit"
-  assert_file_exists "$B/lobby/cursors/$a"
+  assert_file_exists "$B/lobby/cursors/${a%%.*}"
   # keys missing in config come from config.default; config overrides the rest
   out=$(brg status --as "$a")
   assert_contains "$out" "Таймаут wait: 7 с"

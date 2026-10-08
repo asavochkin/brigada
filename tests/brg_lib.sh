@@ -28,9 +28,29 @@ EOF
 
 brg() { bash "$BRG" "$@"; }
 
-# join_as HARNESS [MODEL] → prints the assigned name
+# join_as HARNESS [MODEL] → prints the assigned full name (base.key)
 join_as() {
   brg join --harness "$1" --model "${2:-m}" | sed -n 's/^── подключён: \([^ ]*\) .*/\1/p'
+}
+
+# base_of NAME → the base name (state, From:, who): the session key dropped
+base_of() { printf '%s\n' "${1%%.*}"; }
+
+# rejoin_as NAME HARNESS [options...] → prints the new full name after join --as
+# (empty on refusal)
+rejoin_as() {
+  local n=$1 h=$2
+  shift 2
+  brg join --as "$n" --harness "$h" "$@" | sed -n 's/^── переподключён: \([^ ]*\) .*/\1/p'
+}
+
+# dropped NAME [SECS] — make NAME look silent for SECS (default 100 > asleep_after):
+# no wait and no brg calls since then (join --as is allowed again)
+dropped() {
+  local t
+  t=$(($(date -u +%s) - ${2:-100}))
+  printf '%s\n' "$t" >"$B/run/seen/${1%%.*}"
+  printf '%s\n' "$t" >"$B/run/wait/${1%%.*}.last"
 }
 
 # send_as NAME TEXT [send options...]
@@ -48,7 +68,7 @@ hdr() { awk -v k="$2" 'index($0, k ": ") == 1 { print substr($0, length(k) + 3);
 
 # cursor NAME → "Acked/Pending"
 cursor() {
-  local f=$B/lobby/cursors/$1
+  local f=$B/lobby/cursors/${1%%.*}
   [ -f "$f" ] || { echo "-"; return; }
   printf '%s/%s\n' "$(hdr "$f" Acked)" "$(hdr "$f" Pending)"
 }
@@ -56,12 +76,12 @@ cursor() {
 # pid_is NAME PID — the wait pid file names PID
 pid_is() {
   local p=
-  [ -f "$B/run/wait/$1.pid" ] && IFS= read -r p <"$B/run/wait/$1.pid"
+  [ -f "$B/run/wait/${1%%.*}.pid" ] && IFS= read -r p <"$B/run/wait/${1%%.*}.pid"
   [ "$p" = "$2" ]
 }
 
 # metrics lines of AGENT with COMMAND (grep-free)
-metrics_of() { awk -v a="$1" -v c="$2" '$2 == a && $3 == c' "$B/run/metrics.log"; }
+metrics_of() { awk -v a="${1%%.*}" -v c="$2" '$2 == a && $3 == c' "$B/run/metrics.log"; }
 
 # start_wait NAME OUT [args...] — background wait; sets WP
 start_wait() {
@@ -78,7 +98,7 @@ start_wait() {
 ack_all() {
   local d=${2:-$B/lobby} s
   s=$(cat "$d/seq")
-  printf 'Acked: %s\nPending: %s\n' "$s" "$s" >"$d/cursors/$1"
+  printf 'Acked: %s\nPending: %s\n' "$s" "$s" >"$d/cursors/${1%%.*}"
 }
 
 # task_new_as NAME TITLE [BRIEF] [options...] — create a task, fail on error
@@ -103,7 +123,7 @@ tmsg() { printf '%s/messages/%06d.msg' "$(tdir "$1")" "$2"; }
 # tcursor NAME ID → "Acked/Pending" in task ID's channel
 tcursor() {
   local f
-  f=$(tdir "$2")/cursors/$1
+  f=$(tdir "$2")/cursors/${1%%.*}
   [ -f "$f" ] || { echo "-"; return; }
   printf '%s/%s\n' "$(hdr "$f" Acked)" "$(hdr "$f" Pending)"
 }

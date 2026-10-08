@@ -23,8 +23,8 @@ test_wait_timeout() {
   # default timeout comes from config by harness (codex: 2)
   out=$(brg wait --as "$Bn")
   assert_eq "── нет новых (2 с) · NEXT: bash $BRG wait --as $Bn" "$out"
-  assert_file_not_exists "$B/run/wait/$A.pid" "pid file released"
-  assert_file_not_exists "$B/run/wait/$A.hb" "hb file released"
+  assert_file_not_exists "$B/run/wait/${A%%.*}.pid" "pid file released"
+  assert_file_not_exists "$B/run/wait/${A%%.*}.hb" "hb file released"
   assert_contains "$(metrics_of "$A" wait.start)" "timeout=1 pid="
   assert_contains "$(metrics_of "$A" wait)" "result=timeout delivered=0 timeout=1"
 }
@@ -36,22 +36,22 @@ test_delivery_addressing() {
   ack_all "$A"
   ack_all "$Bn"
   send_as "$A" "всем от A"
-  send_as "$A" "лично Bn" --to "$Bn"
-  send_as "$A" "лично c" --to "$c"
+  send_as "$A" "лично Bn" --to "${Bn%%.*}"
+  send_as "$A" "лично c" --to "${c%%.*}"
   send_as "$A" "человеку" --to human
-  send_as "$c" "ответ A" --to "$A,$Bn" --re 4
+  send_as "$c" "ответ A" --to "${A%%.*},${Bn%%.*}" --re 4
   out=$(brg wait --as "$Bn")
   assert_contains "$out" "── lobby · 3 новых ───"
-  assert_contains "$out" "#4 $A → all · "
+  assert_contains "$out" "#4 ${A%%.*} → all · "
   assert_contains "$out" "  всем от A"
-  assert_contains "$out" "#5 $A → $Bn · "
-  assert_contains "$out" "#8 $c → $A,$Bn · re #4 · "
+  assert_contains "$out" "#5 ${A%%.*} → ${Bn%%.*} · "
+  assert_contains "$out" "#8 ${c%%.*} → ${A%%.*},${Bn%%.*} · re #4 · "
   assert_not_contains "$out" "лично c"
   assert_not_contains "$out" "человеку"
   assert_eq "── NEXT: обработай, затем: bash $BRG wait --as $Bn" "$(printf '%s\n' "$out" | tail -n 1)"
   out=$(brg wait --as "$A" --timeout 1)
   assert_contains "$out" "── lobby · 1 новое ───"
-  assert_contains "$out" "#8 $c → $A,$Bn"
+  assert_contains "$out" "#8 ${c%%.*} → ${A%%.*},${Bn%%.*}"
   assert_not_contains "$out" "всем от A" # own messages are not delivered
   # a third party only gets what is meant for it; the rest is acknowledged silently
   out=$(brg wait --as "$c" --timeout 1)
@@ -97,7 +97,7 @@ test_kill_before_output_redelivers() {
   wait $WP 2>/dev/null
   assert_eq "" "$(cat "$P/w1")" "nothing printed"
   assert_eq "2/2" "$(cursor "$A")" "nothing issued"
-  assert_file_exists "$B/run/wait/$A.pid" "stale pid file after KILL"
+  assert_file_exists "$B/run/wait/${A%%.*}.pid" "stale pid file after KILL"
   out=$(brg wait --as "$A" --timeout 2)
   assert_contains "$out" "  важное"
   assert_contains "$(metrics_of "$A" wait.start)" "pid=$WP" # killed one has a start line only
@@ -157,8 +157,8 @@ test_takeover_does_not_touch_foreign_pid() {
   sleep 30 &
   sp=$!
   track_pid $sp
-  printf '%s\n' $sp >"$B/run/wait/$A.pid"
-  printf '%s %s\n' $sp "$(date -u +%s)" >"$B/run/wait/$A.hb" # even a fresh heartbeat
+  printf '%s\n' $sp >"$B/run/wait/${A%%.*}.pid"
+  printf '%s %s\n' $sp "$(date -u +%s)" >"$B/run/wait/${A%%.*}.hb" # even a fresh heartbeat
   out=$(brg wait --as "$A" --timeout 1)
   assert_contains "$out" "── нет новых (1 с)"
   is_alive $sp || fail "an unrelated process was signalled"
@@ -215,7 +215,7 @@ test_exits_when_parent_dies() {
   wait_for 3 is_dead "$cp" || fail "orphaned wait still alive"
   assert_contains "$(metrics_of "$A" wait.start)" "ppid=$pp"
   assert_contains "$(metrics_of "$A" wait)" "result=orphan"
-  assert_file_not_exists "$B/run/wait/$A.pid"
+  assert_file_not_exists "$B/run/wait/${A%%.*}.pid"
 }
 
 # A parent out of reach (EPERM: a sandbox; via the test hook) counts as alive: no
@@ -265,13 +265,13 @@ test_stop_and_resume() {
   # per-agent stop reaches a running wait within a tick, without signals
   start_wait "$Bn" "$P/wb" --timeout 20
   start_wait "$A" "$P/wa" --timeout 20
-  out=$(brg stop "$A")
-  assert_contains "$out" "── STOP для $A"
+  out=$(brg stop "${A%%.*}")
+  assert_contains "$out" "── STOP для ${A%%.*}"
   wait_pid $WP 2 || fail "running wait ignored the stop flag"
-  assert_eq "── STOP: человек остановил тебя ($A). Заверши ход." "$(cat "$P/wa")"
-  pid_is "$Bn" "$(cat "$B/run/wait/$Bn.pid")" && is_alive "$(cat "$B/run/wait/$Bn.pid")" || fail "other agent's wait stopped too"
+  assert_eq "── STOP: человек остановил тебя (${A%%.*}). Заверши ход." "$(cat "$P/wa")"
+  pid_is "$Bn" "$(cat "$B/run/wait/${Bn%%.*}.pid")" && is_alive "$(cat "$B/run/wait/${Bn%%.*}.pid")" || fail "other agent's wait stopped too"
   assert_contains "$(brg wait --as "$A" --timeout 5)" "── STOP: человек остановил тебя"
-  brg resume "$A" >/dev/null
+  brg resume "${A%%.*}" >/dev/null
   assert_contains "$(brg wait --as "$A" --timeout 0)" "── нет новых"
   out=$(brg stop nobody 2>&1)
   assert_eq 1 "$?"
@@ -281,7 +281,7 @@ test_stop_and_resume() {
   assert_eq "── STOP: человек остановил бригаду. Заверши ход." "$(cat "$P/wb")"
   brg say "продолжаем" >/dev/null
   assert_contains "$(brg wait --as "$A" --timeout 2)" "  продолжаем"
-  assert_contains "$(awk '$3 == "stop"' "$B/run/metrics.log")" "target=$A"
+  assert_contains "$(awk '$3 == "stop"' "$B/run/metrics.log")" "target=${A%%.*}"
 }
 
 # Output is capped; the rest stays unissued and comes with the next wait at once.
@@ -334,19 +334,19 @@ $out"
 test_heartbeat_and_liveness_files() {
   local s0 s1
   two_agents
-  printf '%s\n' 1000 >"$B/run/seen/$A"
+  printf '%s\n' 1000 >"$B/run/seen/${A%%.*}"
   start_wait "$A" "$P/w" --timeout 4
-  wait_for 3 test -f "$B/run/wait/$A.hb" || fail "no hb file"
-  assert_eq "$WP" "$(awk '{ print $1 }' "$B/run/wait/$A.hb")"
-  s0=$(cat "$B/run/seen/$A")
+  wait_for 3 test -f "$B/run/wait/${A%%.*}.hb" || fail "no hb file"
+  assert_eq "$WP" "$(awk '{ print $1 }' "$B/run/wait/${A%%.*}.hb")"
+  s0=$(cat "$B/run/seen/${A%%.*}")
   [ "$s0" -gt 1000 ] || fail "wait start did not update Last-Seen"
   sleep 2.2
-  s1=$(cat "$B/run/seen/$A")
+  s1=$(cat "$B/run/seen/${A%%.*}")
   [ "$s1" -gt "$s0" ] || fail "heartbeat did not update Last-Seen ($s0 → $s1)"
-  assert_contains "$(brg who)" "$A · claude · m · waiting"
+  assert_contains "$(brg who)" "${A%%.*} · claude · m · waiting"
   wait_pid $WP 6 || fail "wait hung"
-  assert_file_not_exists "$B/run/wait/$A.hb"
-  assert_contains "$(brg who)" "$A · claude · m · working"
+  assert_file_not_exists "$B/run/wait/${A%%.*}.hb"
+  assert_contains "$(brg who)" "${A%%.*} · claude · m · working"
 }
 
 test_wait_argument_errors_print_next() {
@@ -376,7 +376,7 @@ test_leave_during_wait() {
   start_wait "$A" "$P/w" --timeout 20
   brg leave --as "$A" >/dev/null
   wait_pid $WP 2 || fail "wait of a left agent kept running"
-  assert_eq "── LEFT: агент $A отключён (brg leave). Заверши ход." "$(cat "$P/w")"
+  assert_eq "── LEFT: агент ${A%%.*} отключён (brg leave). Заверши ход." "$(cat "$P/w")"
 }
 
 # Quiet system notices (Wake: no — join/leave) do not wake a wait; they come
@@ -402,13 +402,13 @@ test_quiet_join_does_not_wake() {
   wait_pid $pb 3 || fail "B's wait did not return on a message"
   for out in "$(cat "$P/wa")" "$(cat "$P/wb")"; do
     assert_contains "$out" "── lobby · 2 новых"
-    assert_contains "$out" "#3 [система] $c → all"
-    assert_contains "$out" "$c подключился (opencode, m, "
-    assert_contains "$out" "#4 $c → all"
+    assert_contains "$out" "#3 [система] ${c%%.*} → all"
+    assert_contains "$out" "${c%%.*} подключился (opencode, m, "
+    assert_contains "$out" "#4 ${c%%.*} → all"
   done
   assert_eq "2/4" "$(cursor "$A")"
   # nothing for me at all (a private message to someone else) is acknowledged at once
-  send_as "$c" "только B" --to "$Bn"
+  send_as "$c" "только B" --to "${Bn%%.*}"
   assert_contains "$(brg wait --as "$A" --timeout 1)" "── нет новых"
   assert_eq "5/5" "$(cursor "$A")"
 }
@@ -446,7 +446,7 @@ test_timeout_digest_of_the_task() {
   ack_all "$A"
   ack_all "$A" "$d"
   out=$(brg wait --as "$A" --timeout 0)
-  assert_eq "T001: todo 1 · в работе I002 $Bn · готово I003, I004, I005 · ревью ждут I003 · прогонов идёт 1
+  assert_eq "T001: todo 1 · в работе I002 ${Bn%%.*} · готово I003, I004, I005 · ревью ждут I003 · прогонов идёт 1
 ── нет новых (0 с) · NEXT: bash $BRG wait --as $A --timeout 0" "$out"
   # delivered messages: no digest
   send_as "$Bn" "есть новости"

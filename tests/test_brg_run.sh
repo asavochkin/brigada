@@ -51,7 +51,7 @@ test_run_detached_returns_fast_and_reports_via_wait() {
   assert_contains "$out" "лог: .brigada/tasks/T001/shared/runs/R001.log"
   assert_contains "$out" "Результат (статус, код, хвост лога) придёт тебе сообщением в wait"
   assert_eq "── NEXT: продолжай другую работу; закончив шаг — bash $BRG wait --as $Bn" "$(printf '%s\n' "$out" | tail -n 1)"
-  assert_eq "$Bn" "$(rhdr R001 Agent)"
+  assert_eq "${Bn%%.*}" "$(rhdr R001 Agent)"
   assert_eq T001 "$(rhdr R001 Task)"
   assert_eq detached "$(rhdr R001 Mode)"
   assert_eq 1800 "$(rhdr R001 Timeout)" "run_timeout default"
@@ -60,7 +60,7 @@ test_run_detached_returns_fast_and_reports_via_wait() {
   # the result arrives as a waking system message to the initiator only
   out=$(brg wait --as "$Bn" --timeout 8)
   assert_contains "$out" "── T001 · 1 новое"
-  assert_contains "$out" "[система] brg → $Bn"
+  assert_contains "$out" "[система] brg → ${Bn%%.*}"
   assert_contains "$out" "R001 · failed (код 3) · "
   assert_contains "$out" "Лог: .brigada/tasks/T001/shared/runs/R001.log"
   assert_contains "$out" "── последние строки лога:"
@@ -120,14 +120,14 @@ test_run_queue_one_at_a_time_in_order() {
   assert_contains "$out" "── R001 запущен"
   wait_for 2 run_status_is R001 running || fail "R001 did not start"
   out=$(brg run --as "$A" -- 'echo "B start" >>order; sleep 0.3; echo "B end" >>order')
-  assert_contains "$out" "── R002 в очереди: перед ним 1 — выполняется R001 · $Bn"
+  assert_contains "$out" "── R002 в очереди: перед ним 1 — выполняется R001 · ${Bn%%.*}"
   out=$(brg run --as "$Bn" -- 'echo "C" >>order')
-  assert_contains "$out" "── R003 в очереди: перед ним 2 — выполняется R001 · $Bn"
-  assert_contains "$out" "ждут: R002 · $A · echo \"B start\""
+  assert_contains "$out" "── R003 в очереди: перед ним 2 — выполняется R001 · ${Bn%%.*}"
+  assert_contains "$out" "ждут: R002 · ${A%%.*} · echo \"B start\""
   assert_eq queued "$(rhdr R002 Status)"
   out=$(brg run list)
   assert_contains "$out" "── выполняется: R001 · running"
-  assert_contains "$out" "── в очереди (2): R002 · $A"
+  assert_contains "$out" "── в очереди (2): R002 · ${A%%.*}"
   wait_for 8 run_final R003 || fail "R003 did not finish"
   assert_eq "A start
 A end
@@ -371,7 +371,7 @@ test_run_views_diagnose_dead_and_silent_runners() {
   kill -STOP "$r"
   sleep 4.5
   out=$(brg run cancel R3 --as "$Bn")
-  assert_contains "$out" "── R003 · killed: остановлен командой run cancel ($Bn); раннер не отвечал"
+  assert_contains "$out" "── R003 · killed: остановлен командой run cancel (${Bn%%.*}); раннер не отвечал"
   kill -CONT "$r"
   wait_for 8 is_dead "$r" || fail "the woken runner did not leave"
   kill -0 -- -"$g" 2>/dev/null && fail "the woken runner did not stop its command"
@@ -458,16 +458,16 @@ test_run_cancel() {
   wait_for 3 run_status_is R001 running || fail "R001 did not start"
   out=$(brg run cancel R1 --as "$C" 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "отменить R001 может только его инициатор ($Bn) или lead ($A)"
+  assert_contains "$out" "отменить R001 может только его инициатор (${Bn%%.*}) или lead (${A%%.*})"
   # the lead cancels a queued run: cancelled, the initiator told
   out=$(brg run cancel R2 --as "$A")
-  assert_contains "$out" "── R002 · cancelled: отменён до запуска ($A)"
-  assert_contains "$out" "Инициатор $Bn получит сообщение об отмене."
+  assert_contains "$out" "── R002 · cancelled: отменён до запуска (${A%%.*})"
+  assert_contains "$out" "Инициатор ${Bn%%.*} получит сообщение об отмене."
   # the initiator cancels its running one: killed, no message to itself
   out=$(brg run cancel R1 --as "$Bn")
-  assert_contains "$out" "── R001 · killed: остановлен командой run cancel ($Bn)"
+  assert_contains "$out" "── R001 · killed: остановлен командой run cancel (${Bn%%.*})"
   out=$(brg wait --as "$Bn" --timeout 1)
-  assert_contains "$out" "R002 · cancelled: отменён до запуска ($A)"
+  assert_contains "$out" "R002 · cancelled: отменён до запуска (${A%%.*})"
   assert_not_contains "$out" "R001"
   assert_eq "" "$(cat "$D/shared/runs/R002.log")" "never ran"
   out=$(brg run cancel R1 --as "$Bn" 2>&1)
@@ -475,7 +475,7 @@ test_run_cancel() {
   assert_contains "$out" "R001 уже завершён: killed"
   out=$(brg run show R1)
   assert_contains "$out" "── R001 · killed"
-  assert_contains "$out" "Отменил: $Bn"
+  assert_contains "$out" "Отменил: ${Bn%%.*}"
   assert_eq "" "$(ls -A "$B/run/execq")"
   assert_eq "" "$(ls -A "$B/run/locks")"
 }
@@ -514,7 +514,7 @@ test_run_arguments_and_task_rules() {
   assert_contains "$(brg item show I1)" "Прогоны: R001 (done, код 0)"
   out=$(brg run show R1 --as "$A")
   assert_contains "$out" "── R001 · done · код 0 · "
-  assert_contains "$out" " · $A · задача T001 · подзадача I001"
+  assert_contains "$out" " · ${A%%.*} · задача T001 · подзадача I001"
   assert_contains "$out" "Команда: echo привязан · лимит 3 с · режим sync"
   assert_contains "$out" "  привязан"
   # status shows my runs in progress
@@ -533,23 +533,23 @@ test_task_close_refuses_with_runs_force_stops_them() {
   printf 'итог\n' >"$D/summary.md"
   out=$(brg task close --as "$A" 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "прогоны задачи ещё идут: R001 ($Bn, running: sleep 30), R002 ($A, queued: echo never)"
+  assert_contains "$out" "прогоны задачи ещё идут: R001 (${Bn%%.*}, running: sleep 30), R002 (${A%%.*}, queued: echo never)"
   assert_contains "$out" "task close --as $A --force"
   assert_eq active "$(hdr "$D/task" Status)"
   out=$(brg task close --as "$A" --force)
   assert_contains "$out" "── задача T001 «Прогоны» закрыта."
   assert_contains "$out" "Прогоны задачи остановлены: R001 — killed, R002 — cancelled"
   assert_eq killed "$(rhdr R001 Status)"
-  assert_eq "$A" "$(rhdr R001 By)"
+  assert_eq "${A%%.*}" "$(rhdr R001 By)"
   assert_eq "при закрытии задачи T001 (--force)" "$(rhdr R001 How)"
   assert_eq cancelled "$(rhdr R002 Status)"
   assert_eq "" "$(cat "$D/shared/runs/R002.log")" "never ran"
   wait_for 3 is_dead "$(rhdr R001 Runner)" || fail "runner alive"
   kill -0 -- -"$(rhdr R001 Pgid)" 2>/dev/null && fail "command alive"
   out=$(brg wait --as "$Bn" --timeout 2)
-  assert_contains "$out" "Закрыта с --force: прогоны остановлены — R001 ($Bn, running: sleep 30), R002 ($A, queued: echo never)."
+  assert_contains "$out" "Закрыта с --force: прогоны остановлены — R001 (${Bn%%.*}, running: sleep 30), R002 (${A%%.*}, queued: echo never)."
   assert_not_contains "$out" "R001 · killed"
-  assert_contains "$(brg run show R1)" "Отменил: $A (при закрытии задачи T001 (--force))"
+  assert_contains "$(brg run show R1)" "Отменил: ${A%%.*} (при закрытии задачи T001 (--force))"
   # without runs in progress close just works; a finished run does not count
   task_new_as "$A" "Вторая"
   D=$(tdir T002)
@@ -574,7 +574,7 @@ test_task_cancel_stops_runs() {
   assert_eq cancelled "$(rhdr R002 Status)"
   kill -0 -- -"$(rhdr R001 Pgid)" 2>/dev/null && fail "command alive"
   out=$(brg wait --as "$Bn" --timeout 2)
-  assert_contains "$out" "Прогоны задачи остановлены: R001 ($Bn, running: sleep 30), R002 ($Bn, queued: echo never)."
+  assert_contains "$out" "Прогоны задачи остановлены: R001 (${Bn%%.*}, running: sleep 30), R002 (${Bn%%.*}, queued: echo never)."
   assert_not_contains "$out" "R002 · cancelled"
   assert_eq "" "$(ls -A "$B/run/execq")"
   # --cancel-current

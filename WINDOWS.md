@@ -50,15 +50,18 @@ echo код %ERRORLEVEL%
 cd C:\work\toy
 .\.brigada\bin\brg.cmd join --harness test --model human
 ```
-Ожидается: имя `test-1`; строка «Ты вызываешь brg из PowerShell/cmd …»; последняя строка `── NEXT: .\.brigada\bin\brg.cmd wait --as test-1`.
+Ожидается: полное имя `test-1.<ключ>` (например, `test-1.k7f3q9`); строка «Ты вызываешь brg из PowerShell/cmd …»; последняя строка `── NEXT: .\.brigada\bin\brg.cmd wait --as test-1.<ключ>`. Сохрани полное имя — ниже оно в `$me`:
+```
+$me = "test-1.<ключ из вывода join>"
+```
 
 Кириллица в аргументах и в файлах:
 ```
 Set-Content -Encoding utf8 brief.txt "Постановка: проверить кириллицу, ёЁ, «кавычки»"
-.\.brigada\bin\brg.cmd task new --as test-1 --title "Проверка кириллицы" --file brief.txt
+.\.brigada\bin\brg.cmd task new --as $me --title "Проверка кириллицы" --file brief.txt
 Set-Content -Encoding utf8 msg.txt "Привет, бригада! ёЁ — «кавычки» — 100%"
-.\.brigada\bin\brg.cmd send --as test-1 --file msg.txt
-.\.brigada\bin\brg.cmd item add --as test-1 --title "Подзадача" --desc "Описание по-русски"
+.\.brigada\bin\brg.cmd send --as $me --file msg.txt
+.\.brigada\bin\brg.cmd item add --as $me --title "Подзадача" --desc "Описание по-русски"
 .\.brigada\bin\brg.cmd tail -n 5
 .\.brigada\bin\brg.cmd task show
 ```
@@ -67,25 +70,26 @@ Set-Content -Encoding utf8 msg.txt "Привет, бригада! ёЁ — «к�
 Ошибки и коды выхода:
 ```
 "x" | Out-File u16.txt
-.\.brigada\bin\brg.cmd send --as test-1 --file u16.txt; "код $LASTEXITCODE"
+.\.brigada\bin\brg.cmd send --as $me --file u16.txt; "код $LASTEXITCODE"
 .\.brigada\bin\brg.cmd send --as nobody --file msg.txt; "код $LASTEXITCODE"
-.\.brigada\bin\brg.cmd wait --as test-1 --timeout 5
+.\.brigada\bin\brg.cmd send --as test-1 --file msg.txt; "код $LASTEXITCODE"
+.\.brigada\bin\brg.cmd wait --as $me --timeout 5
 ```
-Ожидается: «текст в кодировке UTF-16 — нужен UTF-8», код 1; «неизвестный агент: nobody», код 1; wait через 5 с — строка-сводка задачи `T001: todo 1`, затем `── нет новых (5 с) · NEXT: .\.brigada\bin\brg.cmd wait --as test-1 --timeout 5`.
+Ожидается: «текст в кодировке UTF-16 — нужен UTF-8», код 1; «неизвестный агент: nobody», код 1; без ключа — «имя test-1 занято другой сессией», код 1; wait через 5 с — строка-сводка задачи `T001: todo 1`, затем `── нет новых (5 с) · NEXT: .\.brigada\bin\brg.cmd wait --as test-1.<ключ> --timeout 5`.
 
 Не из корня проекта:
 ```
 cd C:\work
-.\toy\.brigada\bin\brg.cmd status --as test-1
+.\toy\.brigada\bin\brg.cmd status --as $me
 cd C:\work\toy
 ```
 Ожидается: первая строка «brg вызван не из корня проекта … cd "C:\work\toy" …», NEXT — в форме `.\.brigada\bin\brg.cmd …`.
 
 Прогоны:
 ```
-.\.brigada\bin\brg.cmd run --as test-1 --sync -- "echo привет; exit 3"; "код $LASTEXITCODE"
-.\.brigada\bin\brg.cmd run --as test-1 --timeout 5s -- "sleep 60"
-.\.brigada\bin\brg.cmd run --as test-1 --timeout 5s -- "ping -n 60 127.0.0.1"
+.\.brigada\bin\brg.cmd run --as $me --sync -- "echo привет; exit 3"; "код $LASTEXITCODE"
+.\.brigada\bin\brg.cmd run --as $me --timeout 5s -- "sleep 60"
+.\.brigada\bin\brg.cmd run --as $me --timeout 5s -- "ping -n 60 127.0.0.1"
 ```
 Подожди 15 с, затем:
 ```
@@ -97,7 +101,7 @@ Get-Process sleep, PING -ErrorAction SilentlyContinue
 Убрать тестовую задачу и агента (иначе агент в разделе 3 увидит чужую активную задачу):
 ```
 .\.brigada\bin\brg.cmd task cancel --as human
-.\.brigada\bin\brg.cmd leave --as test-1
+.\.brigada\bin\brg.cmd leave --as $me
 ```
 
 ## 3. Агент держит цикл 30 мин

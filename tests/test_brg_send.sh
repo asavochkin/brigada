@@ -7,20 +7,20 @@ test_send_message_format() {
   new_proj
   a=$(join_as claude)
   b=$(join_as codex)
-  out=$(brg send --as "$a" --to " $b , human,$b" <<'BRG_EOF'
+  out=$(brg send --as "$a" --to " ${b%%.*} , human,${b%%.*}" <<'BRG_EOF'
 строка 1 с $HOME и `x`
 
 строка 3
 BRG_EOF
 )
   assert_eq 0 "$?" "exit code"
-  assert_contains "$out" "── отправлено #3 → $b,human (lobby)"
+  assert_contains "$out" "── отправлено #3 → ${b%%.*},human (lobby)"
   assert_contains "$out" "── NEXT: продолжай; закончив шаг — bash $BRG wait --as $a"
   f=$(msg_file 3)
   assert_eq 3 "$(hdr "$f" Id)"
   assert_eq lobby "$(hdr "$f" Channel)"
-  assert_eq "$a" "$(hdr "$f" From)"
-  assert_eq "$b,human" "$(hdr "$f" To)"
+  assert_eq "${a%%.*}" "$(hdr "$f" From)"
+  assert_eq "${b%%.*},human" "$(hdr "$f" To)"
   assert_eq msg "$(hdr "$f" Kind)"
   case $(hdr "$f" Time) in 20[0-9][0-9]-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z) ;; *) fail "Time: $(hdr "$f" Time)" ;; esac
   case $(hdr "$f" Epoch) in '' | *[!0-9]*) fail "Epoch" ;; esac
@@ -28,10 +28,10 @@ BRG_EOF
 
 строка 3' "$(awk 'b { print } /^$/ && !b { b = 1 }' "$f")" "body"
   assert_eq 3 "$(cat "$B/lobby/seq")"
-  out=$(printf 'ответ\n' | brg send --as "$b" --re 3 --to "$a")
-  assert_contains "$out" "── отправлено #4 → $a (lobby) · re #3"
+  out=$(printf 'ответ\n' | brg send --as "$b" --re 3 --to "${a%%.*}")
+  assert_contains "$out" "── отправлено #4 → ${a%%.*} (lobby) · re #3"
   assert_eq 3 "$(hdr "$(msg_file 4)" Re)"
-  assert_contains "$(metrics_of "$a" send)" "send id=3 channel=lobby to=$b,human bytes="
+  assert_contains "$(metrics_of "$a" send)" "send id=3 channel=lobby to=${b%%.*},human bytes="
 }
 
 test_send_crlf_bom_file_and_trailing_newlines() {
@@ -82,7 +82,7 @@ test_send_rejections_keep_next() {
   out=$(printf 'x\n' | brg send --as "$a" --to nobody-1 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "нет такого агента: nobody-1"
-  out=$(printf 'x\n' | brg send --as "$a" --to "all,$a" 2>&1)
+  out=$(printf 'x\n' | brg send --as "$a" --to "all,${a%%.*}" 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "all нельзя смешивать"
   out=$(printf 'x\n' | brg send --as "$a" --re 99 2>&1)
@@ -109,15 +109,16 @@ test_concurrent_stress() {
   new_proj
   i=1
   while [ $i -le 10 ]; do
-    join_as claude >/dev/null
+    join_as claude >"$P/name.$i"
     i=$((i + 1))
   done
   i=1
   while [ $i -le 10 ]; do
     (
+      n=$(cat "$P/name.$i")
       k=1
       while [ $k -le 100 ]; do
-        printf 's%s-%s\n' "$i" "$k" | bash "$BRG" send --as "claude-$i" >/dev/null || echo "send failed $i $k" >>"$P/errors"
+        printf 's%s-%s\n' "$i" "$k" | bash "$BRG" send --as "$n" >/dev/null || echo "send failed $i $k" >>"$P/errors"
         k=$((k + 1))
       done
     ) &
@@ -167,8 +168,8 @@ test_seq_recovery_after_crash_between_mv_and_seq() {
   f=$(msg_file 4) # "crash": file written, seq not updated
   sed -e 's/^Id: 3$/Id: 4/' -e 's/до сбоя/потерянное при сбое/' "$(msg_file 3)" >"$f"
   out=$(brg wait --as "$a" --timeout 0)
-  assert_contains "$out" "#3 $b → all"
-  assert_contains "$out" "#4 $b → all"
+  assert_contains "$out" "#3 ${b%%.*} → all"
+  assert_contains "$out" "#4 ${b%%.*} → all"
   assert_contains "$out" "потерянное при сбое"
   send_as "$b" "после сбоя"
   assert_file_exists "$(msg_file 5)"
@@ -183,8 +184,8 @@ test_seq_recovery_after_crash_between_mv_and_seq() {
   rm -f "$(msg_file 5)"
   send_as "$b" "после дыры"
   out=$(brg wait --as "$a" --timeout 0)
-  assert_contains "$out" "#6 $b → all"
-  assert_contains "$out" "#7 $b → all"
+  assert_contains "$out" "#6 ${b%%.*} → all"
+  assert_contains "$out" "#7 ${b%%.*} → all"
   assert_not_contains "$out" "#5 "
 }
 
@@ -286,19 +287,19 @@ test_say_from_human() {
   a=$(join_as claude)
   b=$(join_as codex)
   : >"$B/run/stopped"
-  : >"$B/run/stopped.$a"
-  : >"$B/run/stopped.$b"
+  : >"$B/run/stopped.${a%%.*}"
+  : >"$B/run/stopped.${b%%.*}"
   out=$(brg say привет всем)
   assert_contains "$out" "── отправлено #3 от human → all (lobby). Общий стоп снят."
   assert_file_not_exists "$B/run/stopped"
-  assert_file_exists "$B/run/stopped.$a" "say to all keeps per-agent stops"
+  assert_file_exists "$B/run/stopped.${a%%.*}" "say to all keeps per-agent stops"
   assert_eq human "$(hdr "$(msg_file 3)" From)"
   assert_eq all "$(hdr "$(msg_file 3)" To)"
   assert_contains "$(cat "$(msg_file 3)")" "привет всем"
-  out=$(printf 'из stdin\r\n' | brg say --to "$a")
-  assert_contains "$out" "→ $a (lobby). Стоп $a снят."
-  assert_file_not_exists "$B/run/stopped.$a"
-  assert_file_exists "$B/run/stopped.$b"
+  out=$(printf 'из stdin\r\n' | brg say --to "${a%%.*}")
+  assert_contains "$out" "→ ${a%%.*} (lobby). Стоп ${a%%.*} снят."
+  assert_file_not_exists "$B/run/stopped.${a%%.*}"
+  assert_file_exists "$B/run/stopped.${b%%.*}"
   out=$(brg say --to human x 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "human не может писать сам себе"
@@ -307,7 +308,7 @@ test_say_from_human() {
   out=$(brg say "" 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "пустое сообщение"
-  assert_contains "$(brg wait --as "$a" --timeout 0)" "#4 human → $a"
+  assert_contains "$(brg wait --as "$a" --timeout 0)" "#4 human → ${a%%.*}"
 }
 
 test_read_reshows_without_moving_cursor() {
@@ -317,8 +318,8 @@ test_read_reshows_without_moving_cursor() {
   b=$(join_as codex)
   c=$(join_as opencode)
   send_as "$b" "всем-1"
-  send_as "$b" "лично-a" --to "$a"
-  send_as "$b" "лично-c" --to "$c"
+  send_as "$b" "лично-a" --to "${a%%.*}"
+  send_as "$b" "лично-c" --to "${c%%.*}"
   send_as "$a" "моё"
   brg wait --as "$a" >/dev/null
   assert_eq "0/7" "$(cursor "$a")"
@@ -351,16 +352,16 @@ test_tail_shows_everything_and_follows() {
   new_proj
   a=$(join_as claude)
   b=$(join_as codex)
-  send_as "$a" "лично для b" --to "$b"
-  send_as "$b" "ответ" --re 3 --to "$a"
+  send_as "$a" "лично для b" --to "${b%%.*}"
+  send_as "$b" "ответ" --re 3 --to "${a%%.*}"
   out=$(brg tail)
-  assert_contains "$out" "#1 [система] $a → all · "
-  assert_contains "$out" "#3 $a → $b · "
+  assert_contains "$out" "#1 [система] ${a%%.*} → all · "
+  assert_contains "$out" "#3 ${a%%.*} → ${b%%.*} · "
   assert_contains "$out" "  лично для b"
-  assert_contains "$out" "#4 $b → $a · re #3 · "
-  case $out in *"#4 $b → $a · re #3 · "[0-2][0-9]:[0-5][0-9]:[0-5][0-9]*) ;; *) fail "tail time format: $out" ;; esac
+  assert_contains "$out" "#4 ${b%%.*} → ${a%%.*} · re #3 · "
+  case $out in *"#4 ${b%%.*} → ${a%%.*} · re #3 · "[0-2][0-9]:[0-5][0-9]:[0-5][0-9]*) ;; *) fail "tail time format: $out" ;; esac
   out=$(brg tail -n 1)
-  assert_not_contains "$out" "#3 $a → "
+  assert_not_contains "$out" "#3 ${a%%.*} → "
   assert_contains "$out" "#4 "
   BRG_TICK=0.2 bash "$BRG" tail -f >"$P/tail" 2>&1 &
   p=$!
@@ -441,7 +442,7 @@ test_seq_far_above_files_is_not_trusted() {
   assert_eq 4 "$(cat "$B/lobby/seq")" "seq reset to the highest file + 1"
   assert_file_exists "$(msg_file 4)"
   assert_contains "$(metrics_of "$b" seq.reset)" "seq=1000000000 max=3"
-  assert_contains "$(brg wait --as "$a" --timeout 1)" "#4 $b → all"
+  assert_contains "$(brg wait --as "$a" --timeout 1)" "#4 ${b%%.*} → all"
 }
 
 # A brg killed with SIGKILL while reading stdin leaves run/.body.<pid>.<rnd>;

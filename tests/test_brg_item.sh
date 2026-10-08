@@ -42,13 +42,13 @@ BRG_EOF
 )
   assert_eq 0 "$?" "exit code"
   assert_contains "$out" "── добавлена подзадача I001 «Починить логин» (T001, todo)."
-  assert_contains "$out" "Lead $A получил уведомление"
+  assert_contains "$out" "Lead ${A%%.*} получил уведомление"
   assert_eq "── NEXT: продолжай; закончив шаг — bash $BRG wait --as $Bn" "$(printf '%s\n' "$out" | tail -n 1)"
   f=$D/items/I001
   assert_eq I001 "$(hdr "$f" Id)"
   assert_eq "Починить логин" "$(hdr "$f" Title)"
   assert_eq todo "$(hdr "$f" Status)"
-  assert_eq "$Bn" "$(hdr "$f" Creator)"
+  assert_eq "${Bn%%.*}" "$(hdr "$f" Creator)"
   assert_eq "" "$(hdr "$f" Assignee)"
   [ -n "$(hdr "$f" Created)" ] || fail "no Created"
   assert_eq 'Пустой пароль должен отвергаться: $HOME и `x` — дословно.
@@ -57,17 +57,17 @@ BRG_EOF
   # system message in the task channel: wakes only the lead
   f=$(tmsg T001 1)
   assert_eq system "$(hdr "$f" Kind)"
-  assert_eq "$Bn" "$(hdr "$f" From)"
+  assert_eq "${Bn%%.*}" "$(hdr "$f" From)"
   assert_eq all "$(hdr "$f" To)"
-  assert_eq "$A" "$(hdr "$f" Wake)"
+  assert_eq "${A%%.*}" "$(hdr "$f" Wake)"
   wait_pid $pa 3 || fail "the lead was not woken"
-  assert_contains "$(cat "$P/wa")" "$Bn добавил подзадачу I001 «Починить логин»: Пустой пароль должен отвергаться"
+  assert_contains "$(cat "$P/wa")" "${Bn%%.*} добавил подзадачу I001 «Починить логин»: Пустой пароль должен отвергаться"
   wait_pid $pc 6 || fail "C's wait hung"
   assert_contains "$(cat "$P/wc")" "── нет новых" "quiet for the others"
   # ... and comes with C's next waking batch
   send_as "$A" "раздаю"
   out=$(brg wait --as "$C" --timeout 1)
-  assert_contains "$out" "$Bn добавил подзадачу I001"
+  assert_contains "$out" "${Bn%%.*} добавил подзадачу I001"
   assert_contains "$out" "  раздаю"
   # the lead's own add is quiet for everybody; numbering continues
   item_add_as "$A" "Вторая"
@@ -153,9 +153,9 @@ test_claim_overlap_rules_and_conflict_list() {
   assert_eq 0 "$?"
   assert_contains "$out" "── I001 «Auth» — твоя. Резервирование: src/auth, tests/auth."
   assert_eq claimed "$(hdr "$D/items/I001" Status)"
-  assert_eq "$Bn" "$(hdr "$D/items/I001" Assignee)"
+  assert_eq "${Bn%%.*}" "$(hdr "$D/items/I001" Assignee)"
   assert_eq "src/auth,tests/auth" "$(hdr "$D/items/I001" Paths)"
-  assert_eq "$Bn" "$(hdr "$D/reservations/I001" Agent)"
+  assert_eq "${Bn%%.*}" "$(hdr "$D/reservations/I001" Agent)"
   assert_eq "src/auth
 tests/auth" "$(body "$D/reservations/I001")"
   # src/authx does not overlap src/auth (component boundary)
@@ -164,8 +164,8 @@ tests/auth" "$(body "$D/reservations/I001")"
   out=$(brg item claim I3 --as "$A" --paths "docs,SRC" 2>&1)
   assert_eq 1 "$?" "overlap refused"
   assert_contains "$out" "── ОШИБКА: пути пересекаются с чужими резервированиями — I003 не взята"
-  assert_contains "$out" "  SRC ↔ src/auth — I001 «Auth», $Bn (working)"
-  assert_contains "$out" "  SRC ↔ src/authx — I002 «Соседний каталог», $C (working)"
+  assert_contains "$out" "  SRC ↔ src/auth — I001 «Auth», ${Bn%%.*} (working)"
+  assert_contains "$out" "  SRC ↔ src/authx — I002 «Соседний каталог», ${C%%.*} (working)"
   assert_not_contains "$out" "docs ↔"
   assert_contains "$out" "── NEXT:"
   assert_eq todo "$(hdr "$D/items/I003" Status)" "not claimed"
@@ -177,7 +177,7 @@ tests/auth" "$(body "$D/reservations/I001")"
   # a deeper path inside someone's reservation
   out=$(brg item claim I3 --as "$A" --paths "tests/auth/login_test.js" 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "tests/auth/login_test.js ↔ tests/auth — I001 «Auth», $Bn"
+  assert_contains "$out" "tests/auth/login_test.js ↔ tests/auth — I001 «Auth», ${Bn%%.*}"
   # own reservation of another item is not a conflict
   claim_ok "$Bn" I4 "src/auth/util"
   assert_eq claimed "$(hdr "$D/items/I004" Status)"
@@ -202,14 +202,14 @@ tests/auth" "$(body "$D/reservations/I001")"
   assert_contains "$out" "none нельзя смешивать"
   out=$(brg item claim I1 --as "$A" --paths docs 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "I001 уже в работе у $Bn"
+  assert_contains "$out" "I001 уже в работе у ${Bn%%.*}"
   out=$(brg item claim I9 --as "$A" --paths docs 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "нет подзадачи I009 в задаче T001"
   # the claim notice is quiet, to all
   f=$(tmsg T001 5)
   assert_eq no "$(hdr "$f" Wake)"
-  assert_contains "$(cat "$f")" "$Bn взял I001 «Auth» · пути: src/auth, tests/auth"
+  assert_contains "$(cat "$f")" "${Bn%%.*} взял I001 «Auth» · пути: src/auth, tests/auth"
 }
 
 # A second claim by the assignee changes its paths (conflicts re-checked).
@@ -238,13 +238,13 @@ test_claim_race_exactly_one_winner() {
   item_add_as "$A" "Гонка"
   i=1
   while [ $i -le 8 ]; do
-    join_as claude >/dev/null
+    join_as claude >"$P/name.$((i + 1))"
     i=$((i + 1))
   done
   i=2
   while [ $i -le 9 ]; do
     (
-      if bash "$BRG" item claim I1 --as "claude-$i" --paths "src/race" >"$P/out.$i" 2>&1; then
+      if bash "$BRG" item claim I1 --as "$(cat "$P/name.$i")" --paths "src/race" >"$P/out.$i" 2>&1; then
         echo "claude-$i" >>"$P/won"
       fi
     ) &
@@ -281,7 +281,7 @@ test_done_and_release_free_reservations() {
   claim_ok "$Bn" I2 "src/b"
   out=$(brg item done I1 --as "$C" 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "завершить I001 может только исполнитель ($Bn)"
+  assert_contains "$out" "завершить I001 может только исполнитель (${Bn%%.*})"
   out=$(brg item done I1 --as "$Bn" --result shared/nope.md 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "--result: нет файла shared/nope.md (путь от корня проекта)"
@@ -299,7 +299,7 @@ test_done_and_release_free_reservations() {
   [ -n "$(hdr "$D/items/I001" Done)" ] || fail "no Done"
   assert_file_not_exists "$D/reservations/I001"
   wait_pid $pa 3 || fail "the lead was not woken by done"
-  assert_contains "$(cat "$P/wa")" "$Bn завершил I001 «Сделать»: логин чинится, тест зелёный"
+  assert_contains "$(cat "$P/wa")" "${Bn%%.*} завершил I001 «Сделать»: логин чинится, тест зелёный"
   assert_contains "$(cat "$P/wa")" "Результат: .brigada/tasks/T001/shared/report.md"
   out=$(brg item done I1 --as "$Bn" 2>&1)
   assert_eq 1 "$?"
@@ -310,10 +310,10 @@ test_done_and_release_free_reservations() {
   # release: back to todo, reservation gone
   out=$(brg item release I2 --as "$C" 2>&1)
   assert_eq 1 "$?" "release by a stranger"
-  assert_contains "$out" "вернуть I002 в todo может исполнитель ($Bn) или lead ($A)"
+  assert_contains "$out" "вернуть I002 в todo может исполнитель (${Bn%%.*}) или lead (${A%%.*})"
   out=$(brg item release I2 --as "$A" 2>&1)
   assert_eq 1 "$?" "the lead, while the assignee is active"
-  assert_contains "$out" "исполнитель $Bn активен (working)"
+  assert_contains "$out" "исполнитель ${Bn%%.*} активен (working)"
   out=$(brg item release I2 --as "$Bn")
   assert_contains "$out" "── I002 «Вернуть» снова todo, резервирование снято."
   assert_eq todo "$(hdr "$D/items/I002" Status)"
@@ -322,10 +322,10 @@ test_done_and_release_free_reservations() {
   assert_file_not_exists "$D/reservations/I002"
   claim_ok "$C" I2 "src/b"
   # the lead may release the item of an asleep assignee
-  printf '%s\n' $(($(date -u +%s) - 90)) >"$B/run/seen/$C"
+  printf '%s\n' $(($(date -u +%s) - 90)) >"$B/run/seen/${C%%.*}"
   out=$(brg item release I2 --as "$A")
   assert_contains "$out" "снова todo"
-  assert_contains "$(cat "$(tmsg T001 $(cat "$D/seq"))")" "$A вернул I002 «Вернуть» в todo (lead; $C — asleep)"
+  assert_contains "$(cat "$(tmsg T001 $(cat "$D/seq"))")" "${A%%.*} вернул I002 «Вернуть» в todo (lead; ${C%%.*} — asleep)"
 }
 
 # reassign: only the lead, only if the assignee is asleep/gone; the reservation
@@ -336,13 +336,13 @@ test_reassign_rules() {
   item_add_as "$A" "Переназначаемая"
   item_add_as "$A" "Шире"
   claim_ok "$Bn" I1 "src/a"
-  out=$(brg item reassign I1 --to "$C" --as "$Bn" 2>&1)
+  out=$(brg item reassign I1 --to "${C%%.*}" --as "$Bn" 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "переназначать подзадачи может только lead ($A)"
-  out=$(brg item reassign I1 --to "$C" --as "$A" 2>&1)
+  assert_contains "$out" "переназначать подзадачи может только lead (${A%%.*})"
+  out=$(brg item reassign I1 --to "${C%%.*}" --as "$A" 2>&1)
   assert_eq 1 "$?" "assignee active"
-  assert_contains "$out" "исполнитель $Bn активен (working) — переназначить можно, только если он asleep или gone"
-  out=$(brg item reassign I2 --to "$C" --as "$A" 2>&1)
+  assert_contains "$out" "исполнитель ${Bn%%.*} активен (working) — переназначить можно, только если он asleep или gone"
+  out=$(brg item reassign I2 --to "${C%%.*}" --as "$A" 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "I002 — todo, а не в работе"
   out=$(brg item reassign I1 --as "$A" 2>&1)
@@ -351,33 +351,33 @@ test_reassign_rules() {
   # Bn (asleep) also holds a wider reservation of another item: moving I001 to C
   # would overlap it → refused
   claim_ok "$Bn" I2 "src"
-  printf '%s\n' $(($(date -u +%s) - 90)) >"$B/run/seen/$Bn"
-  out=$(brg item reassign I1 --to "$C" --as "$A" 2>&1)
+  printf '%s\n' $(($(date -u +%s) - 90)) >"$B/run/seen/${Bn%%.*}"
+  out=$(brg item reassign I1 --to "${C%%.*}" --as "$A" 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "пути I001 пересекаются с чужими резервированиями — не переназначена"
-  assert_contains "$out" "src/a ↔ src — I002 «Шире», $Bn (asleep)"
+  assert_contains "$out" "src/a ↔ src — I002 «Шире», ${Bn%%.*} (asleep)"
   # once the wider one is released by the lead, the move passes
   brg item release I2 --as "$A" >/dev/null || fail "lead release"
   export BRG_TICK=0.2
   start_wait "$C" "$P/wc" --timeout 20
   pc=$WP
-  out=$(brg item reassign I1 --to "$C" --as "$A")
+  out=$(brg item reassign I1 --to "${C%%.*}" --as "$A")
   assert_eq 0 "$?"
-  assert_contains "$out" "── I001 «Переназначаемая»: $Bn → $C; резервирование (src/a) перешло к $C."
-  assert_eq "$C" "$(hdr "$D/items/I001" Assignee)"
-  assert_eq "$C" "$(hdr "$D/reservations/I001" Agent)"
+  assert_contains "$out" "── I001 «Переназначаемая»: ${Bn%%.*} → ${C%%.*}; резервирование (src/a) перешло к ${C%%.*}."
+  assert_eq "${C%%.*}" "$(hdr "$D/items/I001" Assignee)"
+  assert_eq "${C%%.*}" "$(hdr "$D/reservations/I001" Agent)"
   wait_pid $pc 3 || fail "the new assignee was not woken"
-  assert_contains "$(cat "$P/wc")" "lead $A переназначил I001 «Переназначаемая»: $Bn (asleep) → $C."
+  assert_contains "$(cat "$P/wc")" "lead ${A%%.*} переназначил I001 «Переназначаемая»: ${Bn%%.*} (asleep) → ${C%%.*}."
   # the old assignee's reservation no longer blocks C; it blocks others for C
   out=$(brg item claim I2 --as "$Bn" --paths "src/a/x" 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "src/a/x ↔ src/a — I001 «Переназначаемая», $C"
+  assert_contains "$out" "src/a/x ↔ src/a — I001 «Переназначаемая», ${C%%.*}"
   # to a gone agent: refused
   brg leave --as "$Bn" >/dev/null
-  printf '%s\n' $(($(date -u +%s) - 90)) >"$B/run/seen/$C"
-  out=$(brg item reassign I1 --to "$Bn" --as "$A" 2>&1)
+  printf '%s\n' $(($(date -u +%s) - 90)) >"$B/run/seen/${C%%.*}"
+  out=$(brg item reassign I1 --to "${Bn%%.*}" --as "$A" 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "$Bn — gone"
+  assert_contains "$out" "${Bn%%.*} — gone"
 }
 
 # review: the assignee may not review its own work; same model as
@@ -403,36 +403,36 @@ test_review_rules() {
   pb=$WP
   out=$(printf 'Нет теста на пустой пароль.\nДобавь.\n' | brg item review I1 --as "$C" --verdict changes)
   assert_eq 0 "$?"
-  assert_contains "$out" "── ревью #1 по I001 записано (changes); сообщение отправлено: $Bn, $A."
-  assert_contains "$out" "Внимание: ты на той же модели (gpt), что и исполнитель $Bn, а онлайн есть агент другой модели: $A (opus)."
+  assert_contains "$out" "── ревью #1 по I001 записано (changes); сообщение отправлено: ${Bn%%.*}, ${A%%.*}."
+  assert_contains "$out" "Внимание: ты на той же модели (gpt), что и исполнитель ${Bn%%.*}, а онлайн есть агент другой модели: ${A%%.*} (opus)."
   f=$D/items/I001.reviews/1
-  assert_eq "$C" "$(hdr "$f" Reviewer)"
+  assert_eq "${C%%.*}" "$(hdr "$f" Reviewer)"
   assert_eq changes "$(hdr "$f" Verdict)"
   assert_eq gpt "$(hdr "$f" Model)"
-  assert_eq "$Bn" "$(hdr "$f" Assignee)"
+  assert_eq "${Bn%%.*}" "$(hdr "$f" Assignee)"
   assert_eq "Нет теста на пустой пароль.
 Добавь." "$(body "$f")"
   wait_pid $pb 3 || fail "the assignee was not woken by the review"
-  assert_contains "$(cat "$P/wb")" "ревью I001 «Ревьюируемая» от $C (gpt): changes — нужны правки"
+  assert_contains "$(cat "$P/wb")" "ревью I001 «Ревьюируемая» от ${C%%.*} (gpt): changes — нужны правки"
   assert_contains "$(cat "$P/wb")" "  Нет теста на пустой пароль."
   n=$(cat "$D/seq")
-  assert_eq "$Bn,$A" "$(hdr "$(tmsg T001 "$n")" To)"
+  assert_eq "${Bn%%.*},${A%%.*}" "$(hdr "$(tmsg T001 "$n")" To)"
   assert_eq "" "$(hdr "$(tmsg T001 "$n")" Wake)" "wakes both"
   # a different model: no warning; the lead reviewing → only the assignee is addressed
   out=$(printf 'теперь ок\n' | brg item review I1 --as "$A" --verdict ok)
-  assert_contains "$out" "── ревью #2 по I001 записано (ok); сообщение отправлено: $Bn."
+  assert_contains "$out" "── ревью #2 по I001 записано (ok); сообщение отправлено: ${Bn%%.*}."
   assert_not_contains "$out" "Внимание"
   # same model, but nobody of another model online: no warning
   brg leave --as "$A" >/dev/null
   out=$(printf 'ещё раз\n' | brg item review I1 --as "$C" --verdict ok)
   assert_not_contains "$out" "Внимание"
   out=$(brg item list)
-  assert_contains "$out" "I001 · claimed · $Bn · «Ревьюируемая» · пути: src/a"
-  assert_contains "$out" "ревью: ok от $C (всего 3)"
+  assert_contains "$out" "I001 · claimed · ${Bn%%.*} · «Ревьюируемая» · пути: src/a"
+  assert_contains "$out" "ревью: ok от ${C%%.*} (всего 3)"
   out=$(brg item show I1)
-  assert_contains "$out" "── ревью #1: changes от $C (gpt) · "
+  assert_contains "$out" "── ревью #1: changes от ${C%%.*} (gpt) · "
   assert_contains "$out" "  Нет теста на пустой пароль."
-  assert_contains "$out" "── ревью #2: ok от $A (opus)"
+  assert_contains "$out" "── ревью #2: ok от ${A%%.*} (opus)"
   # a todo item has nothing to review
   item_add_as "$C" "Пустая"
   out=$(printf 'x\n' | brg item review I2 --as "$C" --verdict ok 2>&1)
@@ -461,7 +461,7 @@ test_close_and_cancel_with_claimed_items() {
   assert_eq done "$(hdr "$D/items/I002" Status)"
   assert_eq "" "$(ls -A "$D/reservations")" "reservations released"
   out=$(brg wait --as "$Bn" --timeout 1)
-  assert_contains "$out" "Закрыта с --force: подзадачи в работе отменены — I001 ($Bn); прекрати правки по ним."
+  assert_contains "$out" "Закрыта с --force: подзадачи в работе отменены — I001 (${Bn%%.*}); прекрати правки по ним."
   # cancel (and --cancel-current) do the same
   task_new_as "$A" "Вторая"
   D=$(tdir T002)
@@ -471,7 +471,7 @@ test_close_and_cancel_with_claimed_items() {
   assert_contains "$out" "задача T002 отменена"
   assert_eq cancelled "$(hdr "$D/items/I001" Status)"
   assert_eq "" "$(ls -A "$D/reservations")"
-  assert_contains "$(cat "$B/lobby/messages/"*.msg | awk '/отменена/')" "Подзадачи в работе отменены, резервирования сняты: I001 ($C)."
+  assert_contains "$(cat "$B/lobby/messages/"*.msg | awk '/отменена/')" "Подзадачи в работе отменены, резервирования сняты: I001 (${C%%.*})."
   # items of a finished task are out of reach
   out=$(brg item claim I1 --as "$C" --paths x 2>&1)
   assert_eq 1 "$?"
@@ -489,9 +489,9 @@ test_item_list_show_status_who() {
   claim_ok "$Bn" I3 none
   brg item done I3 --as "$Bn" --note "готово" >/dev/null || fail done
   out=$(brg item list --as "$C")
-  assert_contains "$out" "I001 · claimed · $Bn · «Первая» · пути: src/a, tests/a · "
-  assert_contains "$out" "I002 · todo · «Вторая» · создал $Bn"
-  assert_contains "$out" "I003 · done · $Bn · «Третья» · итог: готово"
+  assert_contains "$out" "I001 · claimed · ${Bn%%.*} · «Первая» · пути: src/a, tests/a · "
+  assert_contains "$out" "I002 · todo · «Вторая» · создал ${Bn%%.*}"
+  assert_contains "$out" "I003 · done · ${Bn%%.*} · «Третья» · итог: готово"
   assert_contains "$out" "── T001: todo 1 · в работе 1 · готово 1 · отменено 0"
   assert_contains "$out" "── NEXT:"
   out=$(brg item list --status todo,done)
@@ -510,8 +510,8 @@ test_item_list_show_status_who() {
   assert_contains "$out" "--status — todo, claimed, done, cancelled"
   out=$(brg item show I1 --as "$C")
   assert_contains "$out" "── I001 «Первая» · claimed · задача T001"
-  assert_contains "$out" "Создал: $A · "
-  assert_contains "$out" "Исполнитель: $Bn (working) · взята "
+  assert_contains "$out" "Создал: ${A%%.*} · "
+  assert_contains "$out" "Исполнитель: ${Bn%%.*} (working) · взята "
   assert_contains "$out" "Пути: src/a, tests/a"
   assert_contains "$out" "── описание ──
 строка описания 1
@@ -526,9 +526,9 @@ test_item_list_show_status_who() {
   out=$(brg status --as "$C")
   assert_contains "$out" "Мои подзадачи: нет — свободные: bash $BRG item list --status todo"
   out=$(brg who)
-  assert_contains "$out" "$Bn · codex · gpt · working · активен "
+  assert_contains "$out" "${Bn%%.*} · codex · gpt · working · активен "
   assert_contains "$out" " с назад · подзадач в работе: 1" # seconds: 0 or 1, by timing
-  assert_not_contains "$(printf '%s\n' "$out" | awk -v c="$C" 'index($0, c " ") == 1')" "подзадач"
+  assert_not_contains "$(printf '%s\n' "$out" | awk -v c="${C%%.*}" 'index($0, c " ") == 1')" "подзадач"
 }
 
 # --desc / --comment instead of stdin (one-liners; PowerShell has no
@@ -594,7 +594,7 @@ test_item_add_paths_hint() {
   assert_eq 1 "$?"
   assert_contains "$out" "недопустимый путь в --paths: «../etc»"
   assert_file_not_exists "$D/items/I002" "nothing added"
-  assert_contains "$(brg item list)" "I001 · todo · «С путями» · создал $A · предлагаемые пути: src/a, tests/a"
+  assert_contains "$(brg item list)" "I001 · todo · «С путями» · создал ${A%%.*} · предлагаемые пути: src/a, tests/a"
   assert_contains "$(brg item show I1)" "Предлагаемые пути: src/a, tests/a (claim без --paths возьмёт их)"
   # claim without --paths: the hint
   out=$(brg item claim I1 --as "$Bn")
@@ -602,7 +602,7 @@ test_item_add_paths_hint() {
   assert_contains "$out" "── I001 «С путями» — твоя. Взяты предлагаемые пути: src/a, tests/a (нужны другие — повтори claim с --paths)."
   assert_eq "src/a,tests/a" "$(hdr "$f" Paths)"
   assert_eq "src/a,tests/a" "$(hdr "$f" Paths-Hint)" "the hint is kept"
-  assert_eq "$Bn" "$(hdr "$D/reservations/I001" Agent)"
+  assert_eq "${Bn%%.*}" "$(hdr "$D/reservations/I001" Agent)"
   assert_contains "$(metrics_of "$Bn" item.claim)" "paths=src/a,tests/a renew=0 hint=1"
   assert_not_contains "$(brg item show I1)" "Предлагаемые пути" "same as the reserved ones"
   # a second claim of one's own item changes paths: --paths required
@@ -615,7 +615,7 @@ test_item_add_paths_hint() {
   out=$(brg item claim I3 --as "$C" 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "I003 не взята (предлагаемые пути заняты — укажи свои: --paths …)"
-  assert_contains "$out" "src ↔ src/a — I001 «С путями», $Bn"
+  assert_contains "$out" "src ↔ src/a — I001 «С путями», ${Bn%%.*}"
   out=$(brg item claim I3 --as "$C" --paths docs)
   assert_contains "$out" "Резервирование: docs."
   assert_eq docs "$(hdr "$D/items/I003" Paths)"
@@ -634,7 +634,7 @@ test_item_add_paths_hint() {
   assert_contains "$out" "Взяты предлагаемые пути: — (без правок файлов)"
   # release: the hint stays for the next claimer
   brg item release I1 --as "$Bn" >/dev/null || fail release
-  assert_contains "$(brg item list --status todo)" "I001 · todo · «С путями» · создал $A · предлагаемые пути: src/a, tests/a"
+  assert_contains "$(brg item list --status todo)" "I001 · todo · «С путями» · создал ${A%%.*} · предлагаемые пути: src/a, tests/a"
   out=$(brg item claim I1 --as "$A")
   assert_contains "$out" "Взяты предлагаемые пути: src/a, tests/a"
   assert_contains "$(brg item --help)" '[--paths "предлагаемые пути"]'

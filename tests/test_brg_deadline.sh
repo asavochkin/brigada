@@ -20,12 +20,12 @@ test_deadline_fires_exactly_once() {
   out=$(printf 'Решаем: делаем X?\n' | brg send --as "$A" --reply-by 2s)
   assert_contains "$out" "── отправлено #6 → all (lobby)"
   assert_contains "$out" "Дедлайн: ответ до "
-  assert_contains "$out" "ждём: $Bn, $C."
+  assert_contains "$out" "ждём: ${Bn%%.*}, ${C%%.*}."
   f=$(msg_file 6)
-  assert_eq "$Bn,$C" "$(hdr "$f" Expect)"
+  assert_eq "${Bn%%.*},${C%%.*}" "$(hdr "$f" Expect)"
   by=$(hdr "$f" Reply-By)
   assert_eq $(($(hdr "$f" Epoch) + 2)) "$by" "Reply-By = Epoch + 2"
-  assert_file_exists "$B/run/deadlines/$A/$by-lobby-6"
+  assert_file_exists "$B/run/deadlines/${A%%.*}/$by-lobby-6"
   send_as "$Bn" "да" --re 6
   t0=$(date -u +%s)
   out=$(brg wait --as "$A" --timeout 6)
@@ -33,16 +33,16 @@ test_deadline_fires_exactly_once() {
   assert_not_contains "$out" "дедлайн" # C has not answered yet: no early summary
   out=$(brg wait --as "$A" --timeout 6)
   t1=$(date -u +%s)
-  assert_eq "── дедлайн по #6 (lobby) истёк: ответили: $Bn; не ответили: $C
+  assert_eq "── дедлайн по #6 (lobby) истёк: ответили: ${Bn%%.*}; не ответили: ${C%%.*}
 ── NEXT: обработай, затем: bash $BRG wait --as $A --timeout 6" "$out"
   [ $((t1 - t0)) -le 3 ] || fail "summary late: $((t1 - t0)) s"
   assert_file_exists "$B/run/deadlines/lobby-6.done"
-  assert_file_not_exists "$B/run/deadlines/$A/$by-lobby-6"
+  assert_file_not_exists "$B/run/deadlines/${A%%.*}/$by-lobby-6"
   # never again
   out=$(brg wait --as "$A" --timeout 1)
   assert_contains "$out" "── нет новых"
   assert_eq 1 "$(awk '$3 == "deadline"' "$B/run/metrics.log" | wc -l | tr -d ' ')" "one deadline metric"
-  assert_contains "$(metrics_of "$A" deadline)" "channel=lobby id=6 result=expired replied=$Bn missing=$C"
+  assert_contains "$(metrics_of "$A" deadline)" "channel=lobby id=6 result=expired replied=${Bn%%.*} missing=${C%%.*}"
   assert_contains "$(metrics_of "$A" wait)" "result=deadline delivered=0"
   # others are not woken by A's deadline
   assert_contains "$(brg wait --as "$C" --timeout 0)" "Решаем"
@@ -55,7 +55,7 @@ test_deadline_once_under_racing_waits() {
   four_agents
   i=1
   while [ $i -le 5 ]; do
-    printf 'вопрос %s\n' "$i" | brg send --as "$A" --to "$Bn" --reply-by 1s >/dev/null || fail send
+    printf 'вопрос %s\n' "$i" | brg send --as "$A" --to "${Bn%%.*}" --reply-by 1s >/dev/null || fail send
     i=$((i + 1))
   done
   sleep 1.2
@@ -81,38 +81,38 @@ test_deadline_reply_rules_and_early_summary() {
   local out
   four_agents
   printf 'Кто за?\n' | brg send --as "$A" --reply-by 1h >/dev/null || fail send # #5
-  assert_eq "$D,$Bn,$C" "$(hdr "$(msg_file 5)" Expect)" # roster order
+  assert_eq "${D%%.*},${Bn%%.*},${C%%.*}" "$(hdr "$(msg_file 5)" Expect)" # roster order
   send_as "$Bn" "за (всем, без re)"          # #6 counts: to all
-  send_as "$C" "частное D" --to "$D"         # #7 no: to D, no Re
+  send_as "$C" "частное D" --to "${D%%.*}"         # #7 no: to D, no Re
   join_as codex >/dev/null                   # #8 system: never a reply
-  send_as "$D" "лично A" --to "$A"           # #9 counts: to the sender
+  send_as "$D" "лично A" --to "${A%%.*}"           # #9 counts: to the sender
   out=$(brg status --as "$A")
   assert_contains "$out" "Мой дедлайн по #5 (lobby): до "
-  assert_contains "$out" "ответили: $D, $Bn · ждём: $C"
+  assert_contains "$out" "ответили: ${D%%.*}, ${Bn%%.*} · ждём: ${C%%.*}"
   out=$(brg wait --as "$A" --timeout 1)
   assert_contains "$out" "  за (всем, без re)"
   assert_not_contains "$out" "ответили все"
-  send_as "$C" "ответ D по теме" --to "$D" --re 5 # #10 counts: Re: 5 (not delivered to A)
+  send_as "$C" "ответ D по теме" --to "${D%%.*}" --re 5 # #10 counts: Re: 5 (not delivered to A)
   send_as "$Bn" "ещё мысль"                       # wakes A
   out=$(brg wait --as "$A" --timeout 1)
   assert_contains "$out" "  ещё мысль"
   assert_not_contains "$out" "ответ D по теме"
-  assert_contains "$out" "── по #5 (lobby) до срока ответили все адресаты: $D, $Bn, $C"
+  assert_contains "$out" "── по #5 (lobby) до срока ответили все адресаты: ${D%%.*}, ${Bn%%.*}, ${C%%.*}"
   assert_eq "── NEXT: обработай, затем: bash $BRG wait --as $A --timeout 1" "$(printf '%s\n' "$out" | tail -n 1)"
   assert_file_exists "$B/run/deadlines/lobby-5.done"
-  assert_eq "" "$(ls "$B/run/deadlines/$A")" "index removed"
+  assert_eq "" "$(ls "$B/run/deadlines/${A%%.*}")" "index removed"
   assert_contains "$(metrics_of "$A" deadline)" "result=answered"
 }
 
 test_deadline_options() {
   local out
   four_agents
-  out=$(printf 'x\n' | brg send --as "$A" --to "$Bn" --reply-by 90)
-  assert_contains "$out" "(через 90 с), ждём: $Bn."
-  assert_eq "$Bn" "$(hdr "$(msg_file 5)" Expect)"
-  out=$(printf 'x\n' | brg send --as "$A" --to "$Bn,$A,human" --reply-by 5m)
-  assert_contains "$out" "(через 5 мин), ждём: $Bn, human."
-  out=$(printf 'x\n' | brg send --as "$A" --to "$A" --reply-by 5m)
+  out=$(printf 'x\n' | brg send --as "$A" --to "${Bn%%.*}" --reply-by 90)
+  assert_contains "$out" "(через 90 с), ждём: ${Bn%%.*}."
+  assert_eq "${Bn%%.*}" "$(hdr "$(msg_file 5)" Expect)"
+  out=$(printf 'x\n' | brg send --as "$A" --to "${Bn%%.*},${A%%.*},human" --reply-by 5m)
+  assert_contains "$out" "(через 5 мин), ждём: ${Bn%%.*}, human."
+  out=$(printf 'x\n' | brg send --as "$A" --to "${A%%.*}" --reply-by 5m)
   assert_contains "$out" "Внимание: дедлайн не установлен"
   assert_eq "" "$(hdr "$(msg_file 7)" Reply-By)"
   for bad in 5x 0 0s 25h abc; do
@@ -141,18 +141,18 @@ test_deadline_in_task_channel_with_human() {
 test_deadline_claimed_but_not_printed_is_reported_again() {
   local out by by2
   four_agents
-  printf 'вопрос\n' | brg send --as "$A" --to "$Bn" --reply-by 1h >/dev/null || fail send
+  printf 'вопрос\n' | brg send --as "$A" --to "${Bn%%.*}" --reply-by 1h >/dev/null || fail send
   by=$(hdr "$(msg_file 5)" Reply-By)
   # simulate: deadline long expired, marker claimed by a reporter that was killed
   by2=$(($(date -u +%s) - 61))
-  mv "$B/run/deadlines/$A/$by-lobby-5" "$B/run/deadlines/$A/$by2-lobby-5"
+  mv "$B/run/deadlines/${A%%.*}/$by-lobby-5" "$B/run/deadlines/${A%%.*}/$by2-lobby-5"
   : >"$B/run/deadlines/lobby-5.done"
   out=$(brg wait --as "$A" --timeout 1)
-  assert_contains "$out" "── дедлайн по #5 (lobby) истёк: ответили: никто; не ответили: $Bn"
-  assert_eq "" "$(ls "$B/run/deadlines/$A")" "index removed after printing"
+  assert_contains "$out" "── дедлайн по #5 (lobby) истёк: ответили: никто; не ответили: ${Bn%%.*}"
+  assert_eq "" "$(ls "$B/run/deadlines/${A%%.*}")" "index removed after printing"
   assert_contains "$(brg wait --as "$A" --timeout 0)" "── нет новых"
   # a fresh claim (a racing wait about to print) is respected
-  printf 'вопрос 2\n' | brg send --as "$A" --to "$Bn" --reply-by 1s >/dev/null || fail send
+  printf 'вопрос 2\n' | brg send --as "$A" --to "${Bn%%.*}" --reply-by 1s >/dev/null || fail send
   : >"$B/run/deadlines/lobby-6.done"
   sleep 1.1
   assert_contains "$(brg wait --as "$A" --timeout 1)" "── нет новых"

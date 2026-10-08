@@ -147,17 +147,17 @@ $out"
   mkdir -p "$B/run/execq"
   printf '%s R099 %s\n' $sp "$(basename "$(tdir T001)")" >"$B/run/execq/000099"
   # a hung wait: live pid, no heartbeat
-  printf '%s\n' $sp >"$B/run/wait/$a.pid"
+  printf '%s\n' $sp >"$B/run/wait/${a%%.*}.pid"
   out=$(brg doctor)
   assert_eq 1 "$?"
   assert_contains "$(fails "$out")" "✗ очередь brg run: R099 — раннер (pid $sp) не подаёт признаков жизни"
   assert_contains "$out" "run cancel R099"
-  assert_contains "$(fails "$out")" "✗ wait агента $a: pid $sp жив, но heartbeat не обновляется (нет файла heartbeat)"
+  assert_contains "$(fails "$out")" "✗ wait агента ${a%%.*}: pid $sp жив, но heartbeat не обновляется (нет файла heartbeat)"
   assert_contains "$out" "SUPERSEDED"
   assert_file_exists "$B/run/execq/000099" "doctor dropped the entry"
   # a leftover pid file of a finished wait is harmless
   rm -f "$B/run/execq/000099"
-  printf '%s\n' "$(dead_pid)" >"$B/run/wait/$a.pid"
+  printf '%s\n' "$(dead_pid)" >"$B/run/wait/${a%%.*}.pid"
   out=$(brg doctor)
   assert_eq 0 "$?" "$out"
   assert_contains "$out" "✓ wait: живых 0, остались pid-файлы завершённых: 1 (безвредно)"
