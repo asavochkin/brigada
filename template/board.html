@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>brigada — доска</title>
+<!--
+  brigada board: a read-only page for the human (DESIGN §9.1). Opened as file://
+  without a server. `brg board` writes run/board/data.js (window.BRG_BOARD) and
+  run/board/T00N.js (window.BRG_TASKS) next to this file; the page reloads data.js
+  every 2 s with a classic script tag. Data go into the page only through
+  textContent / createElement — never innerHTML.
+-->
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --fg: #1d2330; --muted: #677085; --border: #dde1e8;
+  --accent: #2f6fdf; --ok: #1f8a4c; --warn: #b26a00; --bad: #c62f2f; --sysbg: #f1f3f6;
+  --warnbg: #fff5e0; --badbg: #fdeaea; --okbg: #e7f5ec; --humanbg: #eef4ff; --code: #f1f3f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c; --card: #1c2027; --fg: #e3e6eb; --muted: #949cab; --border: #2e343e;
+    --accent: #6ea0ff; --ok: #4cc27f; --warn: #e2a33a; --bad: #f06a6a; --sysbg: #20252d;
+    --warnbg: #3a2e14; --badbg: #3d1d1f; --okbg: #183325; --humanbg: #1d2a42; --code: #232931;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+header {
+  position: sticky; top: 0; z-index: 5; background: var(--bg);
+  border-bottom: 1px solid var(--border); padding: 8px 16px;
+}
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+#proj { font-weight: 700; font-size: 16px; }
+.top label { min-width: 0; max-width: 100%; }
+#tasksel { max-width: 70vw; font: inherit; padding: 2px 4px; background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; }
+#tline { margin-top: 4px; }
+#tline .ttl { font-weight: 600; font-size: 15px; }
+#foot { color: var(--muted); font-size: 12px; margin-left: auto; }
+.banner { margin-top: 6px; padding: 6px 10px; border-radius: 6px; background: var(--warnbg); }
+.banner.bad { background: var(--badbg); font-weight: 600; }
+main {
+  display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: 16px; padding: 16px; align-items: start;
+}
+.col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+@media (max-width: 1000px) { main { grid-template-columns: minmax(0, 1fr); } }
+section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; min-width: 0; }
+h2 { margin: 0 0 8px; font-size: 15px; }
+h2 .cnt { color: var(--muted); font-weight: 400; }
+.muted { color: var(--muted); }
+.empty { color: var(--muted); font-style: italic; }
+.badge { display: inline-block; padding: 0 6px; border-radius: 9px; font-size: 12px; line-height: 18px; border: 1px solid var(--border); white-space: nowrap; }
+.b-ok, .st-waiting, .ts-done { color: var(--ok); border-color: var(--ok); }
+.b-bad, .ts-cancelled { color: var(--bad); border-color: var(--bad); }
+.b-warn, .st-asleep { color: var(--warn); border-color: var(--warn); }
+.st-working, .ts-active { color: var(--accent); border-color: var(--accent); }
+.st-gone { color: var(--muted); }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
+.card { border: 1px solid var(--border); border-radius: 6px; padding: 8px; min-width: 0; overflow-wrap: anywhere; }
+.card.dim { opacity: .6; }
+.card.warn { background: var(--warnbg); }
+.card.changes { border-left: 4px solid var(--bad); }
+.card .nm { font-weight: 600; }
+.card .ln { margin-top: 2px; }
+.note { color: var(--warn); font-weight: 600; }
+.kanban { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+@media (max-width: 700px) { .kanban { grid-template-columns: minmax(0, 1fr); } }
+.kcol { background: var(--sysbg); border-radius: 6px; padding: 6px; min-width: 0; }
+.kcol h3 { margin: 2px 2px 6px; font-size: 13px; }
+.kcol .card { background: var(--card); margin-bottom: 6px; }
+.kcol .card.warn { background: var(--warnbg); }
+details > summary { cursor: pointer; }
+.desc { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }
+.pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+pre, code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; padding: 6px 8px; background: var(--code); border-radius: 4px; max-height: 360px; overflow: auto; }
+.run { border-bottom: 1px solid var(--border); padding: 4px 0; }
+.run:last-child { border-bottom: 0; }
+.run > summary { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; list-style: none; }
+.run > summary::-webkit-details-marker { display: none; }
+.run > summary::before { content: "▸"; color: var(--muted); }
+.run[open] > summary::before { content: "▾"; }
+.run .cmd { flex: 1 1 200px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; align-items: center; }
+.tab { font: inherit; padding: 2px 10px; border: 1px solid var(--border); border-radius: 14px; background: transparent; color: var(--fg); cursor: pointer; }
+.tab.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.ctl { font: inherit; background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 1px 4px; }
+#msglist { max-height: 75vh; overflow: auto; padding-right: 4px; }
+.msg { padding: 6px 8px; border-radius: 6px; margin-bottom: 6px; border: 1px solid var(--border); overflow-wrap: anywhere; }
+.msg.sys { background: var(--sysbg); color: var(--muted); border-style: dashed; }
+.msg.human { background: var(--humanbg); }
+.msg.flash { outline: 2px solid var(--accent); }
+.mh { font-size: 12.5px; color: var(--muted); }
+.mh b { color: var(--fg); }
+.msg.sys .mh b { color: var(--muted); }
+.mb { margin-top: 2px; white-space: pre-wrap; }
+.dl { margin-left: 4px; }
+a.re, a.lnk { color: var(--accent); text-decoration: none; cursor: pointer; }
+a.re:hover, a.lnk:hover { text-decoration: underline; }
+.doc { max-height: 70vh; overflow: auto; }
+.trow { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 4px 6px; border-radius: 6px; cursor: pointer; align-items: baseline; }
+.trow:hover { background: var(--sysbg); }
+.trow.sel { background: var(--humanbg); }
+.trow .sum { flex-basis: 100%; color: var(--muted); padding-left: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <span id="proj">brigada</span>
+    <label class="muted">задача: <select id="tasksel" aria-label="Задача"></select></label>
+    <span id="foot"></span>
+  </div>
+  <div id="tline"></div>
+  <div id="banners"></div>
+</header>
+<main>
+  <div class="col">
+    <section id="s-agents"><h2>Бригада</h2><div id="agents"></div></section>
+    <section id="s-kanban"><h2>Подзадачи</h2><div id="kanban"></div></section>
+    <section id="s-runs"><h2>Прогоны</h2><div id="runs"></div></section>
+    <section id="s-docs"><h2>Документы</h2><div class="tabs" id="doctabs"></div><div id="doc" class="doc"></div></section>
+    <section id="s-tasks"><h2>Задачи</h2><div id="tasks"></div></section>
+  </div>
+  <div class="col">
+    <section id="s-msgs">
+      <h2>Переписка</h2>
+      <div class="tabs" id="msgtabs"></div>
+      <div class="tabs">
+        <label class="muted">агент: <select id="magent" class="ctl"></select></label>
+        <label class="muted"><input type="checkbox" id="msys"> скрыть системные</label>
+      </div>
+      <div id="msgtrunc" class="muted"></div>
+      <div id="msglist"></div>
+    </section>
+  </div>
+</main>
+<script>
+(function () {
+  "use strict";
+  var REFRESH = 2000;
+  var STATE_RU = { waiting: "ждёт", working: "работает", asleep: "спит", gone: "ушёл" };
+  var TASK_RU = { active: "идёт", done: "закрыта", cancelled: "отменена" };
+  var RUN_RU = { queued: "в очереди", running: "идёт", done: "готово", failed: "ошибка", timeout: "таймаут", killed: "остановлен", cancelled: "отменён" };
+  var RUN_FINAL = { done: 1, failed: 1, timeout: 1, killed: 1, cancelled: 1 };
+  var COLS = [["todo", "todo"], ["claimed", "в работе"], ["done", "готово"], ["cancelled", "отменено"]];
+  var DOCS = [["brief", "Постановка", "постановки нет"], ["plan", "План", "плана нет — его пишет lead в shared/plan.md задачи"], ["summary", "Итог", "итога ещё нет — summary.md нужен для закрытия задачи"]];
+  var RUN_CMD = "bash .brigada/bin/brg board (Windows: .\\.brigada\\bin\\brg.cmd board)";
+
+  var S = {
+    data: null, err: "", sel: "", msgTab: "task", agent: "", hideSys: false, docTab: "brief",
+    open: {}, last: {}, tload: {}, msgChan: ""
+  };
+
+  // ── helpers ──
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = String(text);
+    return e;
+  }
+  function add(p) {
+    for (var i = 1; i < arguments.length; i++) {
+      var c = arguments[i];
+      if (c === null || c === undefined || c === false) continue;
+      p.appendChild(typeof c === "object" ? c : document.createTextNode(String(c)));
+    }
+    return p;
+  }
+  function clear(e) { while (e.firstChild) e.removeChild(e.firstChild); }
+  function hv(r, k) { return r && r.h && typeof r.h[k] === "string" ? r.h[k] : ""; }
+  function num(s) { return /^\d+$/.test(String(s)) ? parseInt(s, 10) : 0; }
+  function now() { return Math.floor(Date.now() / 1000); }
+  function dur(s) {
+    s = Math.max(0, Math.floor(s));
+    if (s < 120) return s + " с";
+    if (s < 7200) return Math.round(s / 60) + " мин";
+    return Math.round(s / 3600) + " ч";
+  }
+  function ago(s) {
+    s = Math.max(0, Math.floor(s));
+    if (s < 120) return s + " с назад";
+    if (s < 7200) return Math.floor(s / 60) + " мин назад";
+    return Math.floor(s / 3600) + " ч назад";
+  }
+  function pad(n) { return n < 10 ? "0" + n : "" + n; }
+  function hm(ep) {
+    if (!ep) return "";
+    var d = new Date(ep * 1000), s = pad(d.getHours()) + ":" + pad(d.getMinutes());
+    if (d.toDateString() !== new Date().toDateString()) s = pad(d.getDate()) + "." + pad(d.getMonth() + 1) + " " + s;
+    return s;
+  }
+  function isoEpoch(s) { var t = Date.parse(s); return isNaN(t) ? 0 : Math.floor(t / 1000); }
+  function names(s) { return String(s || "").split(",").map(function (x) { return x.trim(); }).filter(Boolean); }
+  function natcmp(a, b) {
+    var ra = /^(.*?)(\d+)$/.exec(a), rb = /^(.*?)(\d+)$/.exec(b);
+    if (ra && rb && ra[1] === rb[1]) return parseInt(ra[2], 10) - parseInt(rb[2], 10);
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+  function taskId(t) { var m = /^(T\d{3,6})(-|$)/.exec(t && typeof t.dir === "string" ? t.dir : ""); return m ? m[1] : ""; }
+  // a span kept current by tick(): "ago" (… назад) or "dur" (… с) since an epoch
+  function live(fmt, since) {
+    var e = el("span", "live");
+    e.setAttribute("data-fmt", fmt);
+    e.setAttribute("data-since", String(since));
+    e.textContent = fmt === "ago" ? ago(now() - since) : dur(now() - since);
+    return e;
+  }
+  function badge(text, cls) { return el("span", "badge" + (cls ? " " + cls : ""), text); }
+  // <details> keeps its open state across re-renders
+  function details(key, cls) {
+    var d = el("details", cls);
+    d.open = !!S.open[key];
+    d.addEventListener("toggle", function () { S.open[key] = d.open; });
+    return d;
+  }
+  function sec(name, input, fn) {
+    var k = JSON.stringify(input);
+    if (S.last[name] === k) return;
+    S.last[name] = k;
+    fn(input);
+  }
+
+  // ── data ──
+  function load() {
+    var old = $("brg-data");
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    window.BRG_BOARD = undefined;
+    var s = document.createElement("script");
+    s.id = "brg-data";
+    s.charset = "utf-8";
+    s.src = "run/board/data.js?" + Date.now();
+    s.onload = function () {
+      var b = window.BRG_BOARD;
+      if (b && b.meta && Array.isArray(b.agents)) { S.data = b; S.err = ""; } else { S.err = "parse"; }
+      render();
+    };
+    s.onerror = function () { S.err = "nofile"; render(); };
+    document.head.appendChild(s);
+  }
+  function loadTask(id) {
+    var st = S.tload[id];
+    if (!/^T\d{3,6}$/.test(id) || st === "loading" || st === "ok") return;
+    if (st && now() - st < 5) return; // failed recently
+    S.tload[id] = "loading";
+    var s = document.createElement("script");
+    s.charset = "utf-8";
+    s.src = "run/board/" + id + ".js?" + Date.now();
+    s.onload = function () { S.tload[id] = window.BRG_TASKS && window.BRG_TASKS[id] ? "ok" : now(); if (s.parentNode) s.parentNode.removeChild(s); render(); };
+    s.onerror = function () { S.tload[id] = now(); if (s.parentNode) s.parentNode.removeChild(s); render(); };
+    document.head.appendChild(s);
+  }
+  // the task shown: the current one (hash empty or its id) or a past one from T00N.js
+  function view() {
+    var d = S.data, cur = d && d.current, id = S.sel, bt = window.BRG_TASKS || {};
+    if (!d) return null;
+    if (!id || (cur && cur.id === id)) return { id: cur ? cur.id : "", t: cur || null, trunc: (d.meta && d.meta.trunc) || {}, isCur: true };
+    if (bt[id]) return { id: id, t: bt[id], trunc: bt[id].trunc || {}, isCur: false };
+    var known = (d.tasks || []).some(function (x) { return taskId(x) === id; });
+    if (known) loadTask(id);
+    return { id: id, t: null, trunc: {}, isCur: false, missing: !known ? "unknown" : S.tload[id] === "loading" ? "loading" : "fail" };
+  }
+  function itemOf(r) {
+    var revs = (r.reviews || []).filter(Boolean).slice().sort(function (a, b) { return num(a.f) - num(b.f); });
+    return {
+      id: hv(r, "Id") || r.f, title: hv(r, "Title"), status: hv(r, "Status"), assignee: hv(r, "Assignee"),
+      creator: hv(r, "Creator"), paths: hv(r, "Paths"), hint: hv(r, "Paths-Hint"), claimed: num(hv(r, "Claimed-Epoch")),
+      done: isoEpoch(hv(r, "Done")), note: hv(r, "Note"), result: hv(r, "Result"), desc: r.b || "",
+      reviews: revs.map(function (v) {
+        return { n: num(v.f), verdict: hv(v, "Verdict"), reviewer: hv(v, "Reviewer"), model: hv(v, "Model"), time: num(hv(v, "Epoch")), b: v.b || "" };
+      })
+    };
+  }
+  function runOf(r) {
+    return {
+      id: hv(r, "Id") || r.f, status: hv(r, "Status"), agent: hv(r, "Agent"), item: hv(r, "Item"), cmd: hv(r, "Command"),
+      start: num(hv(r, "Started-Epoch")), fin: num(hv(r, "Finished-Epoch")), exit: hv(r, "Exit"), note: hv(r, "Note"),
+      by: hv(r, "By"), how: hv(r, "How"), rh: r.rh || "ok", rhAge: typeof r.rh_age === "number" ? r.rh_age : null,
+      tail: typeof r.tail === "string" ? r.tail.replace(/^  /gm, "") : ""
+    };
+  }
+
+  // ── sections ──
+  function renderHead(v) {
+    $("proj").textContent = v.project || "brigada";
+    document.title = (v.project ? v.project + " — " : "") + "brigada";
+    var sel = $("tasksel");
+    clear(sel);
+    var o = el("option", null, "текущая" + (v.curId ? " (" + v.curId + ")" : ""));
+    o.value = "";
+    sel.appendChild(o);
+    v.tasks.slice().reverse().forEach(function (t) {
+      var x = el("option", null, t[0] + " · " + (TASK_RU[t[2]] || t[2]) + " · " + t[1]);
+      x.value = t[0];
+      sel.appendChild(x);
+    });
+    sel.value = v.sel && v.tasks.some(function (t) { return t[0] === v.sel; }) ? v.sel : "";
+    var tl = $("tline");
+    clear(tl);
+    if (v.th) {
+      var h = v.th, st = h.Status || "", ce = num(h["Created-Epoch"]), xe = num(h["Closed-Epoch"]);
+      add(tl, el("span", "ttl", v.vid + " «" + (h.Title || "") + "»"), " ", badge(TASK_RU[st] || st, "ts-" + st),
+        el("span", "muted", " · host " + (h.Host || "—") + " · lead " + (h.Lead || "—") + " · "));
+      if (st === "active" && ce) add(tl, el("span", "muted", "идёт "), live("dur", ce));
+      else if (ce && xe) add(tl, el("span", "muted", "длилась " + dur(xe - ce) + ", " + hm(xe)));
+      if (!v.isCur) {
+        var a = el("a", "lnk", "к текущей");
+        a.href = "#";
+        a.addEventListener("click", function (e) { e.preventDefault(); location.hash = ""; });
+        add(tl, el("span", "muted", " · прошлая задача · "), a);
+      }
+    } else if (v.missing === "loading") {
+      add(tl, el("span", "muted", v.vid + ": загружаю…"));
+    } else if (v.missing) {
+      add(tl, el("span", "muted", v.vid + ": данных нет — кэш задачи пишет brg board (" + RUN_CMD + ")"));
+    } else if (v.hasData) {
+      add(tl, el("span", "muted", "задач ещё нет"));
+    }
+  }
+
+  function renderBanners(v) {
+    var b = $("banners");
+    clear(b);
+    function line(text, bad) { var e = el("div", "banner" + (bad ? " bad" : ""), text); b.appendChild(e); return e; }
+    if (!v.hasData) {
+      if (v.err === "nofile") line("Снимка ещё нет — запусти в корне проекта: " + RUN_CMD, true);
+      else if (v.err === "parse") line("Снимок не прочитан (ошибка в run/board/data.js) — перезапусти brg board", true);
+      return;
+    }
+    if (v.err) line("Снимок не читается — показаны последние данные. Запусти: " + RUN_CMD);
+    if (v.stale) add(line("Доска не обновляется: последний снимок "), live("ago", v.time), " — brg board остановлен? " + RUN_CMD);
+    if (v.stop) line("STOP: человек остановил бригаду (снять: brg resume)", true);
+    if (v.stopped.length) line("Остановлены агенты: " + v.stopped.join(", ") + " (снять: brg resume <имя>)");
+  }
+
+  function renderAgents(v) {
+    var box = $("agents");
+    clear(box);
+    if (!v.agents.length) { box.appendChild(el("div", "empty", "агентов нет — подключение: «подключись к .brigada, прочитай инструкцию в .brigada/README.md»")); return; }
+    var wrap = el("div", "cards");
+    v.agents.forEach(function (a) {
+      var role = [], mine = v.items[a.name] || [];
+      if (a.name === v.host) role.push("host");
+      if (a.name === v.lead) role.push("lead");
+      var c = el("div", "card" + (a.drop ? " warn" : "") + (a.state === "gone" && !role.length && !mine.length ? " dim" : ""));
+      add(c, add(el("div", "ln"), el("span", "nm", a.name), " ", badge(STATE_RU[a.state] || a.state, "st-" + a.state),
+        a.stopped ? " " : null, a.stopped ? badge("stop", "b-bad") : null, a.left ? " " : null, a.left ? badge("leave", "") : null));
+      add(c, el("div", "ln muted", (a.harness || "?") + " · " + (a.model || "?")));
+      if (v.hasTask) add(c, el("div", "ln", "роль: " + (role.length ? role.join(" и ") : "участник")));
+      if (mine.length) add(c, el("div", "ln", "в работе: " + mine.join(", ")));
+      if (a.note) add(c, el("div", "ln note", a.note + (a.drop ? " — напиши агенту в его чат «продолжай»" : "")));
+      if (a.seen > 0) add(c, add(el("div", "ln muted"), "последний вызов brg: ", live("ago", a.seen)));
+      wrap.appendChild(c);
+    });
+    box.appendChild(wrap);
+  }
+
+  function renderKanban(v) {
+    var box = $("kanban");
+    clear(box);
+    if (!v.hasTask) { box.appendChild(el("div", "empty", "нет задачи")); return; }
+    if (!v.items.length) { box.appendChild(el("div", "empty", "подзадач нет")); return; }
+    var k = el("div", "kanban");
+    COLS.forEach(function (col) {
+      var its = v.items.filter(function (i) { return i.status === col[0]; });
+      var c = add(el("div", "kcol"), add(el("h3", null, col[1] + " "), el("span", "muted", String(its.length))));
+      its.forEach(function (it) { c.appendChild(itemCard(it, v)); });
+      k.appendChild(c);
+    });
+    var other = v.items.filter(function (i) { return !COLS.some(function (c) { return c[0] === i.status; }); });
+    box.appendChild(k);
+    other.forEach(function (it) { box.appendChild(itemCard(it, v)); });
+  }
+  function itemCard(it, v) {
+    var last = it.reviews.length ? it.reviews[it.reviews.length - 1] : null;
+    var bad = it.assignee && v.bad[it.assignee] && it.status === "claimed";
+    var c = el("div", "card" + (bad ? " warn" : "") + (last && last.verdict === "changes" ? " changes" : ""));
+    add(c, add(el("div", "ln"), el("b", null, it.id), " " + it.title));
+    var m = el("div", "ln muted");
+    if (it.assignee) add(m, el("span", bad ? "note" : null, it.assignee + (bad ? " (" + v.bad[it.assignee] + ")" : "")));
+    var p = it.paths || (it.hint ? "? " + it.hint : "");
+    if (p && p !== "none") add(m, it.assignee ? " · " : null, el("span", "mono", p.split(",").join(", ")));
+    else if (p === "none") add(m, it.assignee ? " · " : null, "без правок файлов");
+    if (m.firstChild) c.appendChild(m);
+    if (it.status === "claimed" && it.claimed) add(c, add(el("div", "ln muted"), "в работе ", live("dur", it.claimed)));
+    if (it.status === "done" && it.done) add(c, el("div", "ln muted", "сдано " + hm(it.done)));
+    if (last) {
+      var ok = last.verdict === "ok";
+      add(c, add(el("div", "ln"), badge((ok ? "✓ ok" : "✗ " + last.verdict) + " от " + last.reviewer, ok ? "b-ok" : "b-bad"),
+        it.reviews.length > 1 ? el("span", "muted", " · ревью: " + it.reviews.length) : null));
+    }
+    var rs = v.runs[it.id] || [];
+    if (rs.length) {
+      var rl = add(el("div", "ln muted"), "прогоны: ");
+      rs.forEach(function (r, i) {
+        add(rl, i ? ", " : null, el("span", r[1] === "done" ? "" : RUN_FINAL[r[1]] ? "note" : "", r[0] + " " + (RUN_RU[r[1]] || r[1])));
+      });
+      c.appendChild(rl);
+    }
+    if (it.desc || it.note || it.result || it.reviews.length) {
+      var d = details("item:" + v.tid + ":" + it.id, "desc");
+      d.appendChild(el("summary", "muted", "подробнее"));
+      if (it.desc) d.appendChild(el("div", "pre", it.desc));
+      if (it.note) d.appendChild(el("div", "pre", "итог: " + it.note));
+      if (it.result) add(d, add(el("div"), "результат: ", el("span", "mono", it.result)));
+      it.reviews.forEach(function (r) {
+        var rv = el("div", "desc");
+        add(rv, el("div", "muted", "ревью #" + r.n + " · " + r.verdict + " · " + r.reviewer + (r.model ? " (" + r.model + ")" : "") + (r.time ? " · " + hm(r.time) : "")));
+        if (r.b) rv.appendChild(el("div", "pre", r.b));
+        d.appendChild(rv);
+      });
+      c.appendChild(d);
+    }
+    if (it.creator) c.appendChild(el("div", "ln muted", "создал " + it.creator));
+    return c;
+  }
+
+  function runStatus(r) {
+    var t = RUN_RU[r.status] || r.status, cls = r.status === "done" ? "b-ok" : RUN_FINAL[r.status] ? "b-bad" : "b-warn";
+    if (!RUN_FINAL[r.status]) {
+      if (r.rh === "dead") { t += " · раннер мёртв"; cls = "b-bad"; }
+      else if (r.rh === "stale") { t += " · раннер не отвечает" + (r.rhAge !== null ? " " + r.rhAge + " с" : ""); cls = "b-bad"; }
+      else if (r.rh === "nostart") { t += " · раннер не запустился"; cls = "b-bad"; }
+    }
+    return badge(t, cls);
+  }
+  function renderRuns(v) {
+    var box = $("runs");
+    clear(box);
+    if (!v.hasTask) { box.appendChild(el("div", "empty", "нет задачи")); return; }
+    if (!v.runs.length) { box.appendChild(el("div", "empty", "прогонов не было")); return; }
+    v.runs.slice().reverse().forEach(function (r) {
+      var d = details("run:" + r.id, "run");
+      var s = el("summary");
+      add(s, el("b", null, r.id), runStatus(r), el("span", "muted", r.agent + (r.item ? " · " + r.item : "")));
+      var c = el("code", "cmd", r.cmd);
+      c.title = r.cmd;
+      s.appendChild(c);
+      if (r.start && !r.fin && !RUN_FINAL[r.status]) add(s, add(el("span", "muted"), live("dur", r.start)));
+      else if (r.start && r.fin) s.appendChild(el("span", "muted", dur(r.fin - r.start)));
+      if (r.exit !== "") s.appendChild(el("span", "muted", "код " + r.exit));
+      d.appendChild(s);
+      d.appendChild(el("div", "pre mono", r.cmd));
+      var info = [];
+      if (r.note) info.push(r.note);
+      if (r.by) info.push("остановил " + r.by + (r.how ? " (" + r.how + ")" : ""));
+      if (info.length) d.appendChild(el("div", "pre muted", info.join(" · ")));
+      d.appendChild(el("pre", null, r.tail || (r.status === "queued" ? "(ещё не запущен)" : "(лог пуст или ещё не прочитан)")));
+      box.appendChild(d);
+    });
+  }
+
+  // DESIGN §8: a reply — a non-system message of an expected addressee after the original,
+  // with Re: <id> or addressed to the sender (personally or all)
+  function deadline(m, all) {
+    var rb = num(hv(m, "Reply-By"));
+    if (!rb) return null;
+    var exp = names(hv(m, "Expect")), id = num(hv(m, "Id")), from = hv(m, "From"), yes = [];
+    all.forEach(function (x) {
+      var f = hv(x, "From"), to;
+      if (num(hv(x, "Id")) <= id || hv(x, "Kind") === "system" || exp.indexOf(f) < 0 || yes.indexOf(f) >= 0) return;
+      to = names(hv(x, "To"));
+      if (hv(x, "Re") === String(id) || to.indexOf("all") >= 0 || to.indexOf(from) >= 0) yes.push(f);
+    });
+    return { rb: rb, yes: yes, no: exp.filter(function (e) { return yes.indexOf(e) < 0; }) };
+  }
+  function jump(chan, n) {
+    var t = $("m-" + chan + "-" + n);
+    if (!t) return;
+    t.scrollIntoView({ block: "center" });
+    t.classList.add("flash");
+    setTimeout(function () { t.classList.remove("flash"); }, 1500);
+  }
+  function renderMsgCtl(v) {
+    var tabs = $("msgtabs");
+    clear(tabs);
+    [["task", v.tid ? "Задача " + v.tid : "Задача", v.nTask], ["lobby", "lobby", v.nLobby]].forEach(function (t) {
+      var b = el("button", "tab" + (S.msgTab === t[0] ? " on" : ""), t[1] + " (" + t[2] + ")");
+      b.type = "button";
+      b.addEventListener("click", function () { S.msgTab = t[0]; render(); });
+      tabs.appendChild(b);
+    });
+    var sel = $("magent");
+    clear(sel);
+    var o = el("option", null, "все");
+    o.value = "";
+    sel.appendChild(o);
+    v.names.forEach(function (n) { var x = el("option", null, n); x.value = n; sel.appendChild(x); });
+    sel.value = v.names.indexOf(S.agent) >= 0 ? S.agent : "";
+    $("msys").checked = S.hideSys;
+  }
+  function renderMsgs(v) {
+    var box = $("msglist"), tr = $("msgtrunc");
+    var atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40, top = box.scrollTop;
+    var chan = v.chan;
+    clear(box);
+    tr.textContent = v.trunc ? "показаны последние " + v.trunc.shown + " из " + v.trunc.total + " сообщений" : "";
+    var shown = v.msgs.filter(function (m) {
+      if (v.hideSys && hv(m, "Kind") === "system") return false;
+      if (v.agent && hv(m, "From") !== v.agent && names(hv(m, "To")).indexOf(v.agent) < 0) return false;
+      return true;
+    });
+    if (!shown.length) box.appendChild(el("div", "empty", v.msgs.length ? "нет сообщений по фильтру" : "сообщений нет"));
+    shown.forEach(function (m) {
+      var id = num(hv(m, "Id")), from = hv(m, "From"), re = hv(m, "Re"), sys = hv(m, "Kind") === "system";
+      var b = el("div", "msg" + (sys ? " sys" : "") + (from === "human" ? " human" : ""));
+      if (id) b.id = "m-" + chan + "-" + id;
+      var h = add(el("div", "mh"), "#" + (id || "?") + " ", sys ? "[система] " : null, el("b", null, from), " → " + hv(m, "To"));
+      if (/^\d+$/.test(re)) {
+        var a = el("a", "re", "re #" + re);
+        a.href = "#";
+        a.addEventListener("click", function (e) { e.preventDefault(); jump(chan, re); });
+        add(h, " · ", a);
+      }
+      add(h, " · " + hm(num(hv(m, "Epoch"))));
+      var dl = deadline(m, v.msgs);
+      if (dl) {
+        var past = now() >= dl.rb, t = "дедлайн " + hm(dl.rb) + (past ? " истёк" : "");
+        if (dl.yes.length) t += " · ответили: " + dl.yes.join(", ");
+        if (dl.no.length) t += (past ? " · не ответили: " : " · ждём: ") + dl.no.join(", ");
+        add(h, " ", badge(t, past && dl.no.length ? "b-bad dl" : dl.no.length ? "b-warn dl" : "b-ok dl"));
+      }
+      b.appendChild(h);
+      b.appendChild(el("div", "mb", m.b || ""));
+      box.appendChild(b);
+    });
+    if (v.first || atEnd) box.scrollTop = box.scrollHeight;
+    else box.scrollTop = top;
+  }
+
+  function renderDocs(v) {
+    var tabs = $("doctabs"), box = $("doc");
+    clear(tabs);
+    DOCS.forEach(function (d) {
+      var b = el("button", "tab" + (S.docTab === d[0] ? " on" : ""), d[1] + (v.docs[d[0]] === null ? "" : " ✓"));
+      b.type = "button";
+      b.addEventListener("click", function () { S.docTab = d[0]; render(); });
+      tabs.appendChild(b);
+    });
+    clear(box);
+    if (!v.hasTask) { box.appendChild(el("div", "empty", "нет задачи")); return; }
+    var cur = DOCS.filter(function (d) { return d[0] === S.docTab; })[0], t = v.docs[cur[0]];
+    if (t === null || t === "") box.appendChild(el("div", "empty", cur[2]));
+    else box.appendChild(el("div", "pre", t));
+  }
+
+  function renderTasks(v) {
+    var box = $("tasks");
+    clear(box);
+    if (!v.tasks.length) { box.appendChild(el("div", "empty", "задач ещё не было")); return; }
+    v.tasks.slice().reverse().forEach(function (t) {
+      var r = el("div", "trow" + (t.id === v.vid ? " sel" : ""));
+      add(r, el("b", null, t.id), badge(TASK_RU[t.status] || t.status, "ts-" + t.status), t.title,
+        t.id === v.curId ? el("span", "muted", "· текущая") : null,
+        el("span", "muted", "host " + t.host + " · lead " + t.lead));
+      if (t.sum) r.appendChild(el("div", "sum", t.sum));
+      r.addEventListener("click", function () { location.hash = t.id === v.curId ? "" : t.id; });
+      box.appendChild(r);
+    });
+  }
+
+  // ── render ──
+  function render() {
+    var d = S.data, meta = (d && d.meta) || {}, v = view(), t = v && v.t, tid = v ? v.id : "";
+    var interval = typeof meta.interval === "number" ? meta.interval : 2;
+    var stale = !!d && now() - (meta.time || 0) > Math.max(10, 3 * interval);
+    var tasks = ((d && d.tasks) || []).map(function (x) {
+      return { id: taskId(x), title: hv(x, "Title"), status: hv(x, "Status"), host: hv(x, "Host"), lead: hv(x, "Lead"), sum: x.sum || "" };
+    }).filter(function (x) { return x.id; });
+    var curId = d && d.current ? d.current.id : "";
+    var items = t ? (t.items || []).filter(Boolean).map(itemOf) : [];
+    var runs = t ? (t.runs || []).filter(Boolean).map(runOf) : [];
+    var agents = ((d && d.agents) || []).map(function (a) {
+      return { name: a.name, harness: hv(a, "Harness"), model: hv(a, "Model"), state: a.state, seen: a.seen || 0,
+        note: a.note || "", drop: !!a.drop, stopped: !!a.stopped, left: !!hv(a, "Left") };
+    }).sort(function (a, b) { return (a.state === "gone") - (b.state === "gone") || natcmp(a.name, b.name); });
+    var th = t && t.task ? t.task.h : null;
+
+    sec("head", { project: meta.project, tasks: tasks.map(function (x) { return [x.id, x.title, x.status]; }), curId: curId,
+      sel: S.sel, vid: tid, th: th, isCur: v ? v.isCur : true, missing: v ? v.missing || "" : "", hasData: !!d }, renderHead);
+    sec("banners", { hasData: !!d, err: S.err, stale: stale, time: meta.time || 0, stop: !!meta.stop, stopped: meta.stopped || [] }, renderBanners);
+    $("foot").textContent = d ? "brg " + meta.version + " · снимок " + hm(meta.time) + " · раз в " + interval + " с" : "";
+
+    var mine = {}, bad = {}, byItem = {};
+    items.forEach(function (i) { if (i.status === "claimed" && i.assignee) (mine[i.assignee] = mine[i.assignee] || []).push(i.id); });
+    agents.forEach(function (a) { if (a.state === "gone") bad[a.name] = "ушёл"; else if (a.drop) bad[a.name] = "возможно выпал"; });
+    runs.forEach(function (r) { if (r.item) (byItem[r.item] = byItem[r.item] || []).push([r.id, r.status]); });
+    sec("agents", { agents: agents, host: th ? th.Host || "" : "", lead: th ? th.Lead || "" : "", items: mine, hasTask: !!t }, renderAgents);
+    sec("kanban", { items: items, runs: byItem, bad: bad, hasTask: !!t, tid: tid }, renderKanban);
+    sec("runs", { runs: runs, hasTask: !!t }, renderRuns);
+
+    var lobby = (d && d.lobby) || [], tmsgs = t ? t.messages || [] : [];
+    var msgs = S.msgTab === "lobby" ? lobby : tmsgs, chan = S.msgTab === "lobby" ? "lobby" : tid;
+    var seenNames = {};
+    agents.forEach(function (a) { seenNames[a.name] = 1; });
+    msgs.forEach(function (m) { var f = hv(m, "From"); if (f) seenNames[f] = 1; });
+    var nm = Object.keys(seenNames).sort(natcmp);
+    sec("msgctl", { tab: S.msgTab, tid: tid, nTask: tmsgs.length, nLobby: lobby.length, names: nm, agent: S.agent, hideSys: S.hideSys }, renderMsgCtl);
+    var tr = S.msgTab === "lobby" ? (meta.trunc || {}).lobby : (v && v.trunc || {}).task;
+    var expired = msgs.filter(function (m) { var rb = num(hv(m, "Reply-By")); return rb && now() >= rb; }).length;
+    var first = S.msgChan !== chan;
+    S.msgChan = chan;
+    sec("msgs", { chan: chan, msgs: msgs, agent: S.agent, hideSys: S.hideSys, trunc: tr || null, expired: expired, first: first }, renderMsgs);
+
+    sec("docs", { tab: S.docTab, hasTask: !!t, docs: t ? { brief: t.brief, plan: t.plan, summary: t.summary } : {} }, renderDocs);
+    sec("tasks", { tasks: tasks, vid: tid, curId: curId }, renderTasks);
+  }
+
+  function tick() {
+    var xs = document.querySelectorAll("[data-since]"), t = now(), i, e, s;
+    for (i = 0; i < xs.length; i++) {
+      e = xs[i];
+      s = +e.getAttribute("data-since");
+      e.textContent = e.getAttribute("data-fmt") === "ago" ? ago(t - s) : dur(t - s);
+    }
+  }
+
+  function readHash() {
+    var h = (location.hash || "").replace(/^#/, "");
+    S.sel = /^T\d{3,6}$/.test(h) ? h : "";
+  }
+  window.addEventListener("hashchange", function () { readHash(); render(); });
+  $("tasksel").addEventListener("change", function () { location.hash = this.value; });
+  $("magent").addEventListener("change", function () { S.agent = this.value; render(); });
+  $("msys").addEventListener("change", function () { S.hideSys = this.checked; render(); });
+  readHash();
+  load();
+  setInterval(load, REFRESH);
+  setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>

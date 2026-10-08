@@ -4,7 +4,7 @@
 # date sleep kill ls head tail wc sort tr printf cp uname nohup. No jq/python/node.
 #
 # Agents (from the project root):  bash .brigada/bin/brg <command> --as <name> …
-# Human:                            init (from the brigada repo), say, tail, who, stop, resume,
+# Human:                            init (from the brigada repo), board, say, tail, who, stop, resume,
 #                                   task cancel --as human.
 #
 # Layout: the .brigada root is <dir of this script>/.. (see DESIGN §4).
@@ -17,7 +17,7 @@ _brg_crlf=x
 case ${#_brg_crlf} in 1) ;; *) printf '%s\n' "brg: ОШИБКА: у файла $0 окончания строк CRLF (Windows) — bash его не выполнит." "Причина — git с core.autocrlf=true. Это .brigada/bin/brg — переустанови: bash <brigada>/bin/brg init <проект>. Это сам репозиторий brigada — удали bin/brg и восстанови: git checkout -- bin/brg (по .gitattributes он запишется с LF) или скачай brigada заново. Проверка: bash <brigada>/bin/brg doctor <проект>." >&2; exit 2 ;; esac #
 unset _brg_crlf
 
-BRG_VERSION=0.2.1
+BRG_VERSION=0.3.0
 # the caller's locale, restored for commands started by `brg run`
 _brg_lc_set=${LC_ALL+1}
 _brg_lc=${LC_ALL-}
@@ -1533,6 +1533,7 @@ usage_line_v() { # VAR CMD
     item) _ul_u="$BRG item add --as <имя> --title \"…\" [--desc \"описание\" | --file F | <<'BRG_EOF' описание BRG_EOF] [--paths \"предлагаемые пути\"] | item claim I00N --as <имя> [--paths \"src/a,tests/a\"|none] | item done I00N --as <имя> [--note \"итог\"] [--result <путь>] | item release I00N --as <имя> | item reassign I00N --to <имя> --as <lead> | item review I00N --as <имя> --verdict ok|changes [--comment \"…\" | --file F | <<'BRG_EOF' комментарий BRG_EOF] | item list [--as <имя> --mine] [--status todo,claimed,done,cancelled] | item show I00N" ;;
     run) _ul_u="$BRG run --as <имя> [--sync] [--timeout 10m] [--item I00N] -- <команда> [аргументы…]  |  run list · run show R00N · run cancel R00N --as <имя>" ;;
     doctor) _ul_u="$BRG doctor  |  из репозитория brigada: bash /путь/к/brigada/bin/brg doctor [каталог_проекта]" ;;
+    board) _ul_u="$BRG board [--interval S] [--once]" ;;
     *) _ul_u="$BRG help" ;;
   esac
   eval "$1=\$_ul_u"
@@ -1553,7 +1554,7 @@ usage_print() {
     status) echo "Кто я, задача и моя роль, непрочитанное (без сдвига курсора), мои дедлайны, жив ли мой wait, NEXT. С именем без ключа — только просмотр (не подтверждает, что ты этот агент)." ;;
     stop) echo "Остановить бригаду (или одного агента): wait возвращает STOP сразу и на ближайшем тике; любая команда агента печатает STOP первой строкой; item add|claim|reassign и запуск run отказывают." ;;
     resume) echo "Снять стоп (весь или одного агента)." ;;
-    init) echo "Создать/обновить <проект>/.brigada: bin/brg, README.md, PROTOCOL.md, config.default, VERSION; состояние и config не трогает." ;;
+    init) echo "Создать/обновить <проект>/.brigada: bin/brg, README.md, PROTOCOL.md, board.html, config.default, VERSION; состояние и config не трогает." ;;
     task)
       echo "Задачи (одна активная): new — создать (ты host и lead; постановка человека дословно → brief.md); close — закрыть (lead; нужен непустой summary.md); cancel — отменить (host, lead или человек: --as human); show/list — посмотреть."
       echo "close отказывает, пока есть подзадачи в работе или идут прогоны (--force — отменить и остановить их). Есть непрочитанное для lead'а (то, что разбудило бы его wait) — close показывает его (оно считается доставленным) и отказывает: учти и повтори close."
@@ -1574,6 +1575,10 @@ usage_print() {
     doctor)
       echo "Проверка среды и состояния (ничего не меняет): bash и платформа (и совпадение с агентами), CRLF в bin/brg и шаблонах, атомарность mkdir, mv поверх открытого файла, утилиты, запись в .brigada, .git/info/exclude, протухшие блокировки, мёртвые раннеры и очередь brg run, зависшие wait, таймауты wait в config."
       echo "Сводка ✓/⚠/✗ с подсказками; код выхода 0 — ошибок (✗) нет, 1 — есть. Сломанную установку (например, bin/brg с CRLF) проверяй копией из репозитория brigada: bash /путь/к/brigada/bin/brg doctor <проект>."
+      ;;
+    board)
+      echo "Доска для человека в браузере: первой строкой — адрес страницы file://…/.brigada/board.html (открой его в браузере). Раз в --interval с (по умолчанию 2, минимум 1) пишет снимок в .brigada/run/board/: задача и статус, бригада, подзадачи с ревью, прогоны, переписка, постановка, план, итог, прошлые задачи."
+      echo "Работает до Ctrl+C; --once — один снимок и выход. Только читает: никого не будит, ничего в бригаде не меняет."
       ;;
   esac
 }
@@ -1606,6 +1611,7 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
   leave --as <имя>                   отключиться
 Человеку:
   init [каталог]                     (из репозитория brigada) создать/обновить .brigada/
+  board [--interval S] [--once]      доска в браузере: задача, бригада, подзадачи, прогоны, переписка
   say [--to …] [текст]               сообщение от human (снимает стоп)
   tail [-f] [-n N] [канал]           переписка (по умолчанию lobby + активная задача)
   who                                кто подключён; «возможно выпал» — напиши агенту в его чат «продолжай»
@@ -1745,6 +1751,7 @@ cmd_init() {
   [ -f "$BIN_DIR/brg.cmd" ] && install_file "$BIN_DIR/brg.cmd" "$B/bin/brg.cmd"
   install_file "$tpl/README.md" "$B/README.md"
   [ -f "$tpl/PROTOCOL.md" ] && install_file "$tpl/PROTOCOL.md" "$B/PROTOCOL.md"
+  [ -f "$tpl/board.html" ] && install_file "$tpl/board.html" "$B/board.html"
   install_file "$tpl/config" "$B/config.default"
   if [ ! -f "$B/config" ]; then
     install_file "$tpl/config" "$B/config"
@@ -1771,12 +1778,13 @@ cmd_init() {
   if [ -n "$fresh" ]; then
     echo "── brigada $BRG_VERSION: создано $B"
   else
-    echo "── brigada $BRG_VERSION: обновлено $B (bin/brg, README.md, PROTOCOL.md, config.default, VERSION); состояние и config не тронуты"
+    echo "── brigada $BRG_VERSION: обновлено $B (bin/brg, README.md, PROTOCOL.md, board.html, config.default, VERSION); состояние и config не тронуты"
   fi
   [ -n "$missing" ] && echo "В config нет ключей:$missing — действуют значения из config.default."
   echo "git: $GIT_NOTE"
   echo "Дальше скажи агенту: «подключись к .brigada, прочитай инструкцию в .brigada/README.md»."
   echo "Смотреть переписку: bash .brigada/bin/brg tail -f · кто онлайн: bash .brigada/bin/brg who (у агента «возможно выпал» — напиши ему в его чат «продолжай»)"
+  echo "Доска в браузере: bash .brigada/bin/brg board — откроется по адресу из первой строки"
   echo "Проверка среды (Windows, блокировки, раннеры): bash .brigada/bin/brg doctor; из PowerShell/cmd — .\\.brigada\\bin\\brg.cmd doctor"
 }
 
@@ -6188,6 +6196,557 @@ cmd_wait() {
   done
 }
 
+# ── board (DESIGN §9.1): a read-only snapshot for the human's browser page ──
+# Writes only into run/board/: no locks, cursors, Last-Seen, metrics; nobody is
+# woken. Only read-only helpers are used here (not need_root, die, run_check,
+# execq_scan, touch_seen, …): a runner found dead is shown as such (RH), brg
+# settles it on its next view. data.js is executed by the browser, so every piece
+# of data becomes JSON in one awk program (AWK_JSON) fed by directives on stdin —
+# never through awk -v (it expands \n and \\).
+#
+# Directives (one per line: a char, US, the argument):
+#   { } [ ]          open/close an object/array     k NAME   key
+#   s TEXT           string                          n NUM    number (else null)
+#   b 1|0            boolean                         z        null
+#   x TEXT           a line of a multi-line string;  X        emit it
+#   R PATH US SKIP   the record's "f","h","b" into the open object (SKIP: header names left out)
+#   r PATH           the record as an object (null if no such file)
+#   t PATH US MAX    the whole file as a string, ≤ MAX bytes (null if no such file)
+#   M LABEL US TOTAL [US PCT], m PATH…, E — messages, newest first: kept while they fit
+#                    PCT % (default 100) of what is left of BRG_BOARD_MAX (less 1 KB for
+#                    the rest), printed oldest first
+#   D                {"LABEL": {"shown": N, "total": M}} of the message lists cut short
+#   p RAW            raw text: constant prefixes and suffixes only
+# Escaping: \ and " via "\\\\&" (portable: "\\\\" gives a single \ in gawk); control
+# bytes, DEL and U+2028/2029 → \t \r \u00XX \u2028 — a loop only for a string that
+# has them. Header names: [A-Za-z0-9-]+. Bodies ≤ BRG_BOARD_BMAX (64 KB).
+AWK_JSON='
+BEGIN {
+  for (i = 1; i < 32; i++) J[sprintf("%c", i)] = sprintf("\\u%04x", i)
+  J["\t"] = "\\t"; J["\r"] = "\\r"; J[sprintf("%c", 127)] = "\\u007f"
+  J["\342\200\250"] = "\\u2028"; J["\342\200\251"] = "\\u2029"
+  BMAX = ENVIRON["BRG_BOARD_BMAX"] + 0; if (BMAX < 1) BMAX = 65536
+  LIMIT = ENVIRON["BRG_BOARD_MAX"] + 0; if (LIMIT < 1) LIMIT = 2000000
+  depth = 0; ak = 0; outn = 0; nlab = 0; xn = 0; xs = ""; BN = 0; BUF = ""
+}
+function esc(s,   o, c) {
+  gsub(/[\\"]/, "\\\\&", s)
+  if (s !~ /[\001-\037\177]|\342\200[\250\251]/) return s
+  o = ""
+  while (match(s, /[\001-\037\177]|\342\200[\250\251]/)) {
+    c = substr(s, RSTART, RLENGTH)
+    o = o substr(s, 1, RSTART - 1) J[c]
+    s = substr(s, RSTART + RLENGTH)
+  }
+  return o s
+}
+function out(s) { printf "%s", s; outn += length(s) }
+function sep() {
+  if (ak) { ak = 0; return }
+  if (depth > 0) { if (!first[depth]) out(","); first[depth] = 0 }
+}
+function open(c) { sep(); out(c); first[++depth] = 1 }
+function shut(c) { depth--; out(c) }
+function key(s) { sep(); out("\"" esc(s) "\":"); ak = 1 }
+function val(s) { sep(); out(s) }
+function split2(s,   k) {
+  k = index(s, "\037")
+  if (k) { A1 = substr(s, 1, k - 1); A2 = substr(s, k + 1) } else { A1 = s; A2 = "" }
+}
+# a body is built in chunks: no quadratic concatenation
+function bput(s) { BUF = BUF s; if (length(BUF) > 8192) { BP[++BN] = BUF; BUF = "" } }
+function bget(   r, i) { r = ""; for (i = 1; i <= BN; i++) r = r BP[i]; r = r BUF; BN = 0; BUF = ""; return r }
+# rd(PATH, SKIP, HDR, MAX) → RF (file name), RH (headers), RB (body), escaped; 0 if no such file
+function rd(path, skip, hdr, max,   rc, line, n, nb, bl, cut, k, nm) {
+  RH = ""; RB = ""; RF = ""; n = 0; nb = 0; bl = 0; cut = 0; BN = 0; BUF = ""
+  while ((rc = (getline line < path)) > 0) {
+    n++
+    if (hdr) {
+      if (line == "" || line == "\r") { hdr = 0; continue }
+      k = index(line, ":")
+      if (k < 2) continue
+      nm = substr(line, 1, k - 1)
+      if (nm !~ /^[A-Za-z0-9-]+$/ || index(" " skip " ", " " nm " ")) continue
+      line = substr(line, k + 1); sub(/^ /, "", line)
+      RH = RH (RH == "" ? "" : ",") "\"" nm "\":\"" esc(line) "\""
+      continue
+    }
+    if (nb + length(line) > max) {
+      line = substr(line, 1, max > nb ? max - nb : 0); sub(/[\300-\377][\200-\277]*$/, "", line)
+      cut = 1
+    }
+    bput((bl++ ? "\\n" : "") esc(line))
+    nb += length(line) + 1
+    if (cut) break
+  }
+  close(path)
+  if (rc < 0 && n == 0) return 0
+  RB = bget()
+  if (cut) RB = RB " …(обрезано)"
+  RF = path; sub(/.*\//, "", RF); RF = esc(RF)
+  return 1
+}
+function recobj() { return "{\"f\":\"" RF "\",\"h\":{" RH "},\"b\":\"" RB "\"}" }
+{
+  d = substr($0, 1, 1); a = substr($0, 3)
+  if (d == "{" || d == "[") open(d)
+  else if (d == "}" || d == "]") shut(d)
+  else if (d == "k") key(a)
+  else if (d == "s") val("\"" esc(a) "\"")
+  else if (d == "n") val(a ~ /^-?[0-9]+$/ ? a : "null")
+  else if (d == "b") val(a == "1" ? "true" : "false")
+  else if (d == "z") val("null")
+  else if (d == "x") xs = xs (xn++ ? "\\n" : "") esc(a)
+  else if (d == "X") { val("\"" xs "\""); xs = ""; xn = 0 }
+  else if (d == "R") {
+    split2(a); rd(A1, A2, 1, BMAX)
+    key("f"); val("\"" RF "\""); key("h"); val("{" RH "}"); key("b"); val("\"" RB "\"")
+  }
+  else if (d == "r") { if (rd(a, "", 1, BMAX)) val(recobj()); else val("null") }
+  else if (d == "t") { split2(a); if (rd(A1, "", 0, A2 + 0 > 0 ? A2 + 0 : BMAX)) val("\"" RB "\""); else val("null") }
+  else if (d == "M") {
+    split2(a); lab = A1; a = A2; split2(a); mtot = A1 + 0; mcap = LIMIT - 1024 - outn
+    if (A2 + 0 > 0) mcap = int(mcap * A2 / 100)
+    open("["); mn = 0; mh = 0; mdrop = 0; split("", MS)
+  }
+  else if (d == "m") {
+    if (!mdrop && rd(a, "", 1, BMAX)) {
+      o = recobj()
+      if (mh + length(o) + 1 > mcap) mdrop = 1
+      else { MS[++mn] = o; mh += length(o) + 1 }
+    }
+  }
+  else if (d == "E") {
+    for (i = mn; i >= 1; i--) { if (i < mn) out(","); out(MS[i]) }
+    split("", MS); shut("]")
+    LB[++nlab] = lab; SH[nlab] = mn; TT[nlab] = mtot
+  }
+  else if (d == "D") {
+    open("{")
+    for (i = 1; i <= nlab; i++) if (SH[i] < TT[i]) {
+      key(LB[i]); open("{"); key("shown"); val(SH[i]); key("total"); val(TT[i]); shut("}")
+    }
+    shut("}")
+  }
+  else if (d == "p") out(a)
+}
+END { printf "\n" }'
+BOARD_MSGS=500   # the last messages of a channel in the snapshot
+BOARD_TMAX=65536 # brief, plan, summary
+BOARD_SETTLE=60  # a finished task is cached for good this long after its close (or once its runs are final)
+
+# The manifest BJ[]: bjo DIRECTIVE · bjk KEY · bjs KEY TEXT · bjn KEY NUM · bjb KEY 0|1 · bjx KEY TEXT
+bjo() { BJ[${#BJ[@]}]=$1; }
+bjk() { BJ[${#BJ[@]}]="k$US$1"; }
+bjs() {
+  bjk "$1"
+  BJ[${#BJ[@]}]="s$US${2//$NL/ }"
+}
+bjn() {
+  bjk "$1"
+  BJ[${#BJ[@]}]="n$US$2"
+}
+bjb() {
+  bjk "$1"
+  BJ[${#BJ[@]}]="b$US$2"
+}
+bjx() { # KEY TEXT — a multi-line string
+  local r=$2
+  bjk "$1"
+  while :; do
+    case $r in
+      *"$NL"*)
+        BJ[${#BJ[@]}]="x$US${r%%"$NL"*}"
+        r=${r#*"$NL"}
+        ;;
+      *)
+        BJ[${#BJ[@]}]="x$US$r"
+        break
+        ;;
+    esac
+  done
+  BJ[${#BJ[@]}]=X
+}
+
+# board_url_v VAR ROOTDIR PLATFORM — file:// address of ROOTDIR/board.html; 1 and ""
+# when a browser cannot open that path (WSL, MSYS/Cygwin outside a drive). Started by
+# brg.cmd: the path comes from BRG_VIA_CMD (C:\p\.brigada\bin\brg.cmd). Space, #, ?, %
+# are encoded.
+board_url_v() {
+  local _bu_p=$2/board.html _bu_d _bu_t _bu_lc=abcdefghijklmnopqrstuvwxyz _bu_uc=ABCDEFGHIJKLMNOPQRSTUVWXYZ
+  if [ -n "${BRG_VIA_CMD:-}" ]; then
+    _bu_p=${BRG_VIA_CMD%\\*}
+    _bu_p=${_bu_p%\\*}/board.html
+    _bu_p=${_bu_p//\\//}
+  else
+    case $3 in
+      MSYS) case $_bu_p in /[A-Za-z]/*) _bu_p=${_bu_p:1:1}:${_bu_p:2} ;; *) _bu_p= ;; esac ;;
+      Cygwin) case $_bu_p in /cygdrive/[A-Za-z]/*) _bu_p=${_bu_p:10:1}:${_bu_p:11} ;; *) _bu_p= ;; esac ;;
+      WSL) _bu_p= ;;
+    esac
+  fi
+  case $_bu_p in
+    [A-Za-z]:/*)
+      _bu_d=${_bu_p%%:*}
+      _bu_t=${_bu_lc%%"$_bu_d"*}
+      [ ${#_bu_t} -lt 26 ] && _bu_d=${_bu_uc:${#_bu_t}:1}
+      _bu_p=/$_bu_d${_bu_p#?}
+      ;;
+    /*) ;;
+    *) _bu_p= ;;
+  esac
+  if [ -z "$_bu_p" ]; then
+    eval "$1="
+    return 1
+  fi
+  _bu_p=${_bu_p//\%/%25}
+  _bu_p=${_bu_p// /%20}
+  _bu_p=${_bu_p//\#/%23}
+  _bu_p=${_bu_p//\?/%3F}
+  eval "$1=\"file://\$_bu_p\""
+}
+
+# board_warn TEXT — at most once a minute (a browser on Windows may hold the file)
+BW_AT=0
+board_warn() {
+  [ $((NOW - BW_AT)) -ge 60 ] || return 0
+  BW_AT=$NOW
+  say_err "── board: $1"
+}
+# board_write NAME — the manifest BJ[] through AWK_JSON into run/board/NAME (tmp + mv)
+board_write() {
+  local t=$BD/.tmp.$1.$$ i
+  printf '%s\n' "${BJ[@]}" | awk "$AWK_JSON" >"$t" 2>/dev/null
+  if [ $? -ne 0 ] || [ ! -s "$t" ]; then
+    rm -f "$t"
+    board_warn "не удалось собрать $1"
+    return 1
+  fi
+  for i in 1 2 3; do
+    mv -f "$t" "$BD/$1" 2>/dev/null && return 0
+    sleep 0.1
+  done
+  rm -f "$t"
+  board_warn "не удалось записать $BD/$1 (файл занят?) — повторю на следующем тике"
+  return 1
+}
+
+# board_tail_v VAR HF — log tail of the loaded run (RN_*): of a running one every tick,
+# of a finished one once per process (BT_<id>)
+board_tail_v() {
+  local _bt_id=${2##*/} _bt_x=
+  case $_bt_id in R[0-9]*) ;; *) _bt_id= ;; esac
+  case $_bt_id in *[!R0-9]*) _bt_id= ;; esac
+  if [ -n "$_bt_id" ] && run_is_final "$RN_STATUS"; then
+    if eval "[ -n \"\${BT_$_bt_id+x}\" ]"; then
+      eval "$1=\$BT_$_bt_id"
+      return 0
+    fi
+    log_tail_v _bt_x "$2.log" 20
+    eval "BT_$_bt_id=\$_bt_x"
+  elif [ "$RN_STATUS" = running ]; then
+    log_tail_v _bt_x "$2.log" 20
+  fi
+  eval "$1=\$_bt_x"
+}
+
+# board_msgs DIR LABEL [PCT] — (after a key) the last BOARD_MSGS messages of the
+# channel, within PCT % of the size budget left (AWK_JSON)
+board_msgs() {
+  local m i lo
+  m=("$1"/messages/*.msg)
+  [ -f "${m[0]}" ] || m=()
+  bjo "M$US$2$US${#m[@]}$US${3:-}"
+  i=$((${#m[@]} - 1))
+  lo=$((${#m[@]} - BOARD_MSGS))
+  [ "$lo" -ge 0 ] || lo=0
+  while [ "$i" -ge "$lo" ]; do
+    bjo "m$US${m[$i]}"
+    i=$((i - 1))
+  done
+  bjo E
+}
+
+# board_task DIR — (inside an object) a task: id, dir, its record, brief, plan,
+# summary, items with reviews, runs (+ RH, log tail), messages
+board_task() {
+  local d=$1 f r x n=${1##*/}
+  bjs id "${n%%-*}"
+  bjs dir "$n"
+  bjk task
+  bjo "r$US$d/task"
+  bjk brief
+  bjo "t$US$d/brief.md$US$BOARD_TMAX"
+  bjk plan
+  bjo "t$US$d/shared/plan.md$US$BOARD_TMAX"
+  bjk summary
+  bjo "t$US$d/summary.md$US$BOARD_TMAX"
+  item_files "$d"
+  bjk items
+  bjo "["
+  for f in ${ITEM_FILES[@]+"${ITEM_FILES[@]}"}; do
+    bjo "{"
+    bjo "R$US$f$US"
+    bjk reviews
+    bjo "["
+    for r in "$f.reviews"/[0-9]*; do
+      [ -f "$r" ] && bjo "r$US$r"
+    done
+    bjo "]"
+    bjo "}"
+  done
+  bjo "]"
+  bjk runs
+  bjo "["
+  for f in "$d"/shared/runs/R[0-9]*; do
+    [ -f "$f" ] || continue
+    case ${f##*/} in *.*) continue ;; esac
+    run_read "$f" || continue
+    run_health # one-shot (HB_OBS_D empty): dead | stale | nostart are only shown
+    bjo "{"
+    bjo "R$US$f$US"
+    bjs rh "$RH"
+    bjn rh_age "$RH_AGE"
+    board_tail_v x "$f"
+    bjx tail "$x"
+    bjo "}"
+  done
+  bjo "]"
+  bjk messages
+  board_msgs "$d" task "$BM_PCT" # data.js: some room is left for lobby
+}
+
+# board_settled DIR — a finished task whose data no longer change: closed longer than
+# BOARD_SETTLE ago, or none of its runs is still going
+board_settled() {
+  local f
+  task_read "$1"
+  is_uint "$TK_CLOSED_EPOCH" && [ $((NOW - TK_CLOSED_EPOCH)) -gt "$BOARD_SETTLE" ] && return 0
+  for f in "$1"/shared/runs/R[0-9]*; do
+    [ -f "$f" ] || continue
+    case ${f##*/} in *.*) continue ;; esac
+    run_read "$f" || continue
+    run_is_final "$RN_STATUS" || return 1
+  done
+  return 0
+}
+
+# board_tasks — TL_DIRS (task dirs, by number), CUR_DIR: the active task, else the
+# last finished one (by number); "" if there are no tasks
+board_tasks() {
+  local d n max=0
+  TL_DIRS=()
+  CUR_DIR=
+  for d in "$ROOT"/tasks/T[0-9]*; do
+    [ -f "$d/task" ] || continue
+    n=${d##*/}
+    n=${n%%-*}
+    n=${n#T}
+    is_uint "$n" && [ ${#n} -le 6 ] || continue
+    TL_DIRS[${#TL_DIRS[@]}]=$d
+    n=$((10#$n))
+    if [ "$n" -gt "$max" ]; then
+      max=$n
+      CUR_DIR=$d
+    fi
+  done
+  active_task && CUR_DIR=$ACT_DIR
+  return 0
+}
+
+# board_cache — run/board/T00N.js of every finished task but the current one: written
+# once it settled (BC_<id>: done in this process); until then — every tick, with a
+# T00N.part mark (a later run rewrites a cache written unsettled)
+board_cache() {
+  local d id st
+  for d in ${TL_DIRS[@]+"${TL_DIRS[@]}"}; do
+    [ "$d" = "$CUR_DIR" ] && continue
+    id=${d##*/}
+    id=${id%%-*}
+    eval "[ -z \"\${BC_$id-}\" ]" || continue
+    task_status_v st "$d"
+    case $st in done | cancelled) ;; *) continue ;; esac
+    if board_settled "$d"; then
+      if [ ! -f "$BD/$id.js" ] || [ -f "$BD/$id.part" ]; then
+        board_cache_write "$d" "$id" || continue
+        rm -f "$BD/$id.part"
+      fi
+      eval "BC_$id=1"
+    else
+      : >"$BD/$id.part"
+      board_cache_write "$d" "$id"
+    fi
+  done
+}
+board_cache_write() { # DIR ID
+  BJ=()
+  BM_PCT=
+  bjo "p$US(window.BRG_TASKS = window.BRG_TASKS || {})[\"$2\"] = "
+  bjo "{"
+  board_task "$1"
+  bjk trunc
+  bjo D
+  bjo "}"
+  bjo "p$US;"
+  board_write "$2.js"
+}
+
+# board_tick — run/board/data.js: agents, tasks, the current task, lobby, meta
+board_tick() {
+  local n d x drop st
+  get_now
+  board_tasks
+  board_cache
+  BJ=()
+  bjo "p${US}window.BRG_BOARD = "
+  bjo "{"
+  list_agents
+  bjk agents
+  bjo "["
+  for n in $AGENT_NAMES; do
+    agent_state "$n"
+    idle_note_v x "$n" " · "
+    x=${x# · }
+    drop=0
+    case $x in *"возможно выпал"*) drop=1 ;; esac
+    st=0
+    [ -e "$RUN/stopped.$n" ] && st=1
+    bjo "{"
+    bjo "R$US$ROOT/agents/$n${US}Key" # the session key is shown only to the agent itself (§3)
+    bjs name "$n"
+    bjs state "$ST"
+    bjn seen "$ST_SEEN"
+    bjs note "$x"
+    bjb drop "$drop"
+    bjb stopped "$st"
+    bjo "}"
+  done
+  bjo "]"
+  bjk tasks
+  bjo "["
+  for d in ${TL_DIRS[@]+"${TL_DIRS[@]}"}; do
+    x=
+    summary_line_v x "$d/summary.md"
+    bjo "{"
+    bjo "R$US$d/task$US"
+    bjs dir "${d##*/}"
+    bjs sum "$x"
+    bjo "}"
+  done
+  bjo "]"
+  bjk current
+  if [ -n "$CUR_DIR" ]; then
+    bjo "{"
+    BM_PCT=75
+    board_task "$CUR_DIR"
+    bjo "}"
+  else
+    bjo z
+  fi
+  bjk lobby
+  board_msgs "$ROOT/lobby" lobby
+  bjk meta
+  bjo "{"
+  bjn time "$NOW"
+  bjn interval "$B_INT"
+  bjs version "$BRG_VERSION"
+  bjs project "${PROJ##*/}"
+  x=0
+  [ -e "$RUN/stopped" ] && x=1
+  bjb stop "$x"
+  bjk stopped
+  bjo "["
+  for d in "$RUN"/stopped.*; do
+    [ -e "$d" ] || continue
+    n=${d##*/stopped.}
+    valid_name "$n" && bjo "s$US$n"
+  done
+  bjo "]"
+  bjk trunc
+  bjo D
+  bjo "}"
+  bjo "}"
+  bjo "p$US;"
+  board_write data.js
+}
+
+board_quit() {
+  [ -n "$B_SLEEP" ] && kill "$B_SLEEP" 2>/dev/null
+  rm -f "$BD"/.tmp.*."$$" 2>/dev/null
+  exit 0
+}
+
+cmd_board() {
+  local once= url x u
+  B_INT=2
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --interval)
+        x=${2:-}
+        if ! is_uint "$x" || [ "$x" -lt 1 ] || [ ${#x} -gt 6 ]; then
+          usage_line_v u board
+          say_err "── ОШИБКА: --interval — целое число секунд ≥ 1${2+: $2}" "Использование: $u"
+          exit 1
+        fi
+        B_INT=$((10#$x))
+        shift 2
+        ;;
+      --once)
+        once=1
+        shift
+        ;;
+      -h | --help)
+        usage_print board
+        exit 0
+        ;;
+      *)
+        usage_line_v u board
+        say_err "── ОШИБКА: неизвестный параметр: $1" "Использование: $u"
+        exit 1
+        ;;
+    esac
+  done
+  # not need_root: it writes (mkdir, body_gc)
+  if [ ! -f "$ROOT/VERSION" ] || [ ! -d "$ROOT/lobby/messages" ]; then
+    say_err "── ОШИБКА: не найдено состояние brigada в $ROOT" \
+      "Создать .brigada в проекте: bash /путь/к/brigada/bin/brg init <каталог_проекта>"
+    exit 1
+  fi
+  BD=$RUN/board
+  if ! mkdir -p "$BD" 2>/dev/null; then
+    say_err "── ОШИБКА: не удалось создать $BD"
+    exit 1
+  fi
+  x=
+  [ -f "$BD/VERSION" ] && IFS= read -r x <"$BD/VERSION"
+  if [ "$x" != "$BRG_VERSION" ]; then # another brg: the cache of finished tasks is rebuilt
+    rm -f "$BD"/T[0-9]*.js "$BD"/T[0-9]*.part
+    printf '%s\n' "$BRG_VERSION" >"$BD/.tmp.VERSION.$$" && mv -f "$BD/.tmp.VERSION.$$" "$BD/VERSION"
+  fi
+  detect_platform
+  if board_url_v url "$ROOT" "$PLATFORM"; then
+    printf '%s\n' "$url"
+  else
+    echo "── открой в браузере файл .brigada/board.html проекта ($ROOT/board.html)"
+  fi
+  [ -f "$ROOT/board.html" ] || say_err "── нет $ROOT/board.html — обнови .brigada: bash /путь/к/brigada/bin/brg init $PROJ"
+  B_SLEEP=
+  trap board_quit INT TERM HUP
+  if [ -n "$once" ]; then
+    board_tick || exit 1
+    echo "── снимок записан: $RROOT/run/board/data.js"
+    exit 0
+  fi
+  echo "── доска обновляется каждые $B_INT с (снимок: $RROOT/run/board/); Ctrl+C — выход"
+  while :; do
+    board_tick
+    sleep "$B_INT" &
+    B_SLEEP=$!
+    wait "$B_SLEEP" 2>/dev/null
+    B_SLEEP=
+  done
+}
+
 # ── main ───────────────────────────────────────────────────────────────────
 # How agents call brg — repeated in every NEXT line. Started by bin/brg.cmd
 # (PowerShell/cmd on Windows): that .cmd, not `bash …` (in PowerShell `bash` may
@@ -6229,7 +6788,7 @@ main() {
   [ "$AS_HINT" = '<имя>' ] && valid_name "${BRG_AS:-}" && AS_HINT=$BRG_AS
   trap release_all EXIT
   trap 'release_all; exit 130' INT TERM HUP
-  case $CMD in -h | --help | help | version | --version | init | __runner) ;; *) [ -z "$WIN_CD_HINT" ] || printf '%s\n' "$WIN_CD_HINT" ;; esac
+  case $CMD in -h | --help | help | version | --version | init | board | __runner) ;; *) [ -z "$WIN_CD_HINT" ] || printf '%s\n' "$WIN_CD_HINT" ;; esac
   case $CMD in
     -h | --help | help) cmd_help ;;
     version | --version) echo "brg $BRG_VERSION" ;;
@@ -6237,7 +6796,7 @@ main() {
       cfg_load
       cmd_init "$@"
       ;;
-    join | leave | send | wait | read | who | tail | say | status | stop | resume | task | doctor)
+    join | leave | send | wait | read | who | tail | say | status | stop | resume | task | doctor | board)
       cfg_load
       "cmd_$CMD" "$@"
       ;;

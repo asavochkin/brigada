@@ -6,7 +6,7 @@
 
 . "$TESTS_DIR/brg_lib.sh"
 
-DOC_CMDS="join leave send wait read who tail say status stop resume task lead host item run doctor init help"
+DOC_CMDS="join leave send wait read who tail say status stop resume task lead host item run doctor init board help"
 NL=$'\n'
 US=$'\037' # field separator of doc_invocations (tabs would collapse in read)
 
