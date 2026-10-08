@@ -17,12 +17,12 @@ test_wait_timeout() {
   out=$(brg wait --as "$A" --timeout 1)
   assert_eq 0 "$?" "exit code"
   t1=$(date -u +%s)
-  assert_eq "── нет новых (1 с) · NEXT: bash $BRG wait --as $A --timeout 1" "$out"
+  assert_eq "── нет новых (1 с) · ход не завершай · NEXT: bash $BRG wait --as $A --timeout 1" "$out"
   [ $((t1 - t0)) -ge 1 ] || fail "returned before timeout"
   [ $((t1 - t0)) -le 3 ] || fail "timeout overshoot: $((t1 - t0)) s"
   # default timeout comes from config by harness (codex: 2)
   out=$(brg wait --as "$Bn")
-  assert_eq "── нет новых (2 с) · NEXT: bash $BRG wait --as $Bn" "$out"
+  assert_eq "── нет новых (2 с) · ход не завершай · NEXT: bash $BRG wait --as $Bn" "$out"
   assert_file_not_exists "$B/run/wait/${A%%.*}.pid" "pid file released"
   assert_file_not_exists "$B/run/wait/${A%%.*}.hb" "hb file released"
   assert_contains "$(metrics_of "$A" wait.start)" "timeout=1 pid="
@@ -238,7 +238,7 @@ test_parent_out_of_reach_is_not_orphan() {
   wait_for 5 is_dead "$cp" || fail "wait did not end by its timeout"
   out=$(cat "$P/out")
   assert_contains "$out" "── нет новых (3 с)"
-  assert_eq "── нет новых (3 с) · NEXT: bash $BRG wait --as $A --timeout 3" "$(printf '%s\n' "$out" | tail -n 1)"
+  assert_eq "── нет новых (3 с) · ход не завершай · NEXT: bash $BRG wait --as $A --timeout 3" "$(printf '%s\n' "$out" | tail -n 1)"
   assert_contains "$(metrics_of "$A" wait)" "result=timeout"
   assert_not_contains "$(metrics_of "$A" wait)" "result=orphan"
 }
@@ -420,14 +420,14 @@ test_timeout_digest_of_the_task() {
   two_agents
   c=$(join_as opencode)
   out=$(brg wait --as "$A" --timeout 0)
-  assert_eq "── нет новых (0 с) · NEXT: bash $BRG wait --as $A --timeout 0" "$out" "no task: no digest"
+  assert_eq "── нет новых (0 с) · ход не завершай · NEXT: bash $BRG wait --as $A --timeout 0" "$out" "no task: no digest"
   task_new_as "$A" "Сводка"
   d=$(tdir T001)
   ack_all "$A"
   ack_all "$A" "$d"
   out=$(brg wait --as "$A" --timeout 0)
   assert_eq "T001: подзадач пока нет
-── нет новых (0 с) · NEXT: bash $BRG wait --as $A --timeout 0" "$out"
+── нет новых (0 с) · ход не завершай · NEXT: bash $BRG wait --as $A --timeout 0" "$out"
   for x in "Первая" "Вторая" "Третья" "Четвёртая" "Пятая"; do
     printf 'd\n' | brg item add --as "$A" --title "$x" >/dev/null || fail "item add $x"
   done
@@ -447,7 +447,7 @@ test_timeout_digest_of_the_task() {
   ack_all "$A" "$d"
   out=$(brg wait --as "$A" --timeout 0)
   assert_eq "T001: todo 1 · в работе I002 ${Bn%%.*} · готово I003, I004, I005 · ревью ждут I003 · прогонов идёт 1
-── нет новых (0 с) · NEXT: bash $BRG wait --as $A --timeout 0" "$out"
+── нет новых (0 с) · ход не завершай · NEXT: bash $BRG wait --as $A --timeout 0" "$out"
   # delivered messages: no digest
   send_as "$Bn" "есть новости"
   out=$(brg wait --as "$A" --timeout 1)

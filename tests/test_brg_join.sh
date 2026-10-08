@@ -237,7 +237,7 @@ test_commands_shown_for_brg_cmd() {
   assert_contains "$out" "Ты вызываешь brg из PowerShell/cmd"
   assert_contains "$out" "--file <путь>"
   out=$(cd "$P" && BRG_VIA_CMD='C:\toy\.brigada\bin\brg.cmd' bash .brigada/bin/brg wait --as "$a" --timeout 0)
-  assert_eq '── нет новых (0 с) · NEXT: .\.brigada\bin\brg.cmd wait --as '"$a"' --timeout 0' "$out"
+  assert_eq '── нет новых (0 с) · ход не завершай · NEXT: .\.brigada\bin\brg.cmd wait --as '"$a"' --timeout 0' "$out"
   assert_not_contains "$out" "не из корня"
   # not from the project root: still the relative form (a quoted full path is no
   # command in PowerShell, & "…" is none in cmd), and first a line: go to the root
@@ -246,7 +246,7 @@ test_commands_shown_for_brg_cmd() {
   assert_eq '── NEXT: .\.brigada\bin\brg.cmd wait --as '"$a" "$(printf '%s\n' "$out" | tail -n 1)"
   out=$(BRG_VIA_CMD='C:\toy\.brigada\bin\brg.cmd' brg wait --as "$a" --timeout 0)
   assert_contains "$out" 'cd "C:\toy"'
-  assert_eq '── нет новых (0 с) · NEXT: .\.brigada\bin\brg.cmd wait --as '"$a"' --timeout 0' "$(printf '%s\n' "$out" | tail -n 1)"
+  assert_eq '── нет новых (0 с) · ход не завершай · NEXT: .\.brigada\bin\brg.cmd wait --as '"$a"' --timeout 0' "$(printf '%s\n' "$out" | tail -n 1)"
   # the root in another case is still the root (Windows paths ignore case); only
   # where the file system ignores case too
   up=$(printf '%s' "$P" | tr 'a-z' 'A-Z')

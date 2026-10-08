@@ -197,7 +197,7 @@ test_key_next_lines_carry_full_name() {
   out=$(brg wait --as "$Bn" --timeout 1)
   assert_contains "$(printf '%s\n' "$out" | tail -n 1)" "NEXT: обработай, затем: bash $BRG wait --as $Bn"
   out=$(brg wait --as "$Bn" --timeout 0)
-  assert_eq "── нет новых (0 с) · NEXT: bash $BRG wait --as $Bn --timeout 0" "$(printf '%s\n' "$out" | tail -n 1)"
+  assert_eq "── нет новых (0 с) · ход не завершай · NEXT: bash $BRG wait --as $Bn --timeout 0" "$(printf '%s\n' "$out" | tail -n 1)"
   for out in "$(brg status --as "$A")" "$(brg read --as "$A")" "$(brg task show --as "$A")" \
     "$(brg item claim I001 --as "$Bn" --paths src/a)" "$(brg item show I001 --as "$Bn")" \
     "$(brg item done I001 --as "$Bn" --note готово)" "$(brg run list --as "$A")" \
@@ -362,7 +362,7 @@ test_key_legacy_profile_without_key() {
   assert_eq 0 "$?"
   assert_eq "── NEXT: продолжай; закончив шаг — bash $BRG wait --as $a" "$(printf '%s\n' "$out" | tail -n 1)"
   out=$(brg wait --as "$a" --timeout 0)
-  assert_eq "── нет новых (0 с) · NEXT: bash $BRG wait --as $a --timeout 0" "$(printf '%s\n' "$out" | tail -n 1)"
+  assert_eq "── нет новых (0 с) · ход не завершай · NEXT: bash $BRG wait --as $a --timeout 0" "$(printf '%s\n' "$out" | tail -n 1)"
   old=$(cat "$B/run/seen/$a")
   sleep 1
   brg status --as "$a" >/dev/null

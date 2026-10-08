@@ -17,7 +17,7 @@ _brg_crlf=x
 case ${#_brg_crlf} in 1) ;; *) printf '%s\n' "brg: ОШИБКА: у файла $0 окончания строк CRLF (Windows) — bash его не выполнит." "Причина — git с core.autocrlf=true. Это .brigada/bin/brg — переустанови: bash <brigada>/bin/brg init <проект>. Это сам репозиторий brigada — удали bin/brg и восстанови: git checkout -- bin/brg (по .gitattributes он запишется с LF) или скачай brigada заново. Проверка: bash <brigada>/bin/brg doctor <проект>." >&2; exit 2 ;; esac #
 unset _brg_crlf
 
-BRG_VERSION=0.4.0
+BRG_VERSION=0.4.1
 # the caller's locale, restored for commands started by `brg run`
 _brg_lc_set=${LC_ALL+1}
 _brg_lc=${LC_ALL-}
@@ -1731,7 +1731,7 @@ AM_BEGIN='<!-- brigada:begin'
 AM_END='<!-- brigada:end'
 AM_BLOCK="$AM_BEGIN — блок от brg init, init его обновляет; не нужен — удали по brigada:end включительно и запускай init с --no-agents-md -->
 ## brigada
-Если человек просит «подключиться к бригаде» (brigada, .brigada) — прочитай \`.brigada/README.md\` и следуй ему: там подключение (\`join\`) и обязательный цикл \`wait\`. Без такой просьбы к бригаде не подключайся.
+Если человек просит «подключиться к бригаде» (brigada, .brigada) — прочитай \`.brigada/README.md\` и следуй ему. Подключиться — значит войти в рабочий цикл бригады и оставаться в нём до STOP: после \`join\` не отчитывайся человеку и не завершай ход — сразу \`wait\`. В бригаде ты координируешь свою часть через brg, а саму работу поручаешь своим подагентам (харнесс не умеет — делаешь сам, короткими шагами между \`wait\`). Без такой просьбы к бригаде не подключайся. Если работу тебе поручил другой агент (ты — подагент), к бригаде не подключайся и \`wait\` не вызывай ни при каких обстоятельствах — выполни поручение сам.
 $AM_END -->"
 AM_EXCLUDE=/AGENTS.md
 AM_EXCLUDE_NOTE='# brigada: AGENTS.md создан brg init — чтобы коммитить его, удали строку ниже'
@@ -2150,7 +2150,7 @@ cmd_join() {
   echo "Ожидание: $BRG wait --as $ASN — возвращается при сообщениях или через $T с."
   echo "Таймаут инструмента: $hint"
   win_note
-  echo "Правило: последнее действие каждого шага — wait; никогда не завершай ход (кроме STOP)."
+  echo "Правило: подключиться — значит работать в бригаде до STOP. Человеку о подключении не отчитывайся — сразу выполни NEXT (дал задачу в той же просьбе — сначала task new). Последнее действие каждого шага — wait; ход не завершай (кроме STOP). Свою работу поручай подагентам (если харнесс умеет), сам держи цикл (PROTOCOL.md)."
   echo "── NEXT: $BRG wait --as $ASN"
 }
 
@@ -3701,6 +3701,7 @@ task_new() {
   case $cleared in 1*) echo "Общий стоп снят. Остановленные агенты завершили ход — попроси человека написать им «продолжай»." ;; esac
   case $cleared in *me) echo "Стоп, поставленный тебе человеком, снят: он дал новую задачу." ;; esac
   echo "Как работать — решаете сообща; проверенный порядок (PROTOCOL.md, не обязателен): перекличка с --reply-by 10m (каждый один раз ответит: модель, сильные стороны, загрузка), затем план в shared/plan.md."
+  echo "Lead — фасилитатор: план и подзадачи — вместе с бригадой, работу раздай участникам; свою часть — силами подагентов, сам держи цикл wait."
   echo "Человек читает твой чат, а не переписку brg: отчёты и вопросы ему пиши обычным текстом в своём чате перед очередным wait (копия для протокола — send --to human)."
   fit_warn_print
   echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
@@ -6377,7 +6378,7 @@ cmd_wait() {
       # nothing new: a one-line digest of the active task before NEXT
       x=
       active_task && task_digest_v x && x=$x$NL
-      w_finish timeout 0 "$x── нет новых ($T с) · NEXT: $NEXT_WAIT"
+      w_finish timeout 0 "$x── нет новых ($T с) · ход не завершай · NEXT: $NEXT_WAIT"
     fi
     sleep "$TICK" &
     W_SLEEP=$!
