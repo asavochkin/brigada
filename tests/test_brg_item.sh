@@ -231,6 +231,50 @@ test_claim_again_changes_paths() {
 docs" "$(body "$D/reservations/I001")"
 }
 
+# Overlap with my own other items (DESIGN §7.1): the claim succeeds with a
+# warning — a second session under my name shows up there. No overlap, none,
+# and a renew over the item's own paths are silent; "." overlaps all of mine.
+test_claim_own_overlap_warns() {
+  local out
+  item_setup
+  for x in 1 2 3 4 5 6 7; do item_add_as "$A" "Пункт $x"; done
+  claim_ok "$Bn" I1 "src/auth"
+  out=$(brg item claim I2 --as "$Bn" --paths "docs")
+  assert_eq 0 "$?"
+  assert_not_contains "$out" "⚠" "no overlap"
+  out=$(brg item claim I1 --as "$Bn" --paths "src/auth,tests")
+  assert_contains "$out" "── пути I001 обновлены"
+  assert_not_contains "$out" "⚠" "renew over its own paths"
+  out=$(brg item claim I3 --as "$Bn" --paths "SRC/auth/login.js")
+  assert_eq 0 "$?" "own overlap is not a refusal"
+  assert_contains "$out" "── I003 «Пункт 3» — твоя. Резервирование: SRC/auth/login.js."
+  assert_contains "$out" "⚠ эти пути уже твои по I001 (твой путь ↔ твоё резервирование):
+  SRC/auth/login.js ↔ src/auth — I001 «Пункт 1»
+Если I001 брал не ты — под твоим именем работает другая сессия: сообщи lead'у (bash $BRG send --as $Bn --to ${A%%.*}) и человеку (в своём чате)."
+  assert_contains "$(printf '%s\n' "$out" | tail -n 1)" "── NEXT: работай над I003"
+  assert_eq claimed "$(hdr "$D/items/I003" Status)"
+  assert_file_exists "$D/reservations/I003"
+  assert_contains "$(metrics_of "$Bn" item.claim | tail -n 1)" "own=I001"
+  out=$(brg item claim I4 --as "$Bn" --paths none)
+  assert_not_contains "$out" "⚠" "--paths none"
+  # the whole project overlaps every reservation of mine
+  out=$(brg item claim I5 --as "$Bn" --paths .)
+  assert_eq 0 "$?"
+  assert_contains "$out" "⚠ эти пути уже твои по I001, I002, I003 "
+  assert_contains "$out" "  . ↔ tests — I001 «Пункт 1»"
+  assert_contains "$out" "  . ↔ docs — I002 «Пункт 2»"
+  # someone else's own items are not mine (and C's claim is refused by Bn's ".")
+  out=$(brg item claim I6 --as "$C" --paths "lib" 2>&1)
+  assert_eq 1 "$?"
+  assert_not_contains "$out" "⚠"
+  # the lead overlapping itself is told to tell the human
+  brg item release I5 --as "$Bn" >/dev/null || fail release
+  claim_ok "$A" I6 "lib"
+  out=$(brg item claim I7 --as "$A" --paths "lib/x")
+  assert_contains "$out" "⚠ эти пути уже твои по I006"
+  assert_contains "$out" "под твоим именем работает другая сессия: сообщи человеку (в своём чате)."
+}
+
 # A race of two (here: eight) claims of one item → exactly one wins.
 test_claim_race_exactly_one_winner() {
   local i n
@@ -450,6 +494,7 @@ test_close_and_cancel_with_claimed_items() {
   claim_ok "$Bn" I1 "src/a"
   claim_ok "$C" I2 "src/b"
   brg item done I2 --as "$C" >/dev/null || fail done
+  brg wait --as "$A" --timeout 0 >/dev/null # the lead takes the "done" notice first
   printf 'итог\n' >"$D/summary.md"
   out=$(brg task close --as "$A" 2>&1)
   assert_eq 1 "$?"

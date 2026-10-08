@@ -768,6 +768,39 @@ need_agent() {
     die "агент $b отключён (brg leave)" \
       "Вернуться под тем же именем (курсоры сохранены, ключ будет новый): $BRG join --as $b --harness ${A_HARNESS:-<харнесс>}"
   fi
+  stop_banner
+}
+
+# The human's stop (DESIGN §9) seen by any agent command, not only by wait.
+stop_who_v() { # VAR — whom the human stopped: "бригаду" | "тебя (NAME)"; 1 if nobody
+  local _sw_w
+  if [ -e "$RUN/stopped" ]; then
+    _sw_w="бригаду"
+  elif [ -n "$AGENT" ] && [ -e "$RUN/stopped.$AGENT" ]; then
+    _sw_w="тебя ($AGENT)"
+  else
+    return 1
+  fi
+  eval "$1=\$_sw_w"
+}
+# stop_banner — the first line of an agent command while stopped; once per process.
+# wait and status print STOP themselves, task new lifts it: they set STOP_SHOWN.
+STOP_SHOWN=
+stop_banner() {
+  local w
+  [ -z "$STOP_SHOWN" ] || return 0
+  stop_who_v w || return 0
+  STOP_SHOWN=1
+  echo "── STOP: человек остановил $w. Новую работу не начинай: сдай сделанное, если нужно (send, item done), и заверши ход."
+}
+# stop_refuse WHAT — commands that start work (item add|claim|reassign, run) are
+# refused while stopped; NEXT is "end the turn": wait would only return STOP.
+stop_refuse() {
+  local w
+  stop_who_v w || return 0
+  NEXT_ON_ERR="заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
+  die "человек остановил $w — $1 не выполнено: при стопе новую работу не начинают" \
+    "Можно сдать сделанное и сообщить: send, item done|release|review, task close. Стоп снимает только человек."
 }
 
 touch_seen() { # [NAME] — Last-Seen := now (not for a read command without the key)
@@ -1517,16 +1550,16 @@ usage_print() {
     tail) echo "Переписка в читаемом виде: без канала — lobby и активная задача (следит за сменой задачи); -f — следить (Ctrl-C — выход)." ;;
     say) echo "Сообщение от human (по умолчанию всем, в канал активной задачи); снимает общий стоп и стоп названных агентов." ;;
     status) echo "Кто я, задача и моя роль, непрочитанное (без сдвига курсора), мои дедлайны, жив ли мой wait, NEXT. С именем без ключа — только просмотр (не подтверждает, что ты этот агент)." ;;
-    stop) echo "Остановить бригаду (или одного агента): wait возвращает STOP сразу и на ближайшем тике." ;;
+    stop) echo "Остановить бригаду (или одного агента): wait возвращает STOP сразу и на ближайшем тике; любая команда агента печатает STOP первой строкой; item add|claim|reassign и запуск run отказывают." ;;
     resume) echo "Снять стоп (весь или одного агента)." ;;
     init) echo "Создать/обновить <проект>/.brigada: bin/brg, README.md, PROTOCOL.md, config.default, VERSION; состояние и config не трогает." ;;
     task)
       echo "Задачи (одна активная): new — создать (ты host и lead; постановка человека дословно → brief.md); close — закрыть (lead; нужен непустой summary.md); cancel — отменить (host, lead или человек: --as human); show/list — посмотреть."
-      echo "close отказывает, пока есть подзадачи в работе или идут прогоны (--force — отменить и остановить их)."
+      echo "close отказывает, пока есть подзадачи в работе или идут прогоны (--force — отменить и остановить их). Есть непрочитанное для lead'а (то, что разбудило бы его wait) — close показывает его (оно считается доставленным) и отказывает: учти и повтори close."
       ;;
     lead | host) echo "Роль в активной задаче: give — передать (только текущий $1); take — взять, если текущий $1 asleep/gone." ;;
     item)
-      echo "Подзадачи активной задачи: add — добавить (todo; описание — --desc \"…\", stdin (heredoc) или --file; --paths — предлагаемые пути); claim — взять в работу с резервированием путей (--paths относительно корня проекта, через запятую; none — без правок файлов; без --paths — предлагаемые пути подзадачи; пересечение с чужими резервированиями — отказ); повторный claim своей — сменить пути."
+      echo "Подзадачи активной задачи: add — добавить (todo; описание — --desc \"…\", stdin (heredoc) или --file; --paths — предлагаемые пути); claim — взять в работу с резервированием путей (--paths относительно корня проекта, через запятую; none — без правок файлов; без --paths — предлагаемые пути подзадачи; пересечение с чужими резервированиями — отказ, со своими (другие твои подзадачи) — предупреждение); повторный claim своей — сменить пути."
       echo "done — готово (только исполнитель; снимает резервирования; --note — итог одной строкой до 500 байт, --result — файл с подробностями); release — вернуть в todo (исполнитель; lead — если исполнитель asleep/gone); reassign — передать другому (lead, если исполнитель asleep/gone)."
       echo "review — ревью (не исполнитель; лучше агент другой модели): --verdict ok|changes, комментарий — --comment \"…\", stdin (heredoc) или --file; результат получают исполнитель и lead. list/show — посмотреть."
       echo "Длинные --title, --note, --desc, --comment не отвергаются, а обрезаются с пометкой «…(обрезано)» и предупреждением."
@@ -2450,7 +2483,7 @@ BRG_WHO_EOF
   else
     echo "── активной задачи нет"
   fi
-  [ -e "$RUN/stopped" ] && echo "── STOP: бригада остановлена (снять: $BRG resume)"
+  [ -e "$RUN/stopped" ] && [ -z "$STOP_SHOWN" ] && echo "── STOP: бригада остановлена (снять: $BRG resume)" # not twice for who --as
   metric who agents="$cnt"
   return 0
 }
@@ -2492,7 +2525,12 @@ cmd_status() {
     esac
   done
   need_root
+  STOP_SHOWN=1 # STOP is the last line of status (instead of NEXT)
   need_agent read
+  if [ -n "$AS_NOKEY" ]; then # that line is not printed without the key
+    STOP_SHOWN=
+    stop_banner
+  fi
   get_now
   touch_seen
   detect_platform
@@ -3387,6 +3425,7 @@ task_new() {
     esac
   done
   need_root
+  STOP_SHOWN=1 # a new task lifts the stop (below)
   need_agent write
   NEXT_ON_ERR="исправь команду и повтори: $BRG task new --as $ASN --title \"…\" <<'BRG_EOF' (постановка человека дословно) BRG_EOF; закончив шаг — $BRG wait --as $ASN"
   title=${title//[[:cntrl:]]/ }
@@ -3428,7 +3467,10 @@ task_new() {
     rm -f "$RUN/stopped"
     cleared=1
   fi
-  rm -f "$RUN/stopped.$AGENT"
+  if [ -e "$RUN/stopped.$AGENT" ]; then
+    rm -f "$RUN/stopped.$AGENT"
+    cleared="$cleared${cleared:+ }me"
+  fi
   BODY="новая задача $n: «$title» · host и lead: $AGENT. Прочитай постановку: $RROOT/tasks/$name/brief.md. Переписка по задаче — в канале $n (send по умолчанию идёт туда). Цель, рамки и рекомендованный порядок работы — $RROOT/PROTOCOL.md."
   msg_write lobby "$AGENT" all system ""
   lock_release task
@@ -3442,11 +3484,74 @@ task_new() {
   echo "── создана задача $n «$title»: ты host и lead."
   echo "Каталог: $RROOT/tasks/$name/ — brief.md (постановка), shared/ (план, решения, артефакты), summary.md (итог; нужен для task close, первая строка — итог одной фразой)."
   echo "Всем отправлено системное «новая задача» (lobby). Переписка по задаче — канал $n: send по умолчанию идёт туда."
-  [ -n "$cleared" ] && echo "Общий стоп снят. Остановленные агенты завершили ход — попроси человека написать им «продолжай»."
+  case $cleared in 1*) echo "Общий стоп снят. Остановленные агенты завершили ход — попроси человека написать им «продолжай»." ;; esac
+  case $cleared in *me) echo "Стоп, поставленный тебе человеком, снят: он дал новую задачу." ;; esac
   echo "Как работать — решаете сообща; проверенный порядок (PROTOCOL.md, не обязателен): перекличка с --reply-by 10m (каждый один раз ответит: модель, сильные стороны, загрузка), затем план в shared/plan.md."
   echo "Человек читает твой чат, а не переписку brg: отчёты и вопросы ему пиши обычным текстом в своём чате перед очередным wait (копия для протокола — send --to human)."
   fit_warn_print
   echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+}
+
+# close_unread — DESIGN §6, "refusal = delivery": what would wake the lead's wait
+# (after Pending in its wait channels) is delivered by task close itself: printed
+# like wait prints it (quiet ones too, capped at wait_output_max), then Pending :=
+# the last shown, Acked untouched (the next wait confirms the batch). Deadline
+# reports are left to wait. 0 if something was shown (CU_COUNT messages).
+close_unread() {
+  local i c d wake= out= budget=$OUTMAX force=1 pl n=0 x
+  local -a dirs acks shows
+  CU_COUNT=0
+  listen_set
+  i=0
+  while [ $i -lt "$LS_N" ]; do
+    c=${LS_CH[i]}
+    i=$((i + 1))
+    chan_dir d "$c" || continue
+    cursor_read "$d/cursors/$AGENT"
+    scan_new "$d" "$CUR_PEND"
+    [ "$SCAN_N" -gt 0 ] || continue
+    FMT_COUNTONLY=1
+    fmt_msgs wait 0 1
+    FMT_COUNTONLY=
+    [ "$FMT_WAKE" -gt 0 ] && wake=1
+  done
+  [ -n "$wake" ] || return 1
+  i=0
+  while [ $i -lt "$LS_N" ]; do
+    c=${LS_CH[i]}
+    i=$((i + 1))
+    chan_dir d "$c" || continue
+    cursor_read "$d/cursors/$AGENT"
+    scan_new "$d" "$CUR_PEND"
+    [ "$SCAN_N" -gt 0 ] || continue
+    fmt_msgs wait "$budget" "$force"
+    [ "$FMT_SHOWN" -gt 0 ] || continue
+    plural_new_v pl "$FMT_SHOWN"
+    out="$out── $c${LS_NOTE[i - 1]} · $FMT_SHOWN $pl ─────────────────────────────$NL$FMT_TEXT"
+    x=$SCAN_MAX
+    if [ "$FMT_REST" -gt 0 ]; then
+      out="$out── ещё $FMT_REST в $c не вошло (лимит вывода): покажет следующий task close$NL"
+      x=$FMT_LAST
+    fi
+    dirs[n]=$d acks[n]=$CUR_ACK shows[n]=$x
+    n=$((n + 1))
+    budget=$((budget - ${#FMT_TEXT}))
+    force=0
+    CU_COUNT=$((CU_COUNT + FMT_SHOWN))
+  done
+  [ "$n" -gt 0 ] || return 1
+  lock_release task # the task is not changed from here on
+  if printf '%s' "$out"; then
+    # at-least-once: issued (Pending) only after the output was written
+    i=0
+    while [ $i -lt "$n" ]; do
+      [ -d "${dirs[i]}/cursors" ] || mkdir -p "${dirs[i]}/cursors"
+      cursor_write "${dirs[i]}/cursors/$AGENT" "${acks[i]}" "${shows[i]}"
+      i=$((i + 1))
+    done
+  fi
+  metric task.close.unread shown="$CU_COUNT"
+  return 0
 }
 
 task_close() {
@@ -3479,6 +3584,12 @@ task_close() {
   if [ "$TK_LEAD" != "$AGENT" ]; then
     die "закрыть задачу $ACT_ID может только lead ($TK_LEAD)" \
       "Если $TK_LEAD asleep/gone — сначала возьми роль: $BRG lead take --as $ASN; иначе напиши ему: $BRG send --as $ASN --to $TK_LEAD"
+  fi
+  # before summary.md: the lead sees what came in before writing the result
+  if close_unread; then
+    NEXT_ON_ERR="учти сообщения выше (ответь, если нужно; поправь summary.md), затем повтори: $BRG task close --as $ASN${force:+ --force}"
+    die "задача $ACT_ID не закрыта: тебе пришли сообщения (выше, $CU_COUNT) — учти их и повтори task close" \
+      "Показанное считается доставленным: повтор пройдёт, если нового не придёт (read не нужен)."
   fi
   if ! summary_line_v sum "$ACT_DIR/summary.md"; then
     die "нет итога: $RROOT/tasks/$ACT_NAME/summary.md пуст или не создан" \
@@ -3935,6 +4046,7 @@ paths_parse() {
 #   list:     item US agent US path            (every valid reserved path)
 #   conflict: mine US agent US item US path    (overlaps of `mine` with others'
 #             paths; the agent `me` and the item `skip` are not others)
+#   own:      the same fields, overlaps with `me`'s own other items (not `skip`)
 AWK_RES='
 function ov(a, b) {
   a = tolower(a); b = tolower(b)
@@ -3958,7 +4070,8 @@ BEGIN { nm = split(mine, m, ",") }
   close(itf)
   if (st != "claimed" || as != ag || ag == "") next
   if (mode == "list") { for (i = 1; i <= np; i++) print id US ag US p[i]; next }
-  if (ag == me || id == skip) next
+  if (mode == "own") { if (ag != me || id == skip) next }
+  else if (ag == me || id == skip) next
   for (j = 1; j <= nm; j++) for (i = 1; i <= np; i++) if (ov(m[j], p[i])) print m[j] US ag US id US p[i]
 }'
 res_awk() { # DIR MODE MINE ME SKIP → RES_OUT
@@ -3988,6 +4101,24 @@ res_conflicts() {
 $RES_OUT
 BRG_RC_EOF
   RC_LINES=${RC_LINES%"$NL"}
+}
+# res_own DIR PATHS AGENT ITEM → RO_LINES (overlaps with AGENT's other claimed
+# items, one per line; "" if none), RO_IDS ("I001, I003")
+res_own() {
+  local mine ag id path t
+  RO_LINES= RO_IDS=
+  [ "$2" = none ] && return 0
+  res_awk "$1" own "$2" "$3" "$4"
+  [ -n "$RES_OUT" ] || return 0
+  while IFS=$US read -r mine ag id path; do
+    [ -n "$id" ] || continue
+    t=$(sed -n 's/^Title: //p; /^$/q' "$1/items/$id" 2>/dev/null)
+    RO_LINES="$RO_LINES  $mine ↔ $path — $id «$t»$NL"
+    case ", $RO_IDS," in *", $id,"*) ;; *) RO_IDS="$RO_IDS${RO_IDS:+, }$id" ;; esac
+  done <<BRG_RO_EOF
+$RES_OUT
+BRG_RO_EOF
+  RO_LINES=${RO_LINES%"$NL"}
 }
 res_write() { # DIR ITEM AGENT PATHS — reservation file (removed for "none")
   local f=$1/reservations/$2 t x rest=$4,
@@ -4129,6 +4260,7 @@ model_key_v() {
 item_begin() {
   need_root
   need_agent write
+  case $ISUB in claim | reassign) stop_refuse "item $ISUB" ;; esac
   NEXT_ON_ERR="исправь команду и повтори (справка: $BRG item --help); закончив шаг — $BRG wait --as $ASN"
   get_now_iso
   lock_acquire task
@@ -4249,6 +4381,7 @@ item_add() {
   fi
   need_root
   need_agent write
+  stop_refuse "item add"
   NEXT_ON_ERR="исправь команду и повтори: $BRG item add --as $ASN --title \"…\" --desc \"что сделать, критерий готовности\" [--paths \"предлагаемые пути\"] (длинное — heredoc <<'BRG_EOF' или --file); закончив шаг — $BRG wait --as $ASN"
   item_body --desc
   IT_BODY=$BODY
@@ -4316,6 +4449,9 @@ item_claim() {
   fi
   paths_show_v old "${IT_PATHS:-none}"
   res_write "$ACT_DIR" "$IT_ID" "$AGENT" "$PP_LIST"
+  # overlaps with my own other items: not a refusal, but a warning (DESIGN §7.1) —
+  # a second session under my name shows up here
+  res_own "$ACT_DIR" "$PP_LIST" "$AGENT" "$IT_ID"
   IT_STATUS=claimed IT_ASSIGNEE=$AGENT IT_PATHS=$PP_LIST
   if [ -z "$renew" ]; then
     IT_CLAIMED=$ISO
@@ -4331,13 +4467,19 @@ item_claim() {
   item_say all no # informational: who edits what
   lock_release task
   touch_seen
-  metric item.claim task="$ACT_ID" id="$IT_ID" paths="${PP_LIST// /_}" renew="${renew:-0}" hint="${hinted:-0}"
+  metric item.claim task="$ACT_ID" id="$IT_ID" paths="${PP_LIST// /_}" renew="${renew:-0}" hint="${hinted:-0}" own="${RO_IDS//, /,}"
   if [ -n "$renew" ]; then
     echo "── пути $IT_ID обновлены: $shown (были: $old)."
   elif [ -n "$hinted" ]; then
     echo "── $IT_ID «$IT_TITLE» — твоя. Взяты предлагаемые пути: $shown (нужны другие — повтори claim с --paths)."
   else
     echo "── $IT_ID «$IT_TITLE» — твоя. Резервирование: $shown."
+  fi
+  if [ -n "$RO_LINES" ]; then
+    x="lead'у ($BRG send --as $ASN --to $TK_LEAD) и человеку (в своём чате)"
+    [ "$TK_LEAD" = "$AGENT" ] && x="человеку (в своём чате)"
+    printf '%s\n' "⚠ эти пути уже твои по $RO_IDS (твой путь ↔ твоё резервирование):" "$RO_LINES" \
+      "Если $RO_IDS брал не ты — под твоим именем работает другая сессия: сообщи $x."
   fi
   [ "$PP_LIST" = none ] || echo "Правь только эти пути; нужен ещё путь — повтори claim с полным списком. Тесты и сборку запускай через $BRG run --as $ASN --item $IT_ID -- <команда>."
   echo "Описание: $BRG item show $IT_ID. Готово — $BRG item done $IT_ID --as $ASN --note \"что сделано, как проверено\"; бросаешь — item release."
@@ -5084,6 +5226,7 @@ cmd_run() {
   [ $# -gt 0 ] || usage_die "нужна команда: $BRG run --as <имя> -- <команда> [аргументы…]"
   need_root
   need_agent write
+  stop_refuse run
   NEXT_ON_ERR="исправь команду и повтори: $BRG run --as $ASN -- <команда>; закончив шаг — $BRG wait --as $ASN"
   # under the task lock: a run is not created in a task being closed (close refuses
   # while the task has runs in progress, cancel stops them)
@@ -5958,6 +6101,7 @@ cmd_wait() {
   done
   [ -z "$opt_t" ] || { is_uint "$opt_t" && [ ${#opt_t} -le 9 ]; } || usage_die "--timeout — целое число секунд: $opt_t"
   need_root
+  STOP_SHOWN=1 # wait returns STOP itself
   need_agent write
   if [ -n "$opt_t" ]; then T=$opt_t; else wait_timeout_v T "$A_HARNESS" "$A_PLATFORM"; fi
   NEXT_WAIT="$BRG wait --as $ASN"

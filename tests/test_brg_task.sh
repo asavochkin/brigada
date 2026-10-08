@@ -208,6 +208,122 @@ test_task_close_rules_and_history() {
   assert_eq 2 "$(awk '/^- T00/' "$B/common/history.md" | wc -l | tr -d ' ')"
 }
 
+# task close and the lead's unread mail — "refusal = delivery" (DESIGN §6): what
+# would wake the lead's wait is shown by close itself (stdout, before the summary.md
+# check) and counts as delivered: Pending moves, Acked stays; the repeated close
+# passes; the next wait does not repeat it. Quiet and own messages do not block.
+test_close_shows_unread_mail_and_refuses() {
+  local out d
+  three_agents
+  task_new_as "$A" "Закрытие"
+  d=$(tdir T001)
+  for x in "$A" "$Bn" "$C"; do ack_all "$x" "$d"; done
+  printf 'о\n' | brg item add --as "$A" --title "Своя" >/dev/null || fail add
+  send_as "$A" "моё всем"
+  brg item claim I1 --as "$Bn" --paths src >/dev/null || fail claim # quiet notice
+  out=$(brg task close --as "$A" 2>&1)
+  assert_eq 1 "$?"
+  assert_contains "$out" "нет итога" "own and quiet messages do not block"
+  assert_eq "0/0" "$(tcursor "$A" T001)" "nothing issued"
+  # a personal message to the lead: shown on stdout, refused before summary.md
+  send_as "$Bn" "важное: разброс по сидам" --to "${A%%.*}"
+  brg task close --as "$A" >"$P/o" 2>"$P/e"
+  assert_eq 1 "$?"
+  out=$(cat "$P/o")
+  assert_contains "$out" "── T001 · 2 новых"
+  assert_contains "$out" "${Bn%%.*} взял I001" "quiet ones come along"
+  assert_contains "$out" "#4 ${Bn%%.*} → ${A%%.*}"
+  assert_contains "$out" "  важное: разброс по сидам"
+  assert_not_contains "$out" "моё всем"
+  out=$(cat "$P/e")
+  assert_contains "$out" "── ОШИБКА: задача T001 не закрыта: тебе пришли сообщения (выше, 2) — учти их и повтори task close"
+  assert_not_contains "$out" "нет итога" "the unread check comes first"
+  assert_eq "── NEXT: учти сообщения выше (ответь, если нужно; поправь summary.md), затем повтори: bash $BRG task close --as $A" "$(printf '%s\n' "$out" | tail -n 1)"
+  assert_eq "0/4" "$(tcursor "$A" T001)" "Pending moved, Acked kept"
+  assert_contains "$(metrics_of "$A" task.close.unread)" "shown=2"
+  # the next wait confirms the shown batch and does not repeat it
+  out=$(brg wait --as "$A" --timeout 0)
+  assert_contains "$out" "── нет новых"
+  assert_not_contains "$out" "разброс по сидам"
+  assert_eq "4/4" "$(tcursor "$A" T001)"
+  # shown = delivered: the repeat goes on to the next check
+  out=$(brg task close --as "$A" 2>&1)
+  assert_contains "$out" "нет итога"
+  # --force does not skip it
+  printf 'итог\n' >"$d/summary.md"
+  send_as "$C" "ещё одно"
+  out=$(brg task close --as "$A" --force 2>&1)
+  assert_eq 1 "$?"
+  assert_contains "$out" "  ещё одно"
+  assert_contains "$out" "затем повтори: bash $BRG task close --as $A --force"
+  assert_eq active "$(hdr "$d/task" Status)"
+  # item done wakes the lead: one more refusal, then close passes
+  brg item done I1 --as "$Bn" --note "готово" >/dev/null || fail done
+  out=$(brg task close --as "$A" --force 2>&1)
+  assert_eq 1 "$?"
+  assert_contains "$out" "завершил I001 «Своя»: готово"
+  out=$(brg task close --as "$A")
+  assert_eq 0 "$?"
+  assert_contains "$out" "── задача T001 «Закрытие» закрыта."
+  # the next wait confirms what close showed and does not repeat it
+  out=$(brg wait --as "$A" --timeout 1)
+  assert_contains "$out" "── нет новых"
+  assert_eq "6/6" "$(tcursor "$A" T001)"
+}
+
+# Lobby counts too (the lead's wait listens there), with the output cap: several
+# refusals in a row, each moves Pending; nothing is lost.
+test_close_unread_in_lobby_and_cap() {
+  local out d i all=
+  three_agents
+  printf 'wait_output_max: 300\n' >>"$B/config"
+  task_new_as "$A" "Кап"
+  d=$(tdir T001)
+  printf 'итог\n' >"$d/summary.md"
+  for i in 1 2 3 4 5 6; do send_as "$Bn" "письмо-$i: $(printf '%060d' 0)" --to "${A%%.*}" --channel lobby; done
+  for i in 1 2 3 4 5 6 7; do
+    out=$(brg task close --as "$A" 2>/dev/null) && break
+    all="$all$out"
+    assert_contains "$out" "── lobby · "
+  done
+  [ "$i" -gt 2 ] || fail "the cap did not split the output ($i)"
+  assert_eq done "$(hdr "$d/task" Status)"
+  for i in 1 2 3 4 5 6; do assert_contains "$all" "  письмо-$i:"; done
+  assert_contains "$all" "не вошло (лимит вывода): покажет следующий task close"
+}
+
+# A lead's wait running in the background races with close: whatever either of
+# them shows is never lost (at-least-once; duplicates allowed). The wait ticks
+# slower here, so that close wins some of the races.
+test_close_vs_running_wait_loses_nothing() {
+  local i k=0 wp all
+  three_agents
+  task_new_as "$A" "Гонка"
+  ack_all "$A" "$(tdir T001)"
+  : >"$P/close"
+  : >"$P/waits"
+  BRG_TICK=0.4 start_wait "$A" "$P/w0" --timeout 30
+  wp=$WP
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    send_as "$Bn" "msg-$i" --to "${A%%.*}"
+    brg task close --as "$A" >>"$P/close" 2>/dev/null && fail "closed without summary.md"
+    if [ -s "$P/w$k" ]; then
+      wait "$wp"
+      cat "$P/w$k" >>"$P/waits"
+      k=$((k + 1))
+      BRG_TICK=0.4 start_wait "$A" "$P/w$k" --timeout 30
+      wp=$WP
+    fi
+  done
+  brg wait --as "$A" --timeout 1 >>"$P/waits" # supersedes the background one
+  wait "$wp"
+  cat "$P/w$k" >>"$P/waits"
+  assert_contains "$(cat "$P/close")" "  msg-" "close never won a race"
+  assert_contains "$(cat "$P/waits")" "  msg-" "wait never won a race"
+  all=$(cat "$P/close" "$P/waits")
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do assert_contains "$all" "  msg-$i"$'\n'; done
+}
+
 test_task_cancel_permissions_and_human() {
   local out
   three_agents
@@ -458,9 +574,93 @@ test_task_new_lifts_stop() {
   : >"$B/run/stopped.${C%%.*}"
   out=$(printf 'x\n' | brg task new --as "$A" --title "После стопа")
   assert_contains "$out" "Общий стоп снят."
+  assert_contains "$out" "Стоп, поставленный тебе человеком, снят"
+  assert_not_contains "$out" "── STOP" "task new lifts the stop: no banner"
   assert_file_not_exists "$B/run/stopped"
   assert_file_not_exists "$B/run/stopped.${A%%.*}" "the host's own stop is lifted"
   assert_file_exists "$B/run/stopped.${C%%.*}" "other per-agent stops stay"
+}
+
+# STOP_BANNER — the first line of an agent command while the brigade is stopped
+STOP_BANNER="── STOP: человек остановил бригаду. Новую работу не начинай: сдай сделанное, если нужно (send, item done), и заверши ход."
+# stop_lines TEXT — how many lines of TEXT start with "── STOP"
+stop_lines() { printf '%s\n' "$1" | awk '/^── STOP/ { n++ } END { print n + 0 }'; }
+# stop_refused OUT RC WHAT — WHAT (stdout+stderr OUT, code RC) refused by the general stop
+stop_refused() {
+  assert_eq 1 "$2" "refused: $3"
+  assert_eq "$STOP_BANNER" "$(printf '%s\n' "$1" | head -n 1)" "$3"
+  assert_eq 1 "$(stop_lines "$1")" "$3"
+  assert_contains "$1" "── ОШИБКА: человек остановил бригаду — $3 не выполнено: при стопе новую работу не начинают"
+  assert_eq "── NEXT: заверши ход (стоп снимет человек и напишет тебе «продолжай»)" "$(printf '%s\n' "$1" | tail -n 1)" "$3"
+}
+
+# The human's stop is seen by any agent command, not only by wait (DESIGN §9):
+# the first line says STOP; commands that start work (item add|claim|reassign,
+# run) refuse with NEXT "end the turn"; handing in and talking still work; wait
+# and status say STOP exactly once; task new lifts it; after resume all works.
+test_stop_seen_by_every_command() {
+  local out d
+  three_agents
+  task_new_as "$A" "Стоп"
+  d=$(tdir T001)
+  for x in "$A" "$Bn" "$C"; do ack_all "$x" "$d"; done
+  printf 'о\n' | brg item add --as "$A" --title "Взятая" >/dev/null || fail add1
+  printf 'о\n' | brg item add --as "$A" --title "Свободная" >/dev/null || fail add2
+  brg item claim I1 --as "$Bn" --paths src >/dev/null || fail claim
+  brg stop >/dev/null
+  # send: STOP first, and the message goes out
+  out=$(printf 'сдаю\n' | brg send --as "$Bn" --to "${A%%.*}")
+  assert_eq 0 "$?" "send works under stop"
+  assert_eq "$STOP_BANNER" "$(printf '%s\n' "$out" | head -n 1)"
+  assert_eq 1 "$(stop_lines "$out")"
+  assert_contains "$out" "── отправлено"
+  # starting work is refused: STOP, the refusal, NEXT — end the turn (not wait)
+  out=$(brg item claim I2 --as "$Bn" --paths lib 2>&1)
+  stop_refused "$out" $? "item claim"
+  out=$(brg item add --as "$Bn" --title "Новая" --desc "о" 2>&1)
+  stop_refused "$out" $? "item add"
+  out=$(brg item reassign I1 --as "$A" --to "${C%%.*}" 2>&1)
+  stop_refused "$out" $? "item reassign"
+  out=$(brg run --as "$Bn" -- true 2>&1)
+  stop_refused "$out" $? "run"
+  assert_eq todo "$(hdr "$d/items/I002" Status)"
+  assert_file_not_exists "$d/items/I003"
+  assert_eq "${Bn%%.*}" "$(hdr "$d/items/I001" Assignee)"
+  assert_file_not_exists "$d/shared/runs/R001"
+  # handing in works (with the banner)
+  out=$(brg item done I1 --as "$Bn" --note "сделано")
+  assert_eq 0 "$?" "item done under stop"
+  assert_eq "$STOP_BANNER" "$(printf '%s\n' "$out" | head -n 1)"
+  # reading too
+  assert_eq "$STOP_BANNER" "$(brg item list --as "$Bn" | head -n 1)"
+  # wait and status: STOP exactly once
+  out=$(brg wait --as "$A" --timeout 5)
+  assert_eq "── STOP: человек остановил бригаду. Заверши ход." "$out"
+  out=$(brg status --as "$A")
+  assert_eq 1 "$(stop_lines "$out")" "status: one STOP"
+  assert_contains "$(printf '%s\n' "$out" | tail -n 1)" "── STOP: человек остановил"
+  out=$(brg status --as "${A%%.*}")
+  assert_eq 1 "$(stop_lines "$out")" "status without the key: one STOP"
+  # a per-agent stop: only that agent sees it
+  brg resume >/dev/null
+  brg stop "${C%%.*}" >/dev/null
+  out=$(printf 'x\n' | brg send --as "$C" --to "${A%%.*}")
+  assert_eq "── STOP: человек остановил тебя (${C%%.*}). Новую работу не начинай: сдай сделанное, если нужно (send, item done), и заверши ход." "$(printf '%s\n' "$out" | head -n 1)"
+  out=$(brg item claim I2 --as "$C" --paths lib 2>&1)
+  assert_eq 1 "$?"
+  assert_contains "$out" "── ОШИБКА: человек остановил тебя (${C%%.*}) — item claim не выполнено"
+  out=$(brg item claim I2 --as "$Bn" --paths lib)
+  assert_eq 0 "$?" "others work"
+  assert_eq 0 "$(stop_lines "$out")"
+  # after resume everything works again, without the banner
+  brg resume "${C%%.*}" >/dev/null
+  out=$(printf 'о\n' | brg item add --as "$C" --title "После стопа")
+  assert_eq 0 "$?"
+  assert_eq 0 "$(stop_lines "$out")"
+  out=$(brg run --as "$C" --sync -- true)
+  assert_eq 0 "$?"
+  assert_eq 0 "$(stop_lines "$out")"
+  wait_for 5 is_dead "$(hdr "$d/shared/runs/R001" Runner)" || fail "runner alive"
 }
 
 test_join_as_returns_under_the_same_name() {
@@ -647,6 +847,7 @@ test_close_does_not_require_reviews() {
   assert_eq 0 "$?"
   assert_not_contains "$(cat "$(tmsg T001 "$(cat "$d/seq")")")" "ревью" "the done notice does not demand a review"
   printf 'итог\n' >"$d/summary.md"
+  brg wait --as "$A" --timeout 0 >/dev/null # the lead takes the "done" notice first
   out=$(brg task close --as "$A")
   assert_eq 0 "$?" "closed without a review"
   assert_contains "$out" "── задача T001 «Без ревью» закрыта."

@@ -558,6 +558,27 @@ test_task_close_refuses_with_runs_force_stops_them() {
   brg task close --as "$A" >/dev/null || fail "close with a finished run"
 }
 
+# An unread result of the lead's own run (Kind: system, personal) stops task
+# close like any mail that would wake its wait (DESIGN §6); shown once, it does
+# not block the repeat.
+test_task_close_sees_unread_run_result() {
+  local out
+  run_setup
+  brg run --as "$A" -- 'echo результат-прогона' >/dev/null || fail run
+  wait_for 5 test -f "$D/shared/runs/R001.notified" || fail "no result message"
+  wait_for 3 is_dead "$(rhdr R001 Runner)" || fail "runner alive"
+  printf 'итог\n' >"$D/summary.md"
+  out=$(brg task close --as "$A" 2>&1)
+  assert_eq 1 "$?"
+  assert_contains "$out" "[система] brg → ${A%%.*}"
+  assert_contains "$out" "R001 · done (код 0)"
+  assert_contains "$out" "задача T001 не закрыта: тебе пришли сообщения (выше, 1)"
+  assert_eq active "$(hdr "$D/task" Status)"
+  out=$(brg task close --as "$A")
+  assert_eq 0 "$?"
+  assert_contains "$out" "── задача T001 «Прогоны» закрыта."
+}
+
 # task cancel (and new --cancel-current) stops the task's runs the way
 # run cancel does.
 test_task_cancel_stops_runs() {
