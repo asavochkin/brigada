@@ -307,6 +307,7 @@ cfg_defaults() {
   CFG_wait_output_max=20000
   CFG_run_timeout=1800
   CFG_runner_stale=60
+  CFG_runner_dead_grace=5
 }
 
 # cfg_parse FILE CALLBACK — calls CALLBACK KEY VALUE for every valid "key: value" line
@@ -362,10 +363,13 @@ cfg_load() {
   cfg_num OUTMAX wait_output_max 20000
   cfg_num RUN_TIMEOUT run_timeout 1800
   cfg_num RUNNER_STALE runner_stale 60
+  cfg_num RUNNER_DEAD_GRACE runner_dead_grace 5
   [ "$RUN_TIMEOUT" -ge 1 ] || RUN_TIMEOUT=1
   [ "$HEARTBEAT" -ge 1 ] || HEARTBEAT=1
   [ "$LOCK_STALE" -ge 1 ] || LOCK_STALE=1
   [ "$RUNNER_STALE" -ge 3 ] || RUNNER_STALE=3
+  RDG_CFG=$RUNNER_DEAD_GRACE # as configured (doctor)
+  [ "$RUNNER_DEAD_GRACE" -lt "$RUNNER_STALE" ] || RUNNER_DEAD_GRACE=$((RUNNER_STALE - 1))
   HB_FRESH=$((HEARTBEAT + 5))
 }
 platform_key_v() { # VAR PLATFORM — key part for config: Darwin → darwin, MSYS → msys, …
@@ -431,9 +435,40 @@ body_gc() {
     [ -f "$f" ] || continue
     p=${f##*/.body.}
     p=${p%%.*}
-    is_uint "$p" && kill -0 "$p" 2>/dev/null && continue
+    pid_alive "$p" && continue
     rm -f "$f"
   done
+}
+
+# pid_alive PID — does the process of a pid read from a file exist? 0 alive, 1 dead;
+# PA_WHY = alive | eperm | dead. EPERM ("Operation not permitted": a sandbox, another
+# user) means it exists but is out of reach — alive. ESRCH or anything else — dead.
+# The only place that reads the text of a kill error (English: LC_ALL=C is set at
+# the top). Not a number, or 0 (kill -0 0 signals our own group: always succeeds) —
+# dead. Own children and $$ use kill -0 directly. BRG_TEST_EPERM_PIDS (tests):
+# "pid pid …" ("*" — any pid) answer EPERM.
+PA_WHY=
+pid_alive() {
+  local e
+  PA_WHY=dead
+  is_uint "${1:-}" || return 1
+  case $1 in *[!0]*) ;; *) return 1 ;; esac
+  case " ${BRG_TEST_EPERM_PIDS:-} " in *" $1 "* | *" * "*)
+    PA_WHY=eperm
+    return 0
+    ;;
+  esac
+  if kill -0 "$1" 2>/dev/null; then
+    PA_WHY=alive
+    return 0
+  fi
+  e=$(kill -0 "$1" 2>&1)
+  case $e in *"not permitted"*)
+    PA_WHY=eperm
+    return 0
+    ;;
+  esac
+  return 1
 }
 
 # ── locks (DESIGN §4.2): mkdir + owner "pid epoch" ─────────────────────────
@@ -459,19 +494,33 @@ lock_owner_v() { # VAR DIR — owner line if well-formed ("pid epoch"), else ""
 # of the lock does not count (the exec lock of `brg run` is held for minutes): a
 # live owner is stale only when its heartbeat (DIR/hb, see lock_hb_v) is older
 # than runner_stale and the caller has been watching long enough to tell (HB_JUDGE,
-# see hb_obs_tick) — a guard against a reused pid and a hung runner.
+# see hb_obs_tick) — a guard against a reused pid and a hung runner; a dead owner
+# only when its heartbeat is silent as well (runner_gone).
 LS_WHY=
 LS_HBAGE=
 lock_stale_check() {
-  local o since f
+  local o since f w=hb
   lock_owner_v o "$1"
   LS_OWNER=$o
   LS_WHY=
   if [ -n "$o" ]; then
     eval "$3="
-    if ! kill -0 "${o%% *}" 2>/dev/null; then
-      LS_WHY=dead
-      return 0
+    if ! pid_alive "${o%% *}"; then
+      if [ -z "${4:-}" ]; then
+        LS_WHY=dead
+        return 0
+      fi
+      # the exec lock: a dead-looking runner may be alive in another pid
+      # namespace — dead once its heartbeat is silent too (runner_gone); until
+      # then it is judged as a live one below
+      lock_hb_v f "$1" "$o"
+      get_now
+      LS_HBAGE=$((NOW - f))
+      if runner_gone "$f"; then
+        LS_WHY=dead
+        return 0
+      fi
+      w=dead
     fi
     if [ -n "${4:-}" ]; then
       [ -n "${HB_JUDGE:-}" ] || return 1
@@ -479,7 +528,7 @@ lock_stale_check() {
       get_now
       LS_HBAGE=$((NOW - f))
       [ "$LS_HBAGE" -gt "$RUNNER_STALE" ] || return 1
-      LS_WHY=hb
+      LS_WHY=$w
       return 0
     fi
     if [ $(($2 % 20)) -eq 0 ]; then
@@ -514,20 +563,40 @@ lock_hb_v() {
 # gap for longer than runner_stale. After a gap (the machine slept, the process was
 # stopped) the others get a fresh grace period: they were frozen too and have not
 # had a chance to beat yet. → HB_JUDGE=1 when allowed to judge.
+# HB_OBS — since when we watch without a gap ("" — not watching: a one-shot check);
+# HB_OBS_D — the same with the tighter gap of runner_dead_grace (see runner_gone):
+# a gap must not pass for that much silence. Two marks, so that a loaded machine
+# (gaps of a few seconds) does not delay the runner_stale verdict.
 HB_JUDGE=
+HB_OBS=
+HB_OBS_D=
 hb_obs_init() {
   get_now
-  HB_OBS=$NOW HB_LAST=$NOW HB_JUDGE=
+  HB_OBS=$NOW HB_OBS_D=$NOW HB_LAST=$NOW HB_JUDGE=
 }
 hb_obs_tick() { # after get_now
-  local gap=$((RUNNER_STALE / 2))
+  local gap=$((RUNNER_STALE / 2)) g=$((RUNNER_DEAD_GRACE / 2)) d=$((NOW - HB_LAST))
   [ "$gap" -ge 2 ] || gap=2
   [ "$gap" -le 10 ] || gap=10
-  [ $((NOW - HB_LAST)) -gt "$gap" ] && HB_OBS=$NOW
+  [ "$g" -ge 2 ] || g=2
+  [ "$d" -gt "$gap" ] && HB_OBS=$NOW
+  [ "$d" -gt "$g" ] && HB_OBS_D=$NOW
   HB_LAST=$NOW
   HB_JUDGE=
   [ $((NOW - HB_OBS)) -gt "$RUNNER_STALE" ] && HB_JUDGE=1
   return 0
+}
+# runner_gone HB — a runner whose pid pid_alive calls dead: is it really gone? A pid
+# namespace may hide a live process (ESRCH), so its heartbeat (epoch HB; "" — none)
+# must be older than runner_dead_grace too, and a runner watching from the queue
+# (HB_OBS_D set) must have watched without a gap that long: after a sleep every
+# heartbeat looks old. One-shot checks (views, doctor) skip the last condition.
+# NOW set.
+runner_gone() {
+  local a=$RUNNER_DEAD_GRACE
+  is_uint "${1:-}" && a=$((NOW - $1))
+  [ "$a" -ge "$RUNNER_DEAD_GRACE" ] || return 1
+  [ -z "$HB_OBS_D" ] || [ $((NOW - HB_OBS_D)) -ge "$RUNNER_DEAD_GRACE" ]
 }
 
 # lock_break DIR OBSERVED_OWNER → 0 if the caller should retry mkdir at once
@@ -683,7 +752,7 @@ wait_info() {
   WI_PID=$p
   [ "$hp" = "$p" ] && is_uint "$he" || return 0
   [ $((NOW - he)) -le "$HB_FRESH" ] || return 0
-  kill -0 "$p" 2>/dev/null && WI_ALIVE=1
+  pid_alive "$p" && WI_ALIVE=1
   return 0
 }
 
@@ -2657,6 +2726,29 @@ dr_env() {
   fi
 }
 
+# dr_procs — does kill -0 see other processes and their death? A sandbox (Codex)
+# may answer EPERM for processes outside it: pid_alive calls them alive. A pid
+# namespace that hides live processes (ESRCH) is not detected (DESIGN §12 п. 3).
+dr_procs() {
+  local c x bad=
+  if [ "$PPID" != 1 ] && pid_alive "$PPID" && [ "$PA_WHY" = eperm ]; then
+    bad=1
+    dr_warn "песочница: чужие процессы недоступны (EPERM на родителя, pid $PPID) — brg считает их живыми; сироту wait не распознает (вернётся по таймауту)" \
+      "Команды brg, меняющие состояние, — прежде всего wait и run — запускай вне песочницы (.brigada/README.md, про Codex)."
+  fi
+  (exit 0) &
+  c=$!
+  wait "$c" 2>/dev/null
+  if pid_alive "$c"; then
+    bad=1
+    x=EPERM
+    [ "$PA_WHY" = eperm ] || x="«жив»"
+    dr_warn "смерть процессов не видна: kill -0 к завершённому процессу (pid $c) отвечает $x — раннер brg run снимается только по heartbeat (до runner_stale, $RUNNER_STALE с)" \
+      "Запускай brg вне песочницы."
+  fi
+  [ -n "$bad" ] || dr_ok "процессы: kill -0 видит родителя и смерть процесса"
+}
+
 # dr_fs — file system semantics brg relies on, in a scratch dir of run/
 dr_fs() {
   local t=$RUN/.doctor.$$ x y i n bad= rp tries notw=
@@ -2754,8 +2846,12 @@ dr_lock_problem_v() { # VAR LOCKDIR — the problem with that lock ("" if none)
   lock_owner_v _lp_o "$2"
   if [ -z "$_lp_o" ]; then
     [ -d "$2" ] && _lp_r=noowner
-  elif ! kill -0 "${_lp_o%% *}" 2>/dev/null; then
+  elif ! pid_alive "${_lp_o%% *}"; then
     _lp_r="dead ${_lp_o%% *}"
+    if [ "${2##*/}" = exec.lock ]; then # the verdict of brg itself (runner_gone)
+      lock_hb_v _lp_f "$2" "$_lp_o"
+      runner_gone "$_lp_f" || _lp_r=
+    fi
   elif [ "${2##*/}" = exec.lock ]; then
     lock_hb_v _lp_f "$2" "$_lp_o"
     [ $((NOW - _lp_f)) -gt "$RUNNER_STALE" ] && _lp_r="silent ${_lp_o%% *} $((NOW - _lp_f))"
@@ -2830,7 +2926,8 @@ dr_runs() {
     IFS= read -r line <"$f" 2>/dev/null
     eq_parse "$line"
     is_uint "$EQ_P" || continue
-    if ! kill -0 "$EQ_P" 2>/dev/null; then
+    if ! pid_alive "$EQ_P"; then
+      runner_gone "$EQ_E" || continue # just died, or alive in another pid namespace
       dr_fail "очередь brg run: $EQ_R — раннер (pid $EQ_P) мёртв" "Запись уберёт следующий brg run или $BRG run list (прогон отметится killed, инициатор получит сообщение)."
       DR_PIDS="$DR_PIDS$EQ_P "
       bad=1
@@ -2880,7 +2977,7 @@ dr_waits() {
       continue
     fi
     [ -n "$WI_PID" ] || continue
-    if kill -0 "$WI_PID" 2>/dev/null; then
+    if pid_alive "$WI_PID"; then
       hb=
       [ -f "$RUN/wait/$n.hb" ] && IFS= read -r hb <"$RUN/wait/$n.hb"
       age=
@@ -2944,6 +3041,9 @@ dr_config() {
   if [ "$RUNNER_STALE" -le "$LOCK_STALE" ]; then
     dr_warn "runner_stale ($RUNNER_STALE) не больше lock_stale ($LOCK_STALE)" "Раннер, ждущий блокировку runs до lock_stale, могут счесть зависшим: сделай runner_stale больше lock_stale."
   fi
+  if [ "$RDG_CFG" != "$RUNNER_DEAD_GRACE" ]; then
+    dr_warn "runner_dead_grace ($RDG_CFG) не меньше runner_stale ($RUNNER_STALE) — brg берёт $RUNNER_DEAD_GRACE" "Сделай runner_dead_grace меньше runner_stale (по умолчанию 5 с; 0 — верить одному pid)."
+  fi
   return 0
 }
 
@@ -3002,6 +3102,7 @@ cmd_doctor() {
   dr_platform
   [ -d "$ROOT" ] && dr_files
   dr_env
+  dr_procs
   if [ -n "$DR_STATE" ]; then
     dr_fs
     dr_git
@@ -4619,11 +4720,12 @@ eq_write() { # FILE PID RID TNAME — a queue entry with the heartbeat NOW (tmp 
 }
 # execq_scan [MYENTRY] [SHOW] — live queue entries before MYENTRY (all if none) →
 # EQ_N, EQ_TEXT ("R004 · claude-1 · npm test; …" with SHOW). Entries of dead
-# runners are removed and their runs marked killed (run_lost). So are entries
-# silent for longer than runner_stale when HB_JUDGE is set (a runner waiting in
-# the queue); without it such entries count as live and are flagged in EQ_TEXT.
+# runners (pid dead and silent, see runner_gone) are removed and their runs marked
+# killed (run_lost). So are entries silent for longer than runner_stale when
+# HB_JUDGE is set (a runner waiting in the queue); without it such entries count as
+# live and are flagged in EQ_TEXT.
 execq_scan() {
-  local f line hf a x
+  local f line hf a x w
   EQ_N=0 EQ_TEXT=
   get_now
   for f in "$RUN"/execq/[0-9]*; do
@@ -4633,15 +4735,19 @@ execq_scan() {
     line=
     IFS= read -r line <"$f" 2>/dev/null
     eq_parse "$line"
-    if is_uint "$EQ_P" && kill -0 "$EQ_P" 2>/dev/null; then
+    # a dead-looking pid whose entry still beats counts as live (runner_gone)
+    if is_uint "$EQ_P" && { pid_alive "$EQ_P" || ! runner_gone "$EQ_E"; }; then
       a=999999 # no heartbeat in the entry: silent since forever
       is_uint "$EQ_E" && a=$((NOW - EQ_E))
       if [ "$a" -gt "$RUNNER_STALE" ] && [ -n "$HB_JUDGE" ]; then
         rm -f "$f"
         x=
         is_uint "$EQ_E" && x=" $a с"
-        metric execq.drop run="$EQ_R" pid="$EQ_P" why=hb
-        run_lost "$EQ_R" "$EQ_T" "$EQ_P" "не подавал признаков жизни$x в очереди (pid жив — раннер завис или pid занят другим процессом)"
+        x="не подавал признаков жизни$x в очереди (pid жив — раннер завис или pid занят другим процессом)"
+        w=hb
+        [ "$PA_WHY" = dead ] && x="умер в очереди" w=dead # silent long after its pid died
+        metric execq.drop run="$EQ_R" pid="$EQ_P" why=$w
+        run_lost "$EQ_R" "$EQ_T" "$EQ_P" "$x"
         continue
       fi
       EQ_N=$((EQ_N + 1))
@@ -4716,7 +4822,8 @@ exec_hb() { # the heartbeat of the exec lock holder (NOW set)
 }
 
 # run_health — is the runner of the loaded run (RN_*) alive? (NOW set) → RH:
-# ok | dead (its pid is gone) | nostart (no runner recorded long after the request)
+# ok | dead (its pid is gone and its heartbeat silent: runner_gone) | nostart (no
+# runner recorded long after the request)
 # | stale (pid alive, but silent for longer than runner_stale); RH_AGE — seconds
 # since its last heartbeat ("" if unknown). Final runs: ok.
 run_health() {
@@ -4725,10 +4832,6 @@ run_health() {
   run_is_final "$RN_STATUS" && return 0
   if [ -z "$RN_RUNNER" ]; then
     is_uint "$RN_REQ_E" && [ $((NOW - RN_REQ_E)) -gt "$RUNNER_STALE" ] && RH=nostart
-    return 0
-  fi
-  if ! kill -0 "$RN_RUNNER" 2>/dev/null; then
-    RH=dead
     return 0
   fi
   if [ "$RN_STATUS" = running ]; then
@@ -4741,9 +4844,12 @@ run_health() {
     eq_parse "$line"
     [ "$EQ_P" = "$RN_RUNNER" ] && x=$EQ_E
   fi
-  is_uint "$x" || return 0
-  RH_AGE=$((NOW - x))
-  [ "$RH_AGE" -gt "$RUNNER_STALE" ] && RH=stale
+  is_uint "$x" && RH_AGE=$((NOW - x))
+  if ! pid_alive "$RN_RUNNER"; then
+    runner_gone "$x" && RH=dead # else: just died, or alive in another pid namespace
+    return 0
+  fi
+  [ -n "$RH_AGE" ] && [ "$RH_AGE" -gt "$RUNNER_STALE" ] && RH=stale
   return 0
 }
 # run_check HF — load the run (RN_*, RH) and, if its runner is gone, settle it as
@@ -4808,7 +4914,7 @@ run_notify() {
   local hf=$1 sp= i=0 head tail ch=lobby note= rd rel
   if [ -f "$hf.sync" ]; then
     IFS= read -r sp <"$hf.sync" 2>/dev/null
-    while is_uint "$sp" && kill -0 "$sp" 2>/dev/null && [ -f "$hf.sync" ] && [ ! -e "$hf.notified" ] && [ $i -lt 30 ]; do
+    while pid_alive "$sp" && [ -f "$hf.sync" ] && [ ! -e "$hf.notified" ] && [ $i -lt 30 ]; do
       sleep 0.1
       i=$((i + 1))
     done
@@ -5100,7 +5206,7 @@ run_runner() {
     [ "$step" -gt "$maxstep" ] && step=$maxstep
   done
   LOCK_DEAD_HOOK=
-  HB_JUDGE=
+  HB_JUDGE= HB_OBS= HB_OBS_D=
   get_now
   printf '%s %s\n' "$rid" "$tname" >"$LOCKS/exec.lock/run"
   exec_hb
@@ -5391,6 +5497,12 @@ run_cancel() {
   while [ $i -lt $(((RUN_KILL_GRACE + 3) * 10)) ]; do
     run_read "$hf"
     run_is_final "$RN_STATUS" && break
+    if [ $((i % 10)) = 9 ]; then # a runner that has just died is judged after runner_dead_grace
+      get_now
+      run_health
+      run_dead_note_v x
+      [ -n "$x" ] && run_settle_here "$hf" "$AGENT" "" "$x" && run_notify "$hf"
+    fi
     sleep 0.1
     i=$((i + 1))
   done
@@ -5792,7 +5904,7 @@ cmd_wait() {
     elif [ "$c" != "$SELF" ]; then
       w_finish superseded 0 "$W_SUPERSEDED"
     fi
-    if [ "$PARENT" != 1 ] && ! kill -0 "$PARENT" 2>/dev/null; then w_finish orphan 0; fi
+    if [ "$PARENT" != 1 ] && ! pid_alive "$PARENT"; then w_finish orphan 0; fi
     profile_read "$AGENT_FILE"
     [ -n "$P_LEFT" ] && w_finish left 0 "── LEFT: агент $AGENT отключён (brg leave). Заверши ход."
     get_now

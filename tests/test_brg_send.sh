@@ -188,13 +188,6 @@ test_seq_recovery_after_crash_between_mv_and_seq() {
   assert_not_contains "$out" "#5 "
 }
 
-dead_pid() { # a pid that surely does not exist now
-  sleep 0 &
-  local p=$!
-  wait $p
-  echo $p
-}
-
 test_stale_lock_dead_owner_is_broken() {
   local a t0 t1
   new_proj

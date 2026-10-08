@@ -22,6 +22,7 @@ gone_after: 120
 lock_stale: 3
 msg_max_bytes: 8192
 wait_output_max: 20000
+runner_dead_grace: 0
 EOF
 }
 
@@ -105,4 +106,13 @@ tcursor() {
   f=$(tdir "$2")/cursors/$1
   [ -f "$f" ] || { echo "-"; return; }
   printf '%s/%s\n' "$(hdr "$f" Acked)" "$(hdr "$f" Pending)"
+}
+
+# dead_pid — a pid that is surely dead (a reaped child of ours)
+dead_pid() {
+  local p
+  (exit 0) &
+  p=$!
+  wait $p
+  echo $p
 }

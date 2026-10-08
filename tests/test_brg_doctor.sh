@@ -19,15 +19,6 @@ doc_cleanup() {
 
 st_is() { [ "$(hdr "$1" Status)" = "$2" ]; } # RUNFILE STATUS
 
-# a pid that is surely dead
-dead_pid() {
-  local p
-  (exit 0) &
-  p=$!
-  wait $p
-  echo $p
-}
-
 # fails / warnings of a doctor output
 fails() { printf '%s\n' "$1" | awk '/^✗ /'; }
 warns() { printf '%s\n' "$1" | awk '/^⚠ /'; }
@@ -209,4 +200,49 @@ test_doctor_platform_config_git() {
   out=$(cd "$(mk_tmpdir)" && bash "$BRG_SRC" doctor 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "не найден .brigada"
+}
+
+# Liveness of processes (via the test hook): a parent out of reach (EPERM) — ⚠
+# sandbox; EPERM even for a finished child — ⚠ death not visible. The exec lock of
+# a dead runner gets the verdict of brg itself: no ✗ while its heartbeat is fresh
+# within runner_dead_grace.
+test_doctor_sandbox_eperm_and_dead_runner_grace() {
+  local out dp now
+  new_proj
+  out=$(brg doctor)
+  assert_contains "$out" "✓ процессы: kill -0 видит родителя и смерть процесса"
+  out=$(bash -c 'BRG_TEST_EPERM_PIDS=$$ bash "$1" doctor; exit $?' _ "$BRG")
+  assert_eq 0 "$?" "⚠ only; output:
+$out"
+  assert_contains "$(warns "$out")" "⚠ песочница: чужие процессы недоступны (EPERM на родителя"
+  assert_contains "$out" "запускай вне песочницы"
+  assert_not_contains "$out" "смерть процессов не видна"
+  out=$(BRG_TEST_EPERM_PIDS='*' brg doctor)
+  assert_contains "$(warns "$out")" "⚠ смерть процессов не видна: kill -0 к завершённому процессу"
+  assert_contains "$out" "отвечает EPERM"
+  assert_contains "$out" "runner_stale"
+  # runner_dead_grace: the same verdict as brg
+  printf 'runner_dead_grace: 30\n' >>"$B/config"
+  dp=$(dead_pid)
+  now=$(date -u +%s)
+  mkdir "$B/run/locks/exec.lock"
+  printf '%s %s\n' "$dp" $((now - 100)) >"$B/run/locks/exec.lock/owner"
+  printf 'R001 T001\n' >"$B/run/locks/exec.lock/run"
+  printf '%s %s\n' "$dp" "$now" >"$B/run/locks/exec.lock/hb"
+  mkdir -p "$B/run/execq"
+  printf '%s R002 T001 %s\n' "$dp" "$now" >"$B/run/execq/000002"
+  out=$(brg doctor)
+  assert_eq 0 "$?" "a dead pid within runner_dead_grace; output:
+$out"
+  assert_contains "$out" "✓ блокировки: протухших и зависших нет"
+  assert_contains "$out" "✓ brg run: мёртвых и зависших раннеров нет"
+  printf '%s %s\n' "$dp" $((now - 40)) >"$B/run/locks/exec.lock/hb"
+  printf '%s R002 T001 %s\n' "$dp" $((now - 40)) >"$B/run/execq/000002"
+  out=$(brg doctor)
+  assert_eq 1 "$?"
+  assert_contains "$(fails "$out")" "✗ exec-блокировка у мёртвого раннера (pid $dp, прогон R001)"
+  assert_contains "$(fails "$out")" "✗ очередь brg run: R002 — раннер (pid $dp) мёртв"
+  # runner_dead_grace not below runner_stale
+  printf 'runner_dead_grace: 60\n' >>"$B/config"
+  assert_contains "$(warns "$(brg doctor)")" "⚠ runner_dead_grace (60) не меньше runner_stale (60) — brg берёт 59"
 }

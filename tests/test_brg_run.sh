@@ -607,3 +607,198 @@ test_run_result_after_task_closed_goes_to_lobby() {
   assert_contains "$out" "R001 · done (код 0)"
   assert_contains "$out" "задача T001 уже завершена"
 }
+
+# ── liveness in a sandbox (DESIGN §4.2, §7.3): EPERM means alive; a dead pid
+# means dead only once the heartbeat is silent for runner_dead_grace ──────────
+
+# pid_alive: EPERM (pid 1 of a non-root user on Darwin/Linux) is alive, a reaped
+# child and 0 are dead, the test hook makes any listed pid answer EPERM.
+test_pid_alive() {
+  local out c
+  new_proj
+  c=$(dead_pid)
+  out=$(BRG_SOURCE_ONLY=1 bash -c '
+    . "$1"
+    t() { pid_alive "$2"; echo "$1=$?:$PA_WHY"; }
+    t self "$$"
+    t child "$2"
+    t zero 0
+    t zeros 00
+    t word x
+    t empty ""
+    BRG_TEST_EPERM_PIDS="7 $2"
+    t hook "$2"
+    BRG_TEST_EPERM_PIDS="*"
+    t star "$2"
+    t star0 0' _ "$BRG" "$c")
+  assert_eq "self=0:alive
+child=1:dead
+zero=1:dead
+zeros=1:dead
+word=1:dead
+empty=1:dead
+hook=0:eperm
+star=0:eperm
+star0=1:dead" "$out" "pid_alive verdicts"
+  case $(uname -s) in Darwin | Linux) ;; *) return 0 ;; esac
+  [ "${EUID:-0}" != 0 ] || return 0 # root may signal pid 1
+  out=$(BRG_SOURCE_ONLY=1 bash -c '. "$1"; pid_alive 1; echo "$?:$PA_WHY"' _ "$BRG")
+  assert_eq "0:eperm" "$out" "pid 1 (EPERM, parsed from the kill error)"
+}
+
+# The exec lock and a queue entry of a runner out of reach (EPERM, via the test
+# hook on a dead pid): kept while their heartbeat is fresh, though the pid "is
+# dead" for kill and the lock is older than lock_stale; judged silent (why=hb)
+# once the heartbeat stops.
+test_exec_lock_and_queue_of_eperm_runner_kept_while_beating() {
+  local dp
+  run_setup
+  printf 'runner_stale: 3\n' >>"$B/config"
+  dp=$(dead_pid)
+  export BRG_TEST_EPERM_PIDS=$dp
+  mkdir "$B/run/locks/exec.lock"
+  printf '%s %s\n' "$dp" $(($(date -u +%s) - 1000)) >"$B/run/locks/exec.lock/owner"
+  printf 'R077 %s\n' "${D##*/}" >"$B/run/locks/exec.lock/run"
+  hb_loop "$B/run/locks/exec.lock/hb" "$dp"
+  brg run --as "$Bn" -- 'echo пошло' >/dev/null || fail run1
+  sleep 5 # > lock_stale and runner_stale (3 s)
+  assert_eq queued "$(rhdr R001 Status)" "the exec lock of a live (EPERM) runner was broken"
+  assert_eq "$dp" "$(awk '{ print $1 }' "$B/run/locks/exec.lock/owner")" "exec lock owner"
+  assert_contains "$(brg run list)" "R001 · queued"
+  kill -KILL $HBP
+  wait_for 8 run_final R001 || fail "not broken after the heartbeat stopped"
+  assert_eq done "$(rhdr R001 Status)"
+  assert_contains "$(metrics_of "$Bn" lock.break)" "why=hb"
+  assert_not_contains "$(metrics_of "$Bn" lock.break)" "why=dead"
+  # a queue entry
+  mkdir -p "$B/run/execq"
+  hb_loop "$B/run/execq/000000" "$dp R000 ${D##*/}"
+  brg run --as "$Bn" -- 'echo второй' >/dev/null || fail run2
+  sleep 5
+  assert_eq queued "$(rhdr R002 Status)" "a beating EPERM entry was dropped"
+  assert_file_exists "$B/run/execq/000000"
+  kill -KILL $HBP
+  wait_for 8 run_final R002 || fail "not dropped after the heartbeat stopped"
+  assert_eq done "$(rhdr R002 Status)"
+  assert_contains "$(metrics_of "$Bn" execq.drop)" "run=R000 pid=$dp why=hb"
+}
+
+# runner_dead_grace > 0: a dead pid (a pid namespace may hide a live runner) whose
+# heartbeat is fresh keeps its exec lock and its run; once the heartbeat is older
+# than the grace the lock is broken (why=dead) and views settle the run (killed).
+# Out of reach (EPERM) it stays alive for the views.
+test_dead_runner_pid_waits_for_silent_heartbeat() {
+  local dp t0 t1 r g out
+  run_setup
+  printf 'runner_dead_grace: 3\n' >>"$B/config"
+  dp=$(dead_pid)
+  mkdir "$B/run/locks/exec.lock"
+  printf '%s %s\n' "$dp" $(($(date -u +%s) - 1000)) >"$B/run/locks/exec.lock/owner"
+  printf 'R077 %s\n' "${D##*/}" >"$B/run/locks/exec.lock/run"
+  hb_loop "$B/run/locks/exec.lock/hb" "$dp"
+  brg run --as "$Bn" -- 'echo пошло' >/dev/null || fail run1
+  sleep 4.5 # > grace and lock_stale (3 s)
+  assert_eq queued "$(rhdr R001 Status)" "broken while the heartbeat was fresh"
+  kill -KILL $HBP
+  t0=$(date -u +%s)
+  wait_for 8 run_final R001 || fail "not broken after the heartbeat stopped"
+  t1=$(date -u +%s)
+  [ $((t1 - t0)) -ge 2 ] || fail "broken after $((t1 - t0)) s, before runner_dead_grace"
+  assert_eq done "$(rhdr R001 Status)"
+  assert_contains "$(metrics_of "$Bn" lock.break)" "why=dead"
+  # views: a runner killed while its heartbeat (kept by hb_loop) is fresh
+  brg run --as "$Bn" -- 'sleep 30' >/dev/null || fail run2
+  wait_for 3 run_status_is R002 running || fail "R002 did not start"
+  r=$(rhdr R002 Runner)
+  g=$(rhdr R002 Pgid)
+  hb_loop "$B/run/locks/exec.lock/hb" "$r"
+  kill -KILL "$r"
+  wait_for 2 is_dead "$r"
+  out=$(brg run show R2)
+  assert_contains "$out" "── R002 · running"
+  assert_not_contains "$out" "ВНИМАНИЕ"
+  assert_contains "$(brg run list)" "R002 · running"
+  kill -KILL $HBP
+  sleep 3.5
+  out=$(BRG_TEST_EPERM_PIDS=$r brg run show R2)
+  assert_contains "$out" "── R002 · running" "an EPERM runner settled by a view"
+  out=$(brg run show R2)
+  assert_contains "$out" "── R002 · killed"
+  assert_contains "$out" "раннер (pid $r) умер во время выполнения"
+  kill -KILL -- -"$g" 2>/dev/null
+  rm -rf "$B/run/locks/exec.lock"
+}
+
+# The watching runner judges a dead pid only after watching without a gap for
+# runner_dead_grace: a gap (sleep of the machine, SIGSTOP) — even one too short to
+# matter for runner_stale — restarts the count, since every heartbeat looks old
+# after it. If gaps keep coming, the runner_stale verdict still applies. One-shot
+# checks need only the old heartbeat. Driven directly (BRG_SOURCE_ONLY).
+test_dead_verdict_needs_continuous_watch() {
+  local dp now out
+  new_proj
+  dp=$(dead_pid)
+  now=$(date -u +%s)
+  mkdir -p "$B/run/locks/exec.lock" "$B/run/execq"
+  printf '%s %s\n' "$dp" $((now - 100)) >"$B/run/locks/exec.lock/owner"
+  printf '%s %s\n' "$dp" $((now - 20)) >"$B/run/locks/exec.lock/hb"
+  printf '%s R000 T001 %s\n' "$dp" $((now - 20)) >"$B/run/execq/000000"
+  out=$(BRG_SOURCE_ONLY=1 bash -c '
+    . "$1"
+    cfg_load
+    RUNNER_DEAD_GRACE=5
+    check() { # LABEL — exec lock and queue verdicts
+      local s=
+      lock_stale_check "$LOCKS/exec.lock" 1 s noage && echo "$1 lock:stale:$LS_WHY" || echo "$1 lock:held"
+      execq_scan
+      echo "$1 queue:$EQ_N"
+    }
+    get_now
+    HB_OBS=$((NOW - 2)) HB_OBS_D=$((NOW - 2)) HB_LAST=$((NOW - 1))
+    check short
+    HB_OBS=$((NOW - 30)) HB_OBS_D=$((NOW - 30)) HB_LAST=$((NOW - 3)) # a 3 s gap
+    hb_obs_tick
+    check gap
+    HB_OBS=$((NOW - 30)) HB_OBS_D=$((NOW - 30)) HB_LAST=$NOW
+    hb_obs_tick
+    check long
+    HB_OBS= HB_OBS_D= # a one-shot check
+    check oneshot' _ "$BRG")
+  assert_contains "$out" "short lock:held"
+  assert_contains "$out" "short queue:1"
+  assert_contains "$out" "gap lock:held"
+  assert_contains "$out" "gap queue:1"
+  assert_contains "$out" "long lock:stale:dead"
+  assert_contains "$out" "long queue:0" # dropped
+  assert_contains "$out" "oneshot lock:stale:dead"
+  assert_file_not_exists "$B/run/execq/000000"
+  # gaps keep restarting the count, but the heartbeat is older than runner_stale
+  printf '%s R000 T001 %s\n' "$dp" $((now - 20)) >"$B/run/execq/000000"
+  out=$(BRG_SOURCE_ONLY=1 bash -c '
+    . "$1"
+    cfg_load
+    RUNNER_DEAD_GRACE=5 RUNNER_STALE=10
+    get_now
+    HB_OBS=$((NOW - 30)) HB_OBS_D=$((NOW - 1)) HB_LAST=$NOW
+    hb_obs_tick
+    s=
+    lock_stale_check "$LOCKS/exec.lock" 1 s noage && echo "lock:stale:$LS_WHY" || echo "lock:held"
+    execq_scan
+    echo "queue:$EQ_N"' _ "$BRG")
+  assert_eq "lock:stale:dead
+queue:0" "$out" "runner_stale verdict for a dead pid"
+  assert_contains "$(cat "$B/run/metrics.log")" "execq.drop run=R000 pid=$dp why=dead"
+  # one-shot, fresh heartbeat: alive
+  printf '%s R000 T001 %s\n' "$dp" "$(date -u +%s)" >"$B/run/execq/000000"
+  printf '%s %s\n' "$dp" "$(date -u +%s)" >"$B/run/locks/exec.lock/hb"
+  out=$(BRG_SOURCE_ONLY=1 bash -c '
+    . "$1"
+    cfg_load
+    RUNNER_DEAD_GRACE=5
+    s=
+    lock_stale_check "$LOCKS/exec.lock" 1 s noage && echo "lock:stale" || echo "lock:held"
+    execq_scan
+    echo "queue:$EQ_N"' _ "$BRG")
+  assert_eq "lock:held
+queue:1" "$out" "a one-shot check with a fresh heartbeat"
+}

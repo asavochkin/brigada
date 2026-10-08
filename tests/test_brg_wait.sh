@@ -218,6 +218,31 @@ test_exits_when_parent_dies() {
   assert_file_not_exists "$B/run/wait/$A.pid"
 }
 
+# A parent out of reach (EPERM: a sandbox; via the test hook) counts as alive: no
+# false orphan — the wait keeps going and ends by its timeout with NEXT:.
+test_parent_out_of_reach_is_not_orphan() {
+  local pp cp out
+  two_agents
+  bash -c 'BRG_TEST_EPERM_PIDS=$$ bash "$1" wait --as "$2" --timeout 3 >"$3" 2>&1 & echo $! >"$4"; wait' \
+    _ "$BRG" "$A" "$P/out" "$P/child.pid" &
+  pp=$!
+  track_pid $pp
+  wait_for 3 test -s "$P/child.pid" || fail "child not started"
+  cp=$(cat "$P/child.pid")
+  track_pid "$cp"
+  wait_for 3 pid_is "$A" "$cp" || fail "wait did not start"
+  kill -KILL $pp
+  wait $pp 2>/dev/null
+  sleep 1
+  is_alive "$cp" || fail "a parent out of reach taken for dead"
+  wait_for 5 is_dead "$cp" || fail "wait did not end by its timeout"
+  out=$(cat "$P/out")
+  assert_contains "$out" "── нет новых (3 с)"
+  assert_eq "── нет новых (3 с) · NEXT: bash $BRG wait --as $A --timeout 3" "$(printf '%s\n' "$out" | tail -n 1)"
+  assert_contains "$(metrics_of "$A" wait)" "result=timeout"
+  assert_not_contains "$(metrics_of "$A" wait)" "result=orphan"
+}
+
 test_stop_and_resume() {
   local out t0 t1
   two_agents
