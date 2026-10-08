@@ -341,7 +341,7 @@ a.re:hover, a.lnk:hover { text-decoration: underline; }
   function renderAgents(v) {
     var box = $("agents");
     clear(box);
-    if (!v.agents.length) { box.appendChild(el("div", "empty", "агентов нет — подключение: «подключись к .brigada, прочитай инструкцию в .brigada/README.md»")); return; }
+    if (!v.agents.length) { box.appendChild(el("div", "empty", "агентов нет — скажи агенту «подключись к бригаде» (без блока brigada в AGENTS.md — «подключись к .brigada, прочитай инструкцию в .brigada/README.md»)")); return; }
     var wrap = el("div", "cards");
     v.agents.forEach(function (a) {
       var role = [], mine = v.items[a.name] || [];

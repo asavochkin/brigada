@@ -1,4 +1,5 @@
-# brg init: layout, re-init without state loss, config keys, .git/info/exclude.
+# brg init: layout, re-init without state loss, config keys, .git/info/exclude,
+# the brigada block in AGENTS.md / CLAUDE.md.
 
 . "$TESTS_DIR/brg_lib.sh"
 
@@ -10,6 +11,11 @@ test_init_creates_layout() {
   assert_contains "$out" "── brigada "
   assert_contains "$out" ": создано $p/.brigada"
   assert_contains "$out" "нет .git — пропущено"
+  # no git: AGENTS.md is created all the same, CLAUDE.md is not
+  assert_contains "$out" "создан AGENTS.md (git: нет .git — пропущено)"
+  assert_eq "$(am_block)" "$(cat "$p/AGENTS.md")" "AGENTS.md is the block"
+  assert_file_not_exists "$p/CLAUDE.md"
+  assert_contains "$out" "Дальше скажи агенту в новой сессии: «подключись к бригаде»"
   for d in bin agents lobby/messages lobby/cursors common tasks run/locks run/wait run/seen; do
     [ -d "$p/.brigada/$d" ] || fail "нет каталога $d"
   done
@@ -81,7 +87,8 @@ test_git_exclude_added_once_and_keeps_content() {
   out=$(bash "$BRG_SRC" init "$p")
   assert_contains "$out" ".git/info/exclude уже настроен"
   assert_eq 1 "$(awk '$0 == ".brigada/"' "$p/.git/info/exclude" | wc -l | tr -d ' ')" ".brigada/ once"
-  assert_eq 3 "$(wc -l <"$p/.git/info/exclude" | tr -d ' ')" "line count after two inits"
+  assert_eq 1 "$(awk '$0 == "/AGENTS.md"' "$p/.git/info/exclude" | wc -l | tr -d ' ')" "/AGENTS.md once"
+  assert_eq 5 "$(wc -l <"$p/.git/info/exclude" | tr -d ' ')" "line count after two inits"
 }
 
 # brg ≤ 0.2.0 excluded only tasks/lobby/run/agents: init replaces those lines
@@ -91,24 +98,215 @@ test_git_exclude_migrates_old_lines_and_worktree() {
   p=$(mk_tmpdir)
   mkdir -p "$p/.git/info"
   printf '*.log\n# brigada: переписка и рантайм не коммитятся\n.brigada/tasks/\n.brigada/lobby/\n.brigada/run/\n.brigada/agents/\nbuild/\r\n' >"$p/.git/info/exclude"
-  out=$(bash "$BRG_SRC" init "$p")
+  out=$(bash "$BRG_SRC" init --no-agents-md "$p")
   assert_contains "$out" "заменены на .brigada/ — весь каталог"
   assert_contains "$out" "git rm -r --cached .brigada"
   assert_eq "$(printf '*.log\nbuild/\r\n# brigada: служебный каталог агентов (brg init) не коммитится\n.brigada/\n')" "$(cat "$p/.git/info/exclude")"
-  out=$(bash "$BRG_SRC" init "$p")
+  out=$(bash "$BRG_SRC" init "$p" --no-agents-md)
   assert_contains "$out" ".git/info/exclude уже настроен"
   # old lines next to .brigada/ (added by hand): only the old lines go
   printf '.brigada/run/\n.brigada/\n' >"$p/.git/info/exclude"
-  bash "$BRG_SRC" init "$p" >/dev/null || fail init
+  bash "$BRG_SRC" init --no-agents-md "$p" >/dev/null || fail init
   assert_eq ".brigada/" "$(cat "$p/.git/info/exclude")"
   # worktree: .git is a file "gitdir: …", info/exclude lives in the common dir
+  # (/AGENTS.md of a created AGENTS.md too)
   w=$(mk_tmpdir)
   mkdir -p "$p/.git/worktrees/wt"
   printf '../..\n' >"$p/.git/worktrees/wt/commondir"
   printf 'gitdir: %s/.git/worktrees/wt\n' "$p" >"$w/.git"
   out=$(bash "$BRG_SRC" init "$w")
   assert_contains "$out" "уже настроен"
+  assert_contains "$out" "создан AGENTS.md (только у тебя: исключён из git"
+  assert_file_exists "$w/AGENTS.md"
+  assert_file_not_exists "$p/AGENTS.md"
+  assert_eq ".brigada/
+# brigada: AGENTS.md создан brg init — чтобы коммитить его, удали строку ниже
+/AGENTS.md" "$(cat "$p/.git/info/exclude")"
   assert_file_not_exists "$p/.git/worktrees/wt/info/exclude"
+}
+
+# ── the brigada block in AGENTS.md / CLAUDE.md (DESIGN §3) ──
+# am_block → the current block (as brg writes it, LF, no final newline)
+am_block() { BRG_SOURCE_ONLY=1 bash -c '. "$1"; printf "%s" "$AM_BLOCK"' _ "$BRG_SRC"; }
+# am_count FILE → number of begin markers
+am_count() { awk 'index($0, "<!-- brigada:begin") == 1' "$1" | wc -l | tr -d ' '; }
+# same_bytes A B — byte-for-byte (cat would drop trailing newlines)
+same_bytes() { [ "$(od -c <"$1")" = "$(od -c <"$2")" ] || fail "${3:-files differ}: $1 vs $2"; }
+
+test_agents_md_block_text() {
+  local b
+  b=$(am_block)
+  assert_contains "$b" "<!-- brigada:begin"
+  assert_contains "$b" "«подключиться к бригаде»"
+  assert_contains "$b" ".brigada/README.md"
+  assert_contains "$b" "--no-agents-md"
+  assert_eq 4 "$(printf '%s\n' "$b" | wc -l | tr -d ' ')" "block lines"
+  assert_eq "<!-- brigada:end -->" "$(printf '%s\n' "$b" | tail -n 1)"
+}
+
+# No AGENTS.md: created with the block and kept out of git; re-init changes nothing.
+test_agents_md_created_and_excluded() {
+  local p out
+  p=$(mk_tmpdir)
+  mkdir -p "$p/.git/info"
+  out=$(bash "$BRG_SRC" init "$p")
+  assert_eq 0 "$?"
+  assert_contains "$out" "создан AGENTS.md (только у тебя: исключён из git — чтобы коммитить, удали /AGENTS.md из .git/info/exclude)"
+  assert_contains "$out" "Дальше скажи агенту в новой сессии: «подключись к бригаде»"
+  assert_eq "$(am_block)" "$(cat "$p/AGENTS.md")"
+  assert_eq "/AGENTS.md" "$(tail -n 1 "$p/.git/info/exclude")"
+  assert_file_not_exists "$p/CLAUDE.md"
+  cp "$p/AGENTS.md" "$p/a.before"
+  cp "$p/.git/info/exclude" "$p/x.before"
+  out=$(bash "$BRG_SRC" init "$p")
+  assert_contains "$out" "AGENTS.md: блок brigada уже есть"
+  same_bytes "$p/a.before" "$p/AGENTS.md" "re-init changed AGENTS.md"
+  same_bytes "$p/x.before" "$p/.git/info/exclude" "re-init changed exclude"
+  # /AGENTS.md already excluded by hand (CRLF): not added again
+  rm "$p/AGENTS.md"
+  printf 'AGENTS.md\r\n' >"$p/.git/info/exclude"
+  bash "$BRG_SRC" init --no-agents-md "$p" >/dev/null || fail init
+  cp "$p/.git/info/exclude" "$p/x.before"
+  bash "$BRG_SRC" init "$p" >/dev/null || fail init
+  same_bytes "$p/x.before" "$p/.git/info/exclude" "/AGENTS.md added twice"
+}
+
+# AGENTS.md of the project: content kept, the block appended after an empty line
+# (a missing final newline added); re-init — one block, the file unchanged.
+test_agents_md_appended_once() {
+  local p out
+  p=$(mk_tmpdir)
+  mkdir -p "$p/.git/info"
+  printf '# Правила\n\nтекст' >"$p/AGENTS.md"
+  chmod 640 "$p/AGENTS.md"
+  out=$(bash "$BRG_SRC" init "$p")
+  assert_contains "$out" "блок brigada добавлен в AGENTS.md (файл, вероятно, в git — коммитить блок или нет, решай сам)"
+  assert_contains "$out" "«подключись к бригаде»"
+  { printf '# Правила\n\nтекст\n\n%s\n' "$(am_block)"; } >"$p/expected"
+  same_bytes "$p/expected" "$p/AGENTS.md"
+  assert_not_contains "$(cat "$p/.git/info/exclude")" "AGENTS.md"
+  assert_contains "$(ls -l "$p/AGENTS.md")" "-rw-r-----" "mode kept"
+  out=$(bash "$BRG_SRC" init "$p")
+  assert_contains "$out" "AGENTS.md: блок brigada уже есть"
+  same_bytes "$p/expected" "$p/AGENTS.md" "re-init"
+  assert_eq 1 "$(am_count "$p/AGENTS.md")"
+  # the file ends with an empty line already: no second one
+  printf 'a\n\n' >"$p/AGENTS.md"
+  bash "$BRG_SRC" init "$p" >/dev/null || fail init
+  { printf 'a\n\n%s\n' "$(am_block)"; } >"$p/expected"
+  same_bytes "$p/expected" "$p/AGENTS.md" "after an empty line"
+}
+
+# An old or edited block is replaced by the current one, the rest untouched;
+# extra blocks go; begin without end — the file is not touched.
+test_agents_md_old_block_replaced() {
+  local p out
+  p=$(mk_tmpdir)
+  printf 'до\n\n<!-- brigada:begin — старый -->\nстарый текст\n<!-- brigada:end -->\n\nпосле\n<!-- brigada:begin -->\nдубль\n<!-- brigada:end -->\nконец\n' >"$p/AGENTS.md"
+  out=$(bash "$BRG_SRC" init "$p")
+  assert_contains "$out" "блок brigada обновлён в AGENTS.md"
+  { printf 'до\n\n%s\n\nпосле\nконец\n' "$(am_block)"; } >"$p/expected"
+  same_bytes "$p/expected" "$p/AGENTS.md"
+  out=$(bash "$BRG_SRC" init "$p")
+  assert_contains "$out" "AGENTS.md: блок brigada уже есть"
+  same_bytes "$p/expected" "$p/AGENTS.md" "re-init"
+  # the block is the last line, without a final newline: none is added
+  printf 'x\n<!-- brigada:begin -->\nстарый\n<!-- brigada:end -->' >"$p/AGENTS.md"
+  bash "$BRG_SRC" init "$p" >/dev/null || fail init
+  printf 'x\n%s' "$(am_block)" >"$p/expected"
+  same_bytes "$p/expected" "$p/AGENTS.md" "block at EOF"
+  # begin without end: not touched, the full phrase
+  printf 'x\n<!-- brigada:begin -->\nобрыв\n' >"$p/AGENTS.md"
+  cp "$p/AGENTS.md" "$p/expected"
+  out=$(bash "$BRG_SRC" init "$p")
+  assert_eq 0 "$?"
+  assert_contains "$out" "AGENTS.md: есть «<!-- brigada:begin», но нет «<!-- brigada:end» — не тронут"
+  assert_contains "$out" "Дальше скажи агенту: «подключись к .brigada, прочитай инструкцию в .brigada/README.md»."
+  same_bytes "$p/expected" "$p/AGENTS.md" "broken block"
+}
+
+# CRLF file: the block is written with CRLF, the rest untouched (also on update).
+test_agents_md_crlf() {
+  local p
+  p=$(mk_tmpdir)
+  printf '# P\r\nстрока\r\n' >"$p/AGENTS.md"
+  bash "$BRG_SRC" init "$p" >/dev/null || fail init
+  { printf '# P\r\nстрока\r\n\r\n'; am_block | awk '{ printf "%s\r\n", $0 }'; } >"$p/expected"
+  same_bytes "$p/expected" "$p/AGENTS.md"
+  bash "$BRG_SRC" init "$p" >/dev/null || fail init
+  same_bytes "$p/expected" "$p/AGENTS.md" "re-init"
+  printf '# P\r\n<!-- brigada:begin -->\r\nold\r\n<!-- brigada:end -->\r\nконец\r\n' >"$p/AGENTS.md"
+  bash "$BRG_SRC" init "$p" >/dev/null || fail init
+  { printf '# P\r\n'; am_block | awk '{ printf "%s\r\n", $0 }'; printf 'конец\r\n'; } >"$p/expected"
+  same_bytes "$p/expected" "$p/AGENTS.md" "update"
+}
+
+# CLAUDE.md: importing AGENTS.md — untouched; without the import — the block;
+# none — not created; a link to AGENTS.md — the same file, one block.
+test_claude_md_rules() {
+  local p out
+  p=$(mk_tmpdir)
+  printf '# Claude\n  @AGENTS.md \t\n' >"$p/CLAUDE.md"
+  cp "$p/CLAUDE.md" "$p/expected"
+  out=$(bash "$BRG_SRC" init "$p")
+  assert_contains "$out" "CLAUDE.md импортирует AGENTS.md (@AGENTS.md) — не тронут"
+  assert_contains "$out" "«подключись к бригаде»"
+  same_bytes "$p/expected" "$p/CLAUDE.md" "@AGENTS.md"
+  printf '@./AGENTS.md\n' >"$p/CLAUDE.md"
+  cp "$p/CLAUDE.md" "$p/expected"
+  bash "$BRG_SRC" init "$p" >/dev/null || fail init
+  same_bytes "$p/expected" "$p/CLAUDE.md" "@./AGENTS.md"
+  # only a whole-line import counts: an inline mention gets the block (Claude Code
+  # may then see it twice — harmless; missing it would not be)
+  printf '# Claude\nсм. @AGENTS.md выше\n' >"$p/CLAUDE.md"
+  out=$(bash "$BRG_SRC" init "$p")
+  assert_contains "$out" "блок brigada добавлен в CLAUDE.md"
+  { printf '# Claude\nсм. @AGENTS.md выше\n\n%s\n' "$(am_block)"; } >"$p/expected"
+  same_bytes "$p/expected" "$p/CLAUDE.md" "no import"
+  out=$(bash "$BRG_SRC" init "$p")
+  assert_contains "$out" "CLAUDE.md: блок brigada уже есть"
+  same_bytes "$p/expected" "$p/CLAUDE.md" "re-init"
+  # CLAUDE.md a link to AGENTS.md: written once, the link stays
+  p=$(mk_tmpdir)
+  printf 'общее\n' >"$p/AGENTS.md"
+  ln -s AGENTS.md "$p/CLAUDE.md"
+  out=$(bash "$BRG_SRC" init "$p")
+  assert_contains "$out" "CLAUDE.md — тот же файл, что AGENTS.md"
+  [ -L "$p/CLAUDE.md" ] || fail "the link replaced by a file"
+  assert_eq 1 "$(am_count "$p/AGENTS.md")"
+  # AGENTS.md a link to CLAUDE.md: written through the link
+  p=$(mk_tmpdir)
+  printf 'общее\n' >"$p/CLAUDE.md"
+  ln -s CLAUDE.md "$p/AGENTS.md"
+  bash "$BRG_SRC" init "$p" >/dev/null || fail init
+  [ -L "$p/AGENTS.md" ] || fail "the link replaced by a file"
+  assert_eq 1 "$(am_count "$p/CLAUDE.md")"
+}
+
+# --no-agents-md: neither file is created or changed (old blocks too), the full phrase.
+test_init_no_agents_md() {
+  local p out
+  p=$(mk_tmpdir)
+  mkdir -p "$p/.git/info"
+  out=$(bash "$BRG_SRC" init --no-agents-md "$p")
+  assert_eq 0 "$?"
+  assert_contains "$out" "AGENTS.md и CLAUDE.md не тронуты (--no-agents-md)"
+  assert_contains "$out" "Дальше скажи агенту: «подключись к .brigada, прочитай инструкцию в .brigada/README.md»."
+  assert_not_contains "$out" "«подключись к бригаде»"
+  assert_file_not_exists "$p/AGENTS.md"
+  assert_file_not_exists "$p/CLAUDE.md"
+  assert_not_contains "$(cat "$p/.git/info/exclude")" "AGENTS.md"
+  printf '<!-- brigada:begin -->\nстарый\n<!-- brigada:end -->\n' >"$p/AGENTS.md"
+  printf 'claude\n' >"$p/CLAUDE.md"
+  cp "$p/AGENTS.md" "$p/a.before"
+  cp "$p/CLAUDE.md" "$p/c.before"
+  bash "$BRG_SRC" init "$p" --no-agents-md >/dev/null || fail init
+  same_bytes "$p/a.before" "$p/AGENTS.md"
+  same_bytes "$p/c.before" "$p/CLAUDE.md"
+  out=$(bash "$BRG_SRC" init --help)
+  assert_contains "$out" "--no-agents-md"
+  out=$(bash "$BRG_SRC" init --no-such 2>&1)
+  assert_eq 1 "$?"
 }
 
 test_init_only_from_repo_and_commands_need_state() {

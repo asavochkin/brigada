@@ -55,7 +55,7 @@ test_board_snapshot_content() {
   for x in '"name":"claude-1"' '"name":"codex-1"' '"Model":"opus"' '"current":{"id":"T001"' '"Id":"I001"' '"Id":"I002"' \
     '"Verdict":"changes"' '"b":"поправь отступы"' '"Command":"echo board-run-output"' '"tail":"  board-run-output"' \
     '"b":"сообщение для доски"' '"brief":"постановка доски"' '"plan":"план работ"' '"summary":null' \
-    '"Title":"Доска: проверка"' '"version":"0.3.0"' '"stop":false' '"rh":"ok"'; do
+    '"Title":"Доска: проверка"' "\"version\":\"$(cat "$B/VERSION")\"" '"stop":false' '"rh":"ok"'; do
     assert_contains "$out" "$x"
   done
   assert_not_contains "$out" '"Key"' "the session key leaks onto the board"
@@ -222,7 +222,7 @@ test_board_cache_of_finished_tasks() {
   assert_contains "$s" '"current":{"id":"T002"'
   assert_contains "$s" '"summary":"итог второй"'
   assert_contains "$s" '"sum":"итог первой"'
-  assert_eq "brg 0.3.0" "brg $(cat "$B/run/board/VERSION")"
+  assert_eq "$(bash "$BRG_SRC" version)" "brg $(cat "$B/run/board/VERSION")"
   # written once: a marker survives the next snapshot
   printf '// marker\n' >>"$B/run/board/T001.js"
   printf '%s\n' "итог второй, уточнён" >"$d2/summary.md"
@@ -238,7 +238,7 @@ test_board_cache_of_finished_tasks() {
   printf '0.0.1\n' >"$B/run/board/VERSION"
   brg board --once >/dev/null || fail board4
   assert_not_contains "$(cat "$B/run/board/T001.js")" "// marker" "cache kept after a version change"
-  assert_eq "0.3.0" "$(cat "$B/run/board/VERSION")"
+  assert_eq "$(cat "$B/VERSION")" "$(cat "$B/run/board/VERSION")"
 }
 
 # The last BOARD_MSGS (500) messages of a channel; over BRG_BOARD_MAX the oldest are

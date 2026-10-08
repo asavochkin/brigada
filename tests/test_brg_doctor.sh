@@ -57,6 +57,7 @@ $out"
   assert_contains "$out" "✓ mkdir атомарен"
   assert_contains "$out" "✓ mv поверх файла, открытого другим процессом на чтение, — успешно"
   assert_contains "$out" "✓ .git/info/exclude: .brigada/ — каталог brigada не коммитится"
+  assert_contains "$out" "✓ AGENTS.md: блок brigada есть — агенту достаточно «подключись к бригаде»"
   assert_contains "$out" "✓ блокировки: протухших и зависших нет"
   assert_contains "$out" "✓ brg run: мёртвых и зависших раннеров нет"
   assert_contains "$out" "✓ wait: живых 1"
@@ -205,6 +206,38 @@ test_doctor_platform_config_git() {
   out=$(cd "$(mk_tmpdir)" && bash "$BRG_SRC" doctor 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "не найден .brigada"
+}
+
+# The brigada block in AGENTS.md / CLAUDE.md (DESIGN §3): ✓ with the block; ⚠
+# without it; ⚠ for CLAUDE.md with neither the block nor @AGENTS.md. Read only.
+test_doctor_agents_md() {
+  local out
+  new_proj
+  out=$(brg doctor)
+  assert_contains "$out" "✓ AGENTS.md: блок brigada есть — агенту достаточно «подключись к бригаде»"
+  assert_not_contains "$out" "CLAUDE.md"
+  printf "# Правила\n" >"$P/AGENTS.md"
+  printf "# Claude\nсм. AGENTS.md\n" >"$P/CLAUDE.md"
+  cp "$P/AGENTS.md" "$P/a.before"
+  cp "$P/CLAUDE.md" "$P/c.before"
+  out=$(brg doctor)
+  assert_eq 0 "$?" "⚠ only"
+  assert_contains "$(warns "$out")" "⚠ AGENTS.md: нет блока brigada — фразу «подключись к бригаде» агенты не поймут"
+  assert_contains "$out" "Повтори init (допишет блок): bash /путь/к/brigada/bin/brg init $P"
+  assert_contains "$out" "«подключись к .brigada, прочитай инструкцию в .brigada/README.md»"
+  assert_contains "$(warns "$out")" "⚠ CLAUDE.md: нет ни блока brigada, ни строки @AGENTS.md — Claude Code"
+  cmp -s "$P/a.before" "$P/AGENTS.md" || fail "doctor changed AGENTS.md"
+  cmp -s "$P/c.before" "$P/CLAUDE.md" || fail "doctor changed CLAUDE.md"
+  # CLAUDE.md importing AGENTS.md (CRLF) — fine; with the block — fine
+  printf "@AGENTS.md\r\n" >"$P/CLAUDE.md"
+  assert_not_contains "$(brg doctor)" "CLAUDE.md"
+  bash "$BRG_SRC" init "$P" >/dev/null || fail init
+  printf "# Claude\n" >"$P/CLAUDE.md"
+  bash "$BRG_SRC" init "$P" >/dev/null || fail init
+  out=$(brg doctor)
+  assert_contains "$out" "✓ AGENTS.md: блок brigada есть"
+  assert_not_contains "$out" "CLAUDE.md"
+  assert_eq "" "$(warns "$out" | awk "/md:/")"
 }
 
 # Liveness of processes (via the test hook): a parent out of reach (EPERM) — ⚠

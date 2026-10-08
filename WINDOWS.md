@@ -24,7 +24,7 @@ cd /c/work/toy
 bash /c/work/brigada/bin/brg init .
 bash .brigada/bin/brg doctor; echo "код $?"
 ```
-Ожидается: `── итого: … ✗ 0`, «платформа MSYS (Git Bash)», «mkdir атомарен», «mv поверх файла, открытого другим процессом на чтение, — успешно», `wait_timeout (msys): … codex 100 …`, код 0. Все строки ⚠ и ✗ — в шаблон.
+Ожидается: init — «создан AGENTS.md (только у тебя: исключён из git …)», в `.git/info/exclude` строки `.brigada/` и `/AGENTS.md`; doctor — `── итого: … ✗ 0`, «платформа MSYS (Git Bash)», «mkdir атомарен», «mv поверх файла, открытого другим процессом на чтение, — успешно», «AGENTS.md: блок brigada есть», `wait_timeout (msys): … codex 100 …`, код 0. Все строки ⚠ и ✗ — в шаблон.
 
 В **PowerShell** (Windows PowerShell 5.1; если есть — ещё и PowerShell 7):
 ```
@@ -115,7 +115,7 @@ Get-Process sleep, PING -ErrorAction SilentlyContinue
 Харнесс: **Codex CLI на Windows** (PowerShell) — главный кандидат; нет Codex — Claude Code (на Windows он выполняет команды в Git Bash) или OpenCode. Если есть время — оба.
 
 1. В Git Bash смотри переписку: `cd /c/work/toy && bash .brigada/bin/brg tail -f`.
-2. Новая сессия агента в `C:\work\toy`, фраза: **«подключись к .brigada, прочитай инструкцию в .brigada/README.md»**. На запрос разрешения — «always allow» для brg.
+2. Новая сессия агента в `C:\work\toy`, фраза: **«подключись к бригаде»** (блок в `AGENTS.md` от init). Не подключился — запиши в шаблон и скажи полную: **«подключись к .brigada, прочитай инструкцию в .brigada/README.md»**. На запрос разрешения — «always allow» для brg.
 3. Проверь в `tail`: `join` с верным `--harness`; агент в цикле `wait` (Codex на Windows — `wait` по 100 с).
 4. За 30 мин 3 раза (в начале, середине, конце) напиши из Git Bash:
    ```

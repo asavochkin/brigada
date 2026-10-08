@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # brg — global entry point for the human (installed by brigada/install.sh).
 # Inside a project: runs the nearest .brigada/bin/brg found upwards from cwd.
-# `brg init [dir]`: runs the brigada repo's bin/brg (without dir — the project
+# `brg init [--no-agents-md] [dir]`: runs the brigada repo's bin/brg (without dir — the project
 # that owns the nearest .brigada, else the current directory).
 # Agents keep calling `bash .brigada/bin/brg` as README says; this is for people.
 
@@ -29,8 +29,12 @@ ROOT=$(find_root)
 
 if [ "${1:-}" = init ]; then
   shift
-  if [ $# -eq 0 ] && [ -n "$ROOT" ]; then
-    set -- "$ROOT"
+  dir=
+  for a in "$@"; do
+    case $a in -*) ;; *) dir=1 ;; esac
+  done
+  if [ -z "$dir" ] && [ -n "$ROOT" ]; then
+    set -- "$@" "$ROOT"
   fi
   exec bash "$REPO_BRG" init "$@"
 fi

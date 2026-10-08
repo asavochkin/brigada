@@ -17,7 +17,7 @@ _brg_crlf=x
 case ${#_brg_crlf} in 1) ;; *) printf '%s\n' "brg: ОШИБКА: у файла $0 окончания строк CRLF (Windows) — bash его не выполнит." "Причина — git с core.autocrlf=true. Это .brigada/bin/brg — переустанови: bash <brigada>/bin/brg init <проект>. Это сам репозиторий brigada — удали bin/brg и восстанови: git checkout -- bin/brg (по .gitattributes он запишется с LF) или скачай brigada заново. Проверка: bash <brigada>/bin/brg doctor <проект>." >&2; exit 2 ;; esac #
 unset _brg_crlf
 
-BRG_VERSION=0.3.0
+BRG_VERSION=0.4.0
 # the caller's locale, restored for commands started by `brg run`
 _brg_lc_set=${LC_ALL+1}
 _brg_lc=${LC_ALL-}
@@ -1515,7 +1515,7 @@ body_check() { # [KIND]
 usage_line_v() { # VAR CMD
   local _ul_u
   case $2 in
-    init) _ul_u="bash /путь/к/brigada/bin/brg init [каталог_проекта]" ;;
+    init) _ul_u="bash /путь/к/brigada/bin/brg init [--no-agents-md] [каталог_проекта]" ;;
     join) _ul_u="$BRG join --harness <claude|codex|opencode|…> --model <модель>  |  вернуться под старым именем (ключ будет новый): $BRG join --as <имя> --harness <тот же> [--model <модель>]" ;;
     leave) _ul_u="$BRG leave --as <имя>" ;;
     send) _ul_u="$BRG send --as <имя> [--to all|<имя>[,<имя>]|human] [--re N] [--reply-by 5m|90s|1h] [--channel lobby|T00N] [--file F] <<'BRG_EOF' … BRG_EOF" ;;
@@ -1554,7 +1554,7 @@ usage_print() {
     status) echo "Кто я, задача и моя роль, непрочитанное (без сдвига курсора), мои дедлайны, жив ли мой wait, NEXT. С именем без ключа — только просмотр (не подтверждает, что ты этот агент)." ;;
     stop) echo "Остановить бригаду (или одного агента): wait возвращает STOP сразу и на ближайшем тике; любая команда агента печатает STOP первой строкой; item add|claim|reassign и запуск run отказывают." ;;
     resume) echo "Снять стоп (весь или одного агента)." ;;
-    init) echo "Создать/обновить <проект>/.brigada: bin/brg, README.md, PROTOCOL.md, board.html, config.default, VERSION; состояние и config не трогает." ;;
+    init) echo "Создать/обновить <проект>/.brigada: bin/brg, README.md, PROTOCOL.md, board.html, config.default, VERSION; состояние и config не трогает. В корне проекта дописывает (или обновляет) короткий блок brigada в AGENTS.md (нет — создаёт и исключает из git) и в CLAUDE.md, если он есть и не импортирует AGENTS.md: тогда агенту достаточно сказать «подключись к бригаде». --no-agents-md — эти файлы не трогать." ;;
     task)
       echo "Задачи (одна активная): new — создать (ты host и lead; постановка человека дословно → brief.md); close — закрыть (lead; нужен непустой summary.md); cancel — отменить (host, lead или человек: --as human); show/list — посмотреть."
       echo "close отказывает, пока есть подзадачи в работе или идут прогоны (--force — отменить и остановить их). Есть непрочитанное для lead'а (то, что разбудило бы его wait) — close показывает его (оно считается доставленным) и отказывает: учти и повтори close."
@@ -1610,7 +1610,7 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
   who                                кто подключён
   leave --as <имя>                   отключиться
 Человеку:
-  init [каталог]                     (из репозитория brigada) создать/обновить .brigada/
+  init [--no-agents-md] [каталог]    (из репозитория brigada) создать/обновить .brigada/ и блок в AGENTS.md
   board [--interval S] [--once]      доска в браузере: задача, бригада, подзадачи, прогоны, переписка
   say [--to …] [текст]               сообщение от human (снимает стоп)
   tail [-f] [-n N] [канал]           переписка (по умолчанию lobby + активная задача)
@@ -1692,7 +1692,7 @@ git_exclude_scan() {
 }
 
 git_exclude() { # PROJECT → GIT_NOTE
-  local gd ex rel tl
+  local gd ex rel
   git_dir_v gd "$1"
   if [ -z "$gd" ]; then
     GIT_NOTE=$GD_NOTE
@@ -1710,23 +1710,183 @@ git_exclude() { # PROJECT → GIT_NOTE
   elif [ -n "$GE_FOUND" ]; then
     GIT_NOTE="$rel уже настроен"
   else
-    if [ -s "$ex" ]; then
-      tl=$(tail -c 1 "$ex")
-      [ -n "$tl" ] && printf '\n' >>"$ex"
-    fi
-    printf '%s\n%s\n' "$GIT_EXCLUDE_NOTE" "$GIT_EXCLUDE" >>"$ex"
+    exclude_append "$ex" "$GIT_EXCLUDE_NOTE" "$GIT_EXCLUDE"
     GIT_NOTE="добавлено в $rel: $GIT_EXCLUDE (весь каталог brigada не коммитится)"
   fi
 }
+# exclude_append FILE COMMENT LINE — append both (a missing final newline first)
+exclude_append() {
+  local tl
+  if [ -s "$1" ]; then
+    tl=$(tail -c 1 "$1")
+    [ -n "$tl" ] && printf '\n' >>"$1"
+  fi
+  printf '%s\n%s\n' "$2" "$3" >>"$1"
+}
+
+# Project instruction files (DESIGN §3): a short block between markers in AGENTS.md
+# (Codex, OpenCode, Cursor, …) and in CLAUDE.md unless it imports AGENTS.md — then
+# "подключись к бригаде" is enough for any harness. Markers are matched by prefix.
+AM_BEGIN='<!-- brigada:begin'
+AM_END='<!-- brigada:end'
+AM_BLOCK="$AM_BEGIN — блок от brg init, init его обновляет; не нужен — удали по brigada:end включительно и запускай init с --no-agents-md -->
+## brigada
+Если человек просит «подключиться к бригаде» (brigada, .brigada) — прочитай \`.brigada/README.md\` и следуй ему: там подключение (\`join\`) и обязательный цикл \`wait\`. Без такой просьбы к бригаде не подключайся.
+$AM_END -->"
+AM_EXCLUDE=/AGENTS.md
+AM_EXCLUDE_NOTE='# brigada: AGENTS.md создан brg init — чтобы коммитить его, удали строку ниже'
+AM_FULL='«подключись к .brigada, прочитай инструкцию в .brigada/README.md»'
+
+# am_scan FILE → AM_ALL (the file as is), AM_PRE/AM_POST (around the first block;
+# later blocks are dropped), AM_HAS (a block), AM_BAD (begin without end), AM_TERM
+# (newline after the end marker), AM_EOL (CRLF if the first line has it), AM_IMPORT
+# (a line "@AGENTS.md" / "@./AGENTS.md" outside the blocks)
+am_scan() {
+  local line l t x st=0 first=1 ws=$' \t' # st: 0 before, 1 first block, 2 after, 3 later block
+  AM_ALL= AM_PRE= AM_POST= AM_HAS= AM_BAD= AM_TERM= AM_EOL=$NL AM_IMPORT=
+  while :; do
+    if IFS= read -r line; then t=$NL; elif [ -n "$line" ]; then t=; else break; fi
+    AM_ALL=$AM_ALL$line$t
+    l=${line%"$CR"}
+    if [ -n "$first" ]; then
+      [ "$l" = "$line" ] || AM_EOL=$CR$NL
+      first=
+    fi
+    case $st in
+      0 | 2)
+        case $l in "$AM_BEGIN"*)
+          AM_HAS=1
+          st=$((st + 1))
+          continue
+          ;;
+        esac
+        x=${l#"${l%%[!$ws]*}"}
+        x=${x%"${x##*[!$ws]}"}
+        case $x in @AGENTS.md | @./AGENTS.md) AM_IMPORT=1 ;; esac
+        if [ $st = 0 ]; then AM_PRE=$AM_PRE$line$t; else AM_POST=$AM_POST$line$t; fi
+        ;;
+      *)
+        case $l in "$AM_END"*)
+          [ $st = 1 ] && AM_TERM=$t
+          st=2
+          ;;
+        esac
+        ;;
+    esac
+  done <"$1"
+  case $st in 1 | 3) AM_BAD=1 ;; esac
+  return 0
+}
+# am_write FILE CONTENT — tmp + mv keeping the mode; a symlink is written through
+# (AGENTS.md and CLAUDE.md are often links to each other)
+am_write() {
+  local t=$1.brg.$$
+  if [ -L "$1" ]; then
+    printf '%s' "$2" >"$1"
+    return
+  fi
+  [ -f "$1" ] && cp "$1" "$t" 2>/dev/null
+  printf '%s' "$2" >"$t" && mv_retry "$t" "$1" && return 0
+  rm -f "$t"
+  return 1
+}
+# am_apply FILE NAME → AM_NOTE; after am_scan FILE: adds the block or brings it up
+# to date, in the line endings of the file. 1 — FILE not changed for a problem.
+am_apply() {
+  local b=$AM_BLOCK n x='файл, вероятно, в git — коммитить блок или нет, решай сам'
+  if [ -n "$AM_BAD" ]; then
+    AM_NOTE="$2: есть «$AM_BEGIN», но нет «$AM_END» — не тронут; поправь вручную и повтори init"
+    return 1
+  fi
+  [ "$AM_EOL" = "$NL" ] || b=${b//$NL/$AM_EOL}
+  if [ -n "$AM_HAS" ]; then
+    n=$AM_PRE$b${AM_TERM:+$AM_EOL}$AM_POST
+    if [ "$n" = "$AM_ALL" ]; then
+      AM_NOTE="$2: блок brigada уже есть"
+      return 0
+    fi
+    AM_NOTE="блок brigada обновлён в $2 ($x)"
+  else
+    n=$AM_ALL
+    case $n in *[!$CR$NL]*) ;; *) n= ;; esac # only empty lines
+    if [ -n "$n" ]; then
+      case $n in *"$NL") ;; *) n=$n$AM_EOL ;; esac
+      case $n in *"$NL$NL" | *"$NL$CR$NL") ;; *) n=$n$AM_EOL ;; esac
+    fi
+    n=$n$b$AM_EOL
+    AM_NOTE="блок brigada добавлен в $2 ($x)"
+  fi
+  am_write "$1" "$n" && return 0
+  AM_NOTE="$2: не удалось записать"
+  return 1
+}
+# agents_md PROJECT → AM_REPORT (lines for the init output), AM_READY (the block is
+# where every harness reads it: "подключись к бригаде" works)
+agents_md() {
+  local a=$1/AGENTS.md c=$1/CLAUDE.md gd
+  AM_REPORT= AM_READY=1
+  if [ ! -e "$a" ] && [ ! -L "$a" ]; then
+    if am_write "$a" "$AM_BLOCK$NL"; then
+      git_dir_v gd "$1"
+      if [ -n "$gd" ]; then
+        mkdir -p "$gd/info" 2>/dev/null
+        am_exclude "$gd/info/exclude"
+        AM_NOTE="создан AGENTS.md (только у тебя: исключён из git — чтобы коммитить, удали $AM_EXCLUDE из ${gd#"$1"/}/info/exclude)"
+      else
+        AM_NOTE="создан AGENTS.md (git: $GD_NOTE)"
+      fi
+    else
+      AM_NOTE="AGENTS.md: не удалось создать"
+      AM_READY=
+    fi
+  elif [ ! -f "$a" ]; then
+    AM_NOTE="AGENTS.md — не файл (или ссылка в никуда): не тронут"
+    AM_READY=
+  else
+    am_scan "$a"
+    am_apply "$a" AGENTS.md || AM_READY=
+  fi
+  AM_REPORT=$AM_NOTE$NL
+  [ -e "$c" ] || [ -L "$c" ] || return 0
+  if [ ! -f "$c" ]; then
+    AM_NOTE="CLAUDE.md — не файл (или ссылка в никуда): не тронут"
+    AM_READY=
+  elif [ -f "$a" ] && [ "$c" -ef "$a" ]; then
+    AM_NOTE="CLAUDE.md — тот же файл, что AGENTS.md"
+  else
+    am_scan "$c"
+    if [ -n "$AM_IMPORT" ]; then
+      AM_NOTE="CLAUDE.md импортирует AGENTS.md (@AGENTS.md) — не тронут"
+    else
+      am_apply "$c" CLAUDE.md || AM_READY=
+    fi
+  fi
+  AM_REPORT=$AM_REPORT$AM_NOTE$NL
+}
+# am_exclude FILE — /AGENTS.md into the git excludes, unless it is there already
+am_exclude() {
+  local line l
+  if [ -f "$1" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      l=${line%"$CR"}
+      case $l in "$AM_EXCLUDE" | AGENTS.md) return 0 ;; esac
+    done <"$1"
+  fi
+  exclude_append "$1" "$AM_EXCLUDE_NOTE" "$AM_EXCLUDE"
+}
 
 cmd_init() {
-  local p= tpl=$ROOT/template B fresh=1 missing= k
+  local p= tpl=$ROOT/template B fresh=1 missing= k am=1
   CMD=init
   while [ $# -gt 0 ]; do
     case $1 in
       -h | --help)
         usage_print init
         exit 0
+        ;;
+      --no-agents-md)
+        am=
+        shift
         ;;
       -*) usage_die "неизвестный параметр: $1" ;;
       *)
@@ -1772,9 +1932,11 @@ cmd_init() {
       "Стек, как запускать тесты и сборку, конвенции. Пишут агенты (коротко), читают все." >"$B/common/project.md"
   fi
   git_exclude "$p"
+  AM_READY=
+  [ -n "$am" ] && agents_md "$p"
   RUN=$B/run
   get_now
-  metric init version="$BRG_VERSION" fresh="${fresh:-0}"
+  metric init version="$BRG_VERSION" fresh="${fresh:-0}" agents_md="${am:-0}"
   if [ -n "$fresh" ]; then
     echo "── brigada $BRG_VERSION: создано $B"
   else
@@ -1782,7 +1944,16 @@ cmd_init() {
   fi
   [ -n "$missing" ] && echo "В config нет ключей:$missing — действуют значения из config.default."
   echo "git: $GIT_NOTE"
-  echo "Дальше скажи агенту: «подключись к .brigada, прочитай инструкцию в .brigada/README.md»."
+  if [ -z "$am" ]; then
+    echo "AGENTS.md и CLAUDE.md не тронуты (--no-agents-md): фраза агенту — полная."
+  else
+    printf '%s' "$AM_REPORT"
+  fi
+  if [ -n "$AM_READY" ]; then
+    echo "Дальше скажи агенту в новой сессии: «подключись к бригаде» (сессии, открытые до init, блока не видели — им: $AM_FULL)."
+  else
+    echo "Дальше скажи агенту: $AM_FULL."
+  fi
   echo "Смотреть переписку: bash .brigada/bin/brg tail -f · кто онлайн: bash .brigada/bin/brg who (у агента «возможно выпал» — напиши ему в его чат «продолжай»)"
   echo "Доска в браузере: bash .brigada/bin/brg board — открой в браузере адрес из первой строки"
   echo "Проверка среды (Windows, блокировки, раннеры): bash .brigada/bin/brg doctor; из PowerShell/cmd — .\\.brigada\\bin\\brg.cmd doctor"
@@ -2989,6 +3160,24 @@ dr_git() {
     dr_fail ".git/info/exclude: $x" "Повтори init (поправит сам): bash /путь/к/brigada/bin/brg init $PROJ"
   fi
 }
+# dr_agents_md — the brigada block in the project instruction files (DESIGN §3)
+dr_agents_md() {
+  local a=$PROJ/AGENTS.md c=$PROJ/CLAUDE.md
+  AM_HAS=
+  [ -f "$a" ] && am_scan "$a"
+  if [ -n "$AM_HAS" ]; then
+    dr_ok "AGENTS.md: блок brigada есть — агенту достаточно «подключись к бригаде»"
+  else
+    dr_warn "AGENTS.md: нет блока brigada — фразу «подключись к бригаде» агенты не поймут" \
+      "Повтори init (допишет блок): bash /путь/к/brigada/bin/brg init $PROJ — или говори агенту полную фразу: $AM_FULL"
+  fi
+  [ -f "$c" ] || return 0
+  [ -f "$a" ] && [ "$c" -ef "$a" ] && return 0
+  am_scan "$c"
+  [ -n "$AM_HAS$AM_IMPORT" ] && return 0
+  dr_warn "CLAUDE.md: нет ни блока brigada, ни строки @AGENTS.md — Claude Code читает CLAUDE.md и блока из AGENTS.md не увидит" \
+    "Повтори init (допишет блок в CLAUDE.md) или добавь в CLAUDE.md строку @AGENTS.md; иначе Claude Code — полную фразу: $AM_FULL"
+}
 
 # dr_locks — leftovers of crashes: locks of dead owners, hung holders, the exec
 # lock of a dead or silent runner. A lock seen without a problem twice in a row
@@ -3259,6 +3448,7 @@ cmd_doctor() {
   if [ -n "$DR_STATE" ]; then
     dr_fs
     dr_git
+    dr_agents_md
     get_now
     dr_locks
     get_now
