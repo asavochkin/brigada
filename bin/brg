@@ -17,7 +17,7 @@ _brg_crlf=x
 case ${#_brg_crlf} in 1) ;; *) printf '%s\n' "brg: ОШИБКА: у файла $0 окончания строк CRLF (Windows) — bash его не выполнит." "Причина — git с core.autocrlf=true. Это .brigada/bin/brg — переустанови: bash <brigada>/bin/brg init <проект>. Это сам репозиторий brigada — удали bin/brg и восстанови: git checkout -- bin/brg (по .gitattributes он запишется с LF) или скачай brigada заново. Проверка: bash <brigada>/bin/brg doctor <проект>." >&2; exit 2 ;; esac #
 unset _brg_crlf
 
-BRG_VERSION=0.5.0
+BRG_VERSION=0.5.1
 # the caller's locale, restored for commands started by `brg run`
 _brg_lc_set=${LC_ALL+1}
 _brg_lc=${LC_ALL-}
@@ -1243,8 +1243,155 @@ msg_write() {
     die "не удалось записать $f"
   fi
   printf '%s\n' "$n" >"$d/.seq.tmp.$$" && mv_retry "$d/.seq.tmp.$$" "$d/seq"
+  # open questions to the human (DESIGN §9.2), under the same lock as the message:
+  # a reply (Re: N) of the human or of the author closes the question N of this
+  # channel (another addressee's reply does not); send --ask opens one
+  ASK_CLOSED=
+  if [ -n "$5" ] && [ -f "$RUN/asks/$c.$5" ]; then
+    ask_from_v m "$RUN/asks/$c.$5"
+    if [ "$2" = human ] || [ "$2" = "$m" ]; then
+      rm -f "$RUN/asks/$c.$5" && ASK_CLOSED=1
+    fi
+  fi
+  if [ -n "$MSG_ASK" ]; then
+    [ -d "$RUN/asks" ] || mkdir -p "$RUN/asks"
+    { printf 'Channel: %s\nId: %s\nFrom: %s\nEpoch: %s\n' "$c" "$n" "$2" "$NOW" >"$RUN/asks/.tmp.$c.$n.$$" &&
+      mv_retry "$RUN/asks/.tmp.$c.$n.$$" "$RUN/asks/$c.$n"; } ||
+      say_err "brg: не удалось записать $RUN/asks/$c.$n — вопрос #$n отправлен, но на доске не виден"
+  fi
   lock_release "chan.$c"
   MSG_ID=$n
+}
+MSG_ASK=
+ASK_CLOSED=
+
+# ask_from_v VAR MARKER — the author of a question (From of its marker; "" if the
+# marker is gone meanwhile)
+ask_from_v() {
+  local _ar_l _ar_f=
+  {
+    while IFS= read -r _ar_l || [ -n "$_ar_l" ]; do
+      case $_ar_l in 'From: '*) _ar_f=${_ar_l#From: } ;; esac
+    done <"$2"
+  } 2>/dev/null
+  eval "$1=\$_ar_f"
+}
+# ask_elsewhere_v VAR CHANNEL N — the other channel (lobby / the active task) with an
+# open question #N; 1 if none (a reply --re N may have gone to the wrong channel)
+ask_elsewhere_v() {
+  local _ae_o _ae_l=lobby
+  active_task && _ae_l="lobby $ACT_ID"
+  for _ae_o in $_ae_l; do
+    [ "$_ae_o" != "$2" ] && [ -f "$RUN/asks/$_ae_o.$3" ] || continue
+    eval "$1=\$_ae_o"
+    return 0
+  done
+  return 1
+}
+# ask_chopt_v VAR CHANNEL — " --channel CHANNEL" unless it is the default one of send
+# and say (the active task, else lobby); "" then
+ask_chopt_v() {
+  local _ac_o=
+  if [ "$2" = lobby ]; then
+    active_task && _ac_o=" --channel lobby"
+  elif ! active_task || [ "$ACT_ID" != "$2" ]; then
+    _ac_o=" --channel $2"
+  fi
+  eval "$1=\$_ac_o"
+}
+# asks_scan — the open questions to the human (DESIGN §9.2): markers run/asks/<канал>.<N>
+# whose message is there (in lobby or the active task) → AK_N, AK_CH[], AK_ID[],
+# AK_FROM[], AK_EP[], AK_FILE[] (the message). No processes: who, status and every
+# tick of the board read it.
+asks_scan() {
+  local f nm ch id l fr ep d mf
+  AK_N=0
+  AK_CH=()
+  AK_ID=()
+  AK_FROM=()
+  AK_EP=()
+  AK_FILE=()
+  for f in "$RUN"/asks/*.*; do
+    [ -f "$f" ] || continue
+    nm=${f##*/}
+    case $nm in .*) continue ;; esac
+    ch=${nm%.*} id=${nm##*.}
+    is_uint "$id" && [ ${#id} -le 9 ] || continue
+    chan_dir d "$ch" || continue
+    if [ "$CHAN_ID" != lobby ]; then # a finished task has no open questions (a race with close)
+      task_status_v l "$d"
+      [ "$l" = active ] || continue
+    fi
+    printf -v mf '%s/messages/%06d.msg' "$d" "$((10#$id))"
+    [ -f "$mf" ] || continue
+    fr= ep=
+    { # the marker may be gone meanwhile (answered): then it is not open
+      while IFS= read -r l || [ -n "$l" ]; do
+        case $l in
+          'From: '*) fr=${l#From: } ;;
+          'Epoch: '*) ep=${l#Epoch: } ;;
+        esac
+      done <"$f"
+    } 2>/dev/null || continue
+    [ -n "$fr$ep" ] || continue
+    is_uint "$ep" || ep=0
+    AK_CH[AK_N]=$CHAN_ID AK_ID[AK_N]=$((10#$id)) AK_FROM[AK_N]=${fr:-?} AK_EP[AK_N]=$ep AK_FILE[AK_N]=$mf
+    AK_N=$((AK_N + 1))
+  done
+}
+# ask_first_line_v VAR FILE MAX — the first non-blank line of a message body, ≤ MAX
+# characters (UTF-8; cut with "…")
+ask_first_line_v() {
+  local _af_l _af_h=1 _af_r= _af_t
+  while IFS= read -r _af_l || [ -n "$_af_l" ]; do
+    if [ -n "$_af_h" ]; then
+      [ -z "$_af_l" ] && _af_h=
+      continue
+    fi
+    case $_af_l in *[![:space:]]*)
+      _af_r=$_af_l
+      break
+      ;;
+    esac
+  done <"$2"
+  one_line_v _af_r "$_af_r" 100000
+  _af_t=${_af_r//[$'\x80'-$'\xbf']/} # characters: bytes that are not UTF-8 continuations
+  if [ ${#_af_t} -gt "$3" ]; then
+    utf8_cut_v _af_r "$_af_r" $(($3 * 4))
+    while :; do
+      _af_t=${_af_r//[$'\x80'-$'\xbf']/}
+      [ ${#_af_t} -ge "$3" ] || break
+      # one character off: a trailing continuation byte means a multibyte one
+      case $_af_r in
+        *[$'\x80'-$'\xbf'])
+          while :; do
+            case $_af_r in *[$'\x80'-$'\xbf']) _af_r=${_af_r%?} ;; *) break ;; esac
+          done
+          _af_r=${_af_r%?} # its lead byte
+          ;;
+        *) _af_r=${_af_r%?} ;;
+      esac
+    done
+    _af_r="$_af_r…"
+  fi
+  eval "$1=\$_af_r"
+}
+# asks_who_v VAR [AGENT] — "opencode-2 #20 (T004, 55 мин), …" of the open questions
+# (of AGENT only, then without the name); "" if none. After asks_scan; NOW set.
+asks_who_v() {
+  local _aw_i=0 _aw_r= _aw_d _aw_x
+  while [ "$_aw_i" -lt "$AK_N" ]; do
+    if [ -z "${2:-}" ] || [ "${AK_FROM[_aw_i]}" = "$2" ]; then
+      _aw_d=$((NOW - AK_EP[_aw_i]))
+      [ "$_aw_d" -ge 0 ] || _aw_d=0
+      dur_v _aw_d "$_aw_d"
+      _aw_x="#${AK_ID[_aw_i]} (${AK_CH[_aw_i]}, $_aw_d)"
+      [ -n "${2:-}" ] || _aw_x="${AK_FROM[_aw_i]} $_aw_x"
+      _aw_r="$_aw_r${_aw_r:+, }$_aw_x"
+    fi
+    _aw_i=$((_aw_i + 1))
+  done
+  eval "$1=\$_aw_r"
 }
 
 # Cursor (DESIGN §5): "Acked: N" — everything ≤ N handled; "Pending: M" — issued
@@ -1528,12 +1675,12 @@ usage_line_v() { # VAR CMD
     init) _ul_u="bash /путь/к/brigada/bin/brg init [--no-agents-md] [каталог_проекта]" ;;
     join) _ul_u="$BRG join --harness <claude|codex|opencode|…> --model <модель>  |  вернуться под старым именем (ключ будет новый): $BRG join --as <имя> --harness <тот же> [--model <модель>]" ;;
     leave) _ul_u="$BRG leave --as <имя>" ;;
-    send) _ul_u="$BRG send --as <имя> [--to all|<имя>[,<имя>]|human] [--re N] [--reply-by 5m|90s|1h] [--channel lobby|T00N] [--file F] <<'BRG_EOF' … BRG_EOF" ;;
+    send) _ul_u="$BRG send --as <имя> [--to all|<имя>[,<имя>]|human] [--re N] [--ask] [--reply-by 5m|90s|1h] [--channel lobby|T00N] [--file F] <<'BRG_EOF' … BRG_EOF" ;;
     wait) _ul_u="$BRG wait --as <имя> [--timeout S]" ;;
     read) _ul_u="$BRG read --as <имя> [--channel lobby|T00N] [--since N] [--all]" ;;
     who) _ul_u="$BRG who" ;;
     tail) _ul_u="$BRG tail [-f] [-n N] [канал]" ;;
-    say) _ul_u="$BRG say [--to all|<имя>[,<имя>]] [--channel C] [--file F] [текст…]  (без текста — stdin)" ;;
+    say) _ul_u="$BRG say [--to all|<имя>[,<имя>]] [--channel C] [--re N] [--file F] [текст…]  (без текста — stdin)" ;;
     status) _ul_u="$BRG status --as <имя>" ;;
     stop) _ul_u="$BRG stop [<имя>]" ;;
     resume) _ul_u="$BRG resume [<имя>]" ;;
@@ -1555,12 +1702,12 @@ usage_print() {
   case $1 in
     join) echo "Подключиться к бригаде: выдаёт полное имя <харнесс>-<n>.<ключ> (например, claude-1.k7f3q9) — его целиком передавай в --as каждой команды; кто онлайн, активную задачу, таймаут wait и NEXT. --as — вернуться под старым именем, если потерян ключ (тот же харнесс; курсоры сохраняются; ключ новый, прежний перестаёт работать); разрешено, только когда прежняя сессия «выпала» — ни wait, ни вызовов brg дольше max(таймаут wait + 60 с, dropout_after) — или asleep/gone, или после leave." ;;
     leave) echo "Отключиться (тихое системное сообщение в lobby). Живой wait агента завершится на ближайшем тике." ;;
-    send) echo "Отправить сообщение (тело — stdin или --file; CRLF→LF; лимит msg_max_bytes). По умолчанию --to all, канал — активная задача (нет задачи — lobby). --reply-by: по сроку твой wait вернёт сводку, кто ответил." ;;
+    send) echo "Отправить сообщение (тело — stdin или --file; CRLF→LF; лимит msg_max_bytes). По умолчанию --to all, канал — активная задача (нет задачи — lobby). --reply-by: по сроку твой wait вернёт сводку, кто ответил. --ask (с --to human): вопрос человеку — открыт на доске, в who и в терминале brg board, пока его автор (переслав ответ человека) или человек не ответит с --re на него (задай его и текстом в своём чате; ответ получил — перешли суть бригаде с --re N; уточнить — новым --ask)." ;;
     wait) echo "Ждать сообщений (последнее действие каждого шага). Слушает lobby и активную задачу. Всегда код 0, последняя строка — NEXT (кроме STOP/SUPERSEDED)." ;;
     read) echo "Показать сообщения повторно: по умолчанию — после подтверждённых во всех слушаемых каналах (включая выданное последним wait). Курсор не двигает. --since N — в одном канале (по умолчанию — задача). --all — включая чужие личные." ;;
-    who) echo "Кто подключён: имя · харнесс · модель · состояние · когда был активен; активная задача. «без wait N мин» — wait не идёт дольше таймаута wait + 60 с; «возможно выпал» — ни wait, ни вызовов brg дольше dropout_after (по умолчанию 5 мин): модель могла завершить ход — человеку: напиши агенту в его чат «продолжай»." ;;
+    who) echo "Кто подключён: имя · харнесс · модель · состояние · когда был активен; активная задача. «без wait N мин» — wait не идёт дольше таймаута wait + 60 с; «возможно выпал» — ни wait, ни вызовов brg дольше dropout_after (по умолчанию 5 мин): модель могла завершить ход — человеку: напиши агенту в его чат «продолжай». «ждут ответа человека» — открытые вопросы агентов (send --ask): ответь в чате агента или say --to <имя> --re N." ;;
     tail) echo "Переписка в читаемом виде: без канала — lobby и активная задача (следит за сменой задачи); -f — следить (Ctrl-C — выход)." ;;
-    say) echo "Сообщение от human (по умолчанию всем, в канал активной задачи); снимает общий стоп и стоп названных агентов." ;;
+    say) echo "Сообщение от human (по умолчанию всем, в канал активной задачи); снимает общий стоп и стоп названных агентов. --re N — ответ на сообщение #N (на вопрос агента: закрывает его на доске)." ;;
     status) echo "Кто я, задача и моя роль, непрочитанное (без сдвига курсора), мои дедлайны, жив ли мой wait, NEXT. С именем без ключа — только просмотр (не подтверждает, что ты этот агент)." ;;
     stop) echo "Остановить бригаду (или одного агента): wait возвращает STOP сразу и на ближайшем тике; любая команда агента печатает STOP первой строкой; item add|claim|reassign, item review --start и запуск run отказывают." ;;
     resume) echo "Снять стоп (весь или одного агента)." ;;
@@ -1604,8 +1751,9 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
   состояние, отказывают; команды чтения (read, status, who, task/item/run show|list) — принимают
   join --harness <h> --model <m>     подключиться, получить имя (--as <имя> — вернуться под старым)
   wait --as <имя> [--timeout S]      ждать сообщений — последнее действие каждого шага
-  send --as <имя> [--to all|<имя>[,<имя>]|human] [--re N] [--reply-by 5m] [--channel C] [--file F]
-                                     тело — stdin (heredoc) или --file; канал — задача (или lobby)
+  send --as <имя> [--to all|<имя>[,<имя>]|human] [--re N] [--ask] [--reply-by 5m] [--channel C] [--file F]
+                                     тело — stdin (heredoc) или --file; канал — задача (или lobby);
+                                     --ask с --to human — вопрос человеку (открыт, пока нет ответа --re)
   read --as <имя> [--channel C] [--since N] [--all]   показать сообщения повторно (курсор не двигает)
   status --as <имя>                  кто я, задача и роль, непрочитанное, дедлайны, NEXT
   task new --as <имя> --title "…" [--cancel-current] < постановка   создать задачу (ты host и lead)
@@ -1626,7 +1774,7 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
 Человеку:
   init [--no-agents-md] [каталог]    (из репозитория brigada) создать/обновить .brigada/ и блок в AGENTS.md
   board [--interval S] [--once]      доска в браузере: задача, бригада, подзадачи, прогоны, переписка
-  say [--to …] [текст]               сообщение от human (снимает стоп)
+  say [--to …] [--re N] [текст]      сообщение от human (снимает стоп); --re N — ответ на вопрос #N
   tail [-f] [-n N] [канал]           переписка (по умолчанию lobby + активная задача)
   who                                кто подключён; «возможно выпал» — напиши агенту в его чат «продолжай»
   task cancel --as human             отменить активную задачу
@@ -2306,7 +2454,7 @@ dl_split() { # EXPECT REPLIED → DL_YES DL_NO (", "-separated)
 
 # ── send / say ─────────────────────────────────────────────────────────────
 cmd_send() {
-  local to=all re= c= file= d rb= rbs= exp= by= x o od rf t dd
+  local to=all re= c= file= d rb= rbs= exp= by= x o od rf t dd ask=
   NEXT_ON_ERR="исправь команду и повтори: $BRG send --as $AS_HINT [--to all|<имя>|human] <<'BRG_EOF' … BRG_EOF; закончив шаг — $BRG wait --as $AS_HINT"
   while [ $# -gt 0 ]; do
     case $1 in
@@ -2321,6 +2469,10 @@ cmd_send() {
           --reply-by) rb=$2 ;;
         esac
         shift 2
+        ;;
+      --ask) # a question to the human (DESIGN §9.2)
+        ask=1
+        shift
         ;;
       -h | --help)
         usage_print send
@@ -2338,11 +2490,15 @@ cmd_send() {
   d=$CHAN_DIR
   get_now
   check_to "$to" 1
+  if [ -n "$ask" ]; then
+    case ",$TO_NORM," in *,human,*) ;; *) usage_die "--ask — вопрос человеку: нужен --to human (можно вместе с агентами: --to human,codex-1)" ;; esac
+  fi
   if [ -n "$rb" ]; then
     parse_dur_v rbs "$rb" || usage_die "--reply-by — срок вида 90s, 5m, 1h (от 1 с до 24 ч): $rb"
   fi
   if [ -n "$re" ]; then
-    is_uint "$re" || die "--re — номер сообщения: $re"
+    is_uint "$re" && [ ${#re} -le 9 ] || die "--re — номер сообщения: $re"
+    re=$((10#$re))
     printf -v rf '%s/messages/%06d.msg' "$d" "$re"
     if [ ! -f "$rf" ]; then
       # numbering is per channel: point at the other channel if #re is there
@@ -2364,12 +2520,21 @@ cmd_send() {
       MSG_EXTRA="Reply-By: $by${NL}Expect: $exp$NL"
     fi
   fi
+  [ -n "$ask" ] && MSG_EXTRA="${MSG_EXTRA}Ask: yes$NL" && MSG_ASK=1
   msg_write "$c" "$AGENT" "$TO_NORM" msg "$re"
+  MSG_ASK=
   MSG_EXTRA=
   [ -n "$by" ] && dl_register "$c" "$MSG_ID" "$by" "$exp"
   touch_seen
-  metric send id="$MSG_ID" channel="$c" to="$TO_NORM" bytes=$((${#BODY} + 1)) ${by:+reply_by=$by}
+  metric send id="$MSG_ID" channel="$c" to="$TO_NORM" bytes=$((${#BODY} + 1)) ${by:+reply_by=$by} ${ask:+ask=1} ${ASK_CLOSED:+closed=$re}
   echo "── отправлено #$MSG_ID → $TO_NORM ($c)${re:+ · re #$re}"
+  [ -n "$ASK_CLOSED" ] && echo "Вопрос человеку #$re закрыт: на доске он отвечен (этим сообщением)."
+  [ -z "$ASK_CLOSED" ] && [ -n "$re" ] && ask_elsewhere_v x "$c" "$re" && echo "Внимание: #$re в $c — не открытый вопрос, а открытый вопрос #$re — в $x: ответ на него — с --channel $x."
+  if [ -n "$ask" ]; then
+    echo "Вопрос человеку #$MSG_ID открыт: виден на доске, в who и в терминале brg board, пока ты (переслав ответ) или человек не ответит с --re $MSG_ID. Задай его и текстом в своём чате — человек читает чат. Уточнить или добавить — новым вопросом (--ask), не ответом --re."
+    ask_chopt_v x "$c"
+    echo "Получишь ответ в чате — перешли суть бригаде: $BRG send --as $ASN$x --re $MSG_ID <<'BRG_EOF' … BRG_EOF (это и закроет вопрос)."
+  fi
   if [ -n "$by" ]; then
     hm_v t "$by"
     dur_v dd "$rbs"
@@ -2382,15 +2547,16 @@ cmd_send() {
 }
 
 cmd_say() {
-  local to=all c= file= text= have= cleared=
+  local to=all c= file= text= have= cleared= re= rf d x o od
   while [ $# -gt 0 ]; do
     case $1 in
-      --to | --channel | --file)
+      --to | --channel | --file | --re)
         need_val "$@"
         case $1 in
           --to) to=$2 ;;
           --channel) c=$2 ;;
           --file) file=$2 ;;
+          --re) re=$2 ;;
         esac
         shift 2
         ;;
@@ -2419,8 +2585,22 @@ cmd_say() {
   default_channel
   chan_writable "${c:-$DEFCHAN}"
   c=$CHAN_ID
+  d=$CHAN_DIR
   get_now
   check_to "$to" 0
+  if [ -n "$re" ]; then # the human answers a question (DESIGN §9.2)
+    is_uint "$re" && [ ${#re} -le 9 ] || die "--re — номер сообщения: $re"
+    printf -v rf '%s/messages/%06d.msg' "$d" "$((10#$re))"
+    if [ ! -f "$rf" ]; then
+      x=
+      for o in lobby $ACT_ID; do
+        [ "$o" = "$c" ] && continue
+        chan_dir od "$o" && printf -v rf '%s/messages/%06d.msg' "$od" "$((10#$re))" && [ -f "$rf" ] && x=$CHAN_ID
+      done
+      die "в канале $c нет сообщения #$re" ${x:+"#$re есть в $x — ответ туда: добавь --channel $x"}
+    fi
+    re=$((10#$re))
+  fi
   if [ -n "$have" ]; then
     BODY=${text//"$CR"/}
     body_check
@@ -2443,9 +2623,11 @@ cmd_say() {
       fi
     done
   fi
-  msg_write "$c" human "$TO_NORM" msg ""
+  msg_write "$c" human "$TO_NORM" msg "$re"
   metric say id="$MSG_ID" channel="$c" to="$TO_NORM" bytes=$((${#BODY} + 1))
-  echo "── отправлено #$MSG_ID от human → $TO_NORM ($c).$cleared"
+  echo "── отправлено #$MSG_ID от human → $TO_NORM ($c)${re:+ · re #$re}.$cleared"
+  [ -n "$ASK_CLOSED" ] && echo "Вопрос #$re закрыт: на доске он отвечен."
+  [ -z "$ASK_CLOSED" ] && [ -n "$re" ] && ask_elsewhere_v x "$c" "$re" && echo "Внимание: #$re в $c — не открытый вопрос, а открытый вопрос #$re — в $x: ответ на него — с --channel $x."
   [ -n "$TO_WARN" ] && echo "Внимание: $TO_WARN"
   [ -n "$cleared" ] && echo "Остановленные агенты завершили ход — напиши им в харнессе «продолжай»."
   return 0
@@ -2694,6 +2876,18 @@ BRG_WHO_EOF
     dur_v x "$DROPOUT_AFTER"
     echo "── «возможно выпал»: ни wait, ни вызовов brg дольше $x (dropout_after; не меньше таймаута wait + 60 с) — модель могла завершить ход. Человеку: напиши этому агенту в его чат «продолжай»."
   fi
+  # open questions to the human (DESIGN §9.2)
+  asks_scan
+  asks_who_v x
+  if [ -n "$x" ]; then
+    local i=0 ch
+    echo "── ждут ответа человека: $x — ответь в чате агента или командой:"
+    while [ "$i" -lt "$AK_N" ]; do
+      ask_chopt_v ch "${AK_CH[i]}"
+      echo "   $BRG say --to ${AK_FROM[i]}$ch --re ${AK_ID[i]} \"ответ\""
+      i=$((i + 1))
+    done
+  fi
   if active_task && task_read "$ACT_DIR"; then
     echo "── задача $ACT_ID «$TK_TITLE» · host $TK_HOST · lead $TK_LEAD"
   else
@@ -2724,7 +2918,7 @@ my_deadlines_lines() {
 }
 
 cmd_status() {
-  local T hint c d online new q pend_from nt idle
+  local T hint c d online new q pend_from nt idle x
   NEXT_ON_ERR=
   while [ $# -gt 0 ]; do
     case $1 in
@@ -2796,6 +2990,23 @@ cmd_status() {
   done
   FMT_COUNTONLY=
   my_deadlines_lines
+  asks_scan
+  asks_who_v x "$AGENT"
+  if [ -n "$x" ]; then
+    if [ -n "$AS_NOKEY" ]; then
+      echo "Вопросы человеку от $AGENT (открыты): $x"
+    else
+      echo "Мои вопросы человеку (открыты): $x — получил ответ в чате — перешли суть бригаде (это закроет вопрос):"
+      local i=0 ch
+      while [ "$i" -lt "$AK_N" ]; do
+        if [ "${AK_FROM[i]}" = "$AGENT" ]; then
+          ask_chopt_v ch "${AK_CH[i]}"
+          echo "   #${AK_ID[i]}: $BRG send --as $ASN$ch --re ${AK_ID[i]} <<'BRG_EOF' … BRG_EOF"
+        fi
+        i=$((i + 1))
+      done
+    fi
+  fi
   online_v online "$AGENT"
   echo "Онлайн: ${online:-никого}"
   metric status
@@ -3615,6 +3826,7 @@ task_do_cancel() {
   task_runs_v r "$ACT_DIR"
   task_cancel_items "$ACT_DIR" "$1"
   task_release_reservations "$ACT_DIR"
+  rm -f "$RUN/asks/$ACT_ID".* 2>/dev/null # its open questions to the human (DESIGN §9.2)
   [ -n "$r" ] && task_stop_runs "$ACT_DIR" "$1" "при отмене задачи $ACT_ID" "$r"
   NOW=$t ISO=$i
   TD_DIR=$ACT_DIR TD_RUNS=$r
@@ -3734,7 +3946,7 @@ task_new() {
   case $cleared in *me) echo "Стоп, поставленный тебе человеком, снят: он дал новую задачу." ;; esac
   echo "Как работать — решаете сообща; проверенный порядок (PROTOCOL.md, не обязателен): перекличка с --reply-by 10m (каждый один раз ответит: модель, сильные стороны, загрузка), затем план в shared/plan.md."
   echo "Lead — фасилитатор: план и подзадачи — вместе с бригадой, работу раздай участникам. Ты, как и все, только координатор: исследование и любую работу по своей части делает твой подагент — одновременно один; больше — только с разрешения человека; сам держи цикл wait. Как проверять подзадачи (другим участником — рекомендуется) — решаете сами; обязательно одно: стадии подзадач в brg — как на деле, человек смотрит их на доске (README, раздел 5)."
-  echo "Человек читает твой чат, а не переписку brg: отчёты и вопросы ему пиши обычным текстом в своём чате перед очередным wait (копия для протокола — send --to human)."
+  echo "Человек читает твой чат, а не переписку brg: отчёты и вопросы ему пиши обычным текстом в своём чате перед очередным wait (копия для протокола — send --to human). Вопрос — ещё и send --to human --ask: он виден человеку на доске, пока на него не ответят (ответ получил — перешли суть бригаде с --re N)."
   fit_warn_print
   echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
 }
@@ -3858,6 +4070,7 @@ task_close() {
   [ -n "$r" ] && task_stop_runs "$ACT_DIR" "$AGENT" "при закрытии задачи $ACT_ID (--force)" "$r"
   NOW=$t ISO=$x
   task_release_reservations "$ACT_DIR"
+  rm -f "$RUN/asks/$ACT_ID".* 2>/dev/null # its open questions to the human (DESIGN §9.2)
   TK_STATUS=done TK_CLOSED=$ISO TK_CLOSED_EPOCH=$NOW TK_CLOSED_BY=$AGENT
   task_write "$ACT_DIR"
   rm -f "$ROOT/tasks/active"
@@ -7344,7 +7557,7 @@ board_cache_write() { # DIR ID
 
 # board_tick — run/board/data.js: agents, tasks, the current task, lobby, meta
 board_tick() {
-  local n d x drop st
+  local n d x drop st kp i k ch
   get_now
   board_tasks
   board_cache
@@ -7356,6 +7569,7 @@ board_tick() {
   bjo "["
   for n in $AGENT_NAMES; do
     agent_state "$n"
+    kp=${P_KEY:0:3} # a prefix of the key (DESIGN 9.2) to find the window of the agent; never the key
     idle_note_v x "$n" " · "
     x=${x# · }
     drop=0
@@ -7365,6 +7579,7 @@ board_tick() {
     bjo "{"
     bjo "R$US$ROOT/agents/$n${US}Key" # the session key is shown only to the agent itself (§3)
     bjs name "$n"
+    bjs kp "$kp"
     bjs state "$ST"
     bjn seen "$ST_SEEN"
     bjs note "$x"
@@ -7396,6 +7611,31 @@ board_tick() {
   fi
   bjk lobby
   board_msgs "$ROOT/lobby" lobby
+  # open questions to the human (DESIGN §9.2): the message records, + chan
+  asks_scan
+  bjk asks
+  bjo "["
+  i=0
+  while [ "$i" -lt "$AK_N" ]; do
+    bjo "{"
+    bjo "R$US${AK_FILE[i]}$US"
+    bjs chan "${AK_CH[i]}"
+    bjo "}"
+    # the terminal of brg board: one line per new question (all at the start)
+    k="${AK_CH[i]}.${AK_ID[i]}"
+    case " $B_ASKS_SEEN " in
+      *" $k "*) ;;
+      *)
+        B_ASKS_SEEN="$B_ASKS_SEEN $k"
+        ask_first_line_v x "${AK_FILE[i]}" 120
+        ch=
+        [ "${AK_CH[i]}" = lobby ] && active_task && ch=" --channel lobby"
+        echo "── вопрос человеку от ${AK_FROM[i]} (#${AK_ID[i]}, ${AK_CH[i]}): $x — ответь в его чате или: brg say --to ${AK_FROM[i]}$ch --re ${AK_ID[i]} …"
+        ;;
+    esac
+    i=$((i + 1))
+  done
+  bjo "]"
   bjk meta
   bjo "{"
   bjn time "$NOW"
@@ -7430,6 +7670,7 @@ board_quit() {
 cmd_board() {
   local once= url x u
   B_INT=2
+  B_ASKS_SEEN= # questions already shown in the terminal
   while [ $# -gt 0 ]; do
     case $1 in
       --interval)

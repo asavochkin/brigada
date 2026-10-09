@@ -17,7 +17,7 @@
   --bg: #f4f5f7; --panel: #ffffff; --sunken: #eef0f3; --fg: #1a2130; --muted: #5d6676; --faint: #8b93a2;
   --line: #e1e4ea; --line2: #d0d5dd; --accent: #2b6cd4; --accentbg: #e7effc;
   --ok: #1b7f47; --okbg: #e3f3e9; --warn: #995a00; --warnbg: #fcf1dc; --bad: #bf342e; --badbg: #fbe8e7;
-  --rev: #6e46c6; --revbg: #efe9fb; --human: #c98500; --humanbg: #fff8e7; --humanline: #f0dcaa;
+  --rev: #6e46c6; --revbg: #efe9fb; --human: #c98500; --humanbg: #fff8e7; --humanline: #f0dcaa; --humanink: #8a5800;
   --code: #f2f4f7; --shadow: 0 1px 2px rgba(20, 28, 45, .06);
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
@@ -33,7 +33,7 @@
     --bg: #0f1115; --panel: #181b21; --sunken: #13151a; --fg: #e3e6eb; --muted: #9ba3b2; --faint: #6e7686;
     --line: #272c35; --line2: #343a46; --accent: #6ea0ff; --accentbg: #1a2740;
     --ok: #55c486; --okbg: #14291c; --warn: #e6aa48; --warnbg: #2d2410; --bad: #f2776f; --badbg: #351a1a;
-    --rev: #b39fff; --revbg: #231d37; --human: #e8aa2c; --humanbg: #231e12; --humanline: #4c3d1b;
+    --rev: #b39fff; --revbg: #231d37; --human: #e8aa2c; --humanbg: #231e12; --humanline: #4c3d1b; --humanink: #f3c565;
     --code: #121419; --shadow: none;
   }
   .c0 { --c: #3d7be3; --ct: #8db3ff; } .c1 { --c: #12968a; --ct: #5fd4c5; }
@@ -92,11 +92,11 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
 /* layout: the task on the left, the chat on the right */
 main {
   display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 33%);
-  grid-template-rows: auto auto auto auto auto 1fr;
+  grid-template-rows: auto auto auto auto auto auto 1fr;
   gap: 16px 20px; padding: 16px 20px 28px; max-width: 1720px; margin: 0 auto;
 }
 main > .sec { grid-column: 1; min-width: 0; align-self: start; }
-#s-msgs { grid-column: 2; grid-row: 1 / span 6; min-width: 0; }
+#s-msgs { grid-column: 2; grid-row: 1 / span 7; min-width: 0; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); }
 h2 {
   display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px;
@@ -131,6 +131,20 @@ h2 .cnt { font-weight: 500; letter-spacing: 0; text-transform: none; color: var(
 .chip.sm .nm { font-size: 12.5px; }
 .lnk { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; text-align: left; }
 .lnk:hover { text-decoration: underline; }
+.pill.hum { background: var(--humanbg); color: var(--humanink); box-shadow: inset 0 0 0 1px var(--humanline); }
+button.pill { border: 0; cursor: pointer; font-family: inherit; }
+button.pill:hover { text-decoration: underline; }
+
+/* questions to the human (DESIGN §9.2) */
+.panel.asks { background: var(--humanbg); border-color: var(--humanline); box-shadow: inset 4px 0 0 var(--human), var(--shadow); }
+.asks h2 { color: var(--humanink); }
+.asks h2 .cnt { color: var(--humanink); font-weight: 650; }
+.ask + .ask { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--humanline); }
+.ask .ah { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12.5px; color: var(--muted); }
+.ask .askb { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; line-height: 1.5; font-size: 14px; }
+.ask .askb.clip { max-height: 4.5em; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent); mask-image: linear-gradient(to bottom, #000 60%, transparent); }
+.ask .where { margin-top: 6px; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.ask .where code { background: var(--panel); padding: 1px 6px; border-radius: 5px; color: var(--fg); }
 
 /* task */
 .thead { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 16px; }
@@ -177,6 +191,9 @@ h2 .cnt { font-weight: 500; letter-spacing: 0; text-transform: none; color: var(
 .ab .l2 .revw { color: var(--rev); font-weight: 600; }
 .role { font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 1px 5px; border-radius: 5px; background: var(--sunken); color: var(--muted); }
 .role.stop { background: var(--badbg); color: var(--bad); }
+.role.ask { background: var(--humanbg); color: var(--humanink); box-shadow: inset 0 0 0 1px var(--humanline); text-transform: none; letter-spacing: 0; font-size: 11px; }
+.achip.asking { border-color: var(--human); }
+.kp { font-family: var(--mono); font-size: 10.5px; color: var(--faint); cursor: help; }
 .warns { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .wline { padding: 7px 12px; border-radius: 10px; background: var(--warnbg); color: var(--fg); font-size: 13px; overflow-wrap: anywhere; }
 .wline b { color: var(--warn); }
@@ -303,7 +320,7 @@ pre {
 @media (max-width: 1240px) {
   main { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
   #s-msgs { grid-column: 1; grid-row: auto; }
-  #s-task { order: 1; } #s-agents { order: 2; } #s-kanban { order: 3; } #s-msgs { order: 4; }
+  #s-asks { order: 0; } #s-task { order: 1; } #s-agents { order: 2; } #s-kanban { order: 3; } #s-msgs { order: 4; }
   #s-runs { order: 5; } #s-docs { order: 6; } #s-tasks { order: 7; }
   .msgpane { position: static; height: auto; min-height: 0; }
   #msglist { max-height: 75vh; }
@@ -330,6 +347,7 @@ pre {
 </header>
 <div id="banners"></div>
 <main>
+  <section id="s-asks" class="sec hide"></section>
   <section id="s-task" class="sec hide"></section>
   <section id="s-agents" class="sec hide"></section>
   <section id="s-kanban" class="sec hide"></section>
@@ -595,7 +613,6 @@ pre {
   // ── header ──
   function renderHead(v) {
     $("proj").textContent = v.project || "brigada";
-    document.title = (v.project ? v.project + " — " : "") + "brigada";
     var sel = $("tasksel");
     clear(sel);
     var o = el("option", null, "текущая задача" + (v.curId ? " · " + v.curId : ""));
@@ -635,6 +652,47 @@ pre {
     if (v.stale) add(line("warn", "Доска не обновляется:", " последний снимок "), live("ago", v.time), " — brg board остановлен? ", el("code", null, RUN_CMD));
     if (v.stop) add(line("stop", "STOP", " — человек остановил бригаду. Снять: "), el("code", null, "brg resume"));
     if (v.stopped.length) add(line("warn", "Остановлены агенты:", " " + v.stopped.join(", ") + " — снять: "), el("code", null, "brg resume <имя>"));
+  }
+
+  // ── questions to the human (DESIGN §9.2): open ones, oldest first ──
+  function renderAsks(v) {
+    var box = $("s-asks");
+    clear(box);
+    if (!v.asks.length) { box.className = "sec hide"; return; }
+    box.className = "sec panel asks";
+    head(box, "Ждут вашего ответа", String(v.asks.length));
+    v.asks.forEach(function (q) {
+      var e = el("div", "ask " + colorCls(q.from)), key = "ask:" + q.chan + ":" + q.id;
+      var go = btn("lnk", "#" + q.id, function () {
+        // show the question in the chat: its channel, then the message
+        S.msgTab = q.chan === "lobby" ? "lobby" : "task";
+        if (q.chan !== "lobby" && q.chan !== v.vid) { location.hash = q.chan === v.curId ? "" : q.chan; return; }
+        render();
+        jump(q.chan, q.id);
+      });
+      go.title = "показать в переписке";
+      e.appendChild(add(el("div", "ah"), chip(q.from || "?", "sm"), q.epoch ? live("ago", q.epoch) : null,
+        pill(q.chan === "lobby" ? "lobby" : "задача " + q.chan), go));
+      var body = String(q.b || "").replace(/\s+$/, ""), qb = el("div", "askb", body);
+      e.appendChild(qb);
+      if (body.length > 240 || body.split("\n").length > 3) {
+        var x = el("button", "lnk mexp");
+        var sync = function () {
+          qb.className = "askb" + (S.open[key] ? "" : " clip");
+          x.textContent = S.open[key] ? "свернуть" : "показать целиком";
+        };
+        x.type = "button";
+        x.addEventListener("click", function () { S.open[key] = !S.open[key]; sync(); });
+        sync();
+        e.appendChild(x);
+      }
+      var kp = v.kp[q.from], w1 = add(el("div", "where"), "Ответить: в чате ", el("b", null, q.from));
+      if (kp) add(w1, " — в окне агента ищи «", el("code", null, q.from + "." + kp), "»");
+      e.appendChild(w1);
+      var cmd = "brg say --to " + q.from + " --re " + q.id + (q.chan !== v.defChan ? " --channel " + q.chan : "") + " …";
+      e.appendChild(add(el("div", "where"), "или: ", el("code", null, cmd)));
+      box.appendChild(e);
+    });
   }
 
   // ── task: title, status, roles, progress ──
@@ -703,11 +761,19 @@ pre {
       if (a.name === v.host) roles.push("host");
       if (a.name === v.lead) roles.push("lead");
       var busy = roles.length || w.doing.length || w.fixing.length || w.reviewing.length;
-      var c = el("div", "achip " + colorCls(a.name) + " s-" + a.state + (a.drop ? " drop" : "") + (a.state === "gone" && !busy ? " dim" : ""));
+      var asks = v.asking[a.name] || [];
+      var c = el("div", "achip " + colorCls(a.name) + " s-" + a.state + (a.drop ? " drop" : "") + (asks.length ? " asking" : "") +
+        (a.state === "gone" && !busy && !asks.length ? " dim" : ""));
       c.appendChild(add(el("span", "avw"), el("span", "av", initials(a.name)), el("span", "sdot")));
       var l1 = add(el("span", "l1"), el("span", "nm", a.name));
+      if (a.kp) { // the key prefix: the human finds the agent's window by "name.kp" (DESIGN §9.2)
+        var kp = el("span", "kp", a.kp + "…");
+        kp.title = "в окне агента ищи " + a.name + "." + a.kp;
+        l1.appendChild(kp);
+      }
       roles.forEach(function (r) { l1.appendChild(el("span", "role", r)); });
       if (a.stopped) l1.appendChild(el("span", "role stop", "stop"));
+      if (asks.length) { var ra = el("span", "role ask", "ждёт вашего ответа"); ra.title = "вопрос " + asks.join(", "); l1.appendChild(ra); }
       var l2 = add(el("span", "l2"), STATE_RU[a.state] || a.state);
       function part(label, ids, cls) { if (ids.length) add(l2, " · ", el("span", cls, label + " " + (v.pfx ? v.pfx + ": " : "") + ids.join(", "))); }
       part("делает", w.doing, "doing");
@@ -985,6 +1051,16 @@ pre {
     if (id) b.id = "m-" + chan + "-" + id;
     var h = add(el("div", "mh"), chip(from || "?", "sm"), recips(to));
     if (to.length && to.indexOf("all") < 0) h.appendChild(pill("лично"));
+    if (hv(m, "Ask") === "yes") { // a question to the human: open / answered #M (DESIGN §9.2)
+      h.appendChild(pill("вопрос человеку", "hum"));
+      var ans = v.reBy[String(id)];
+      if (ans) {
+        var ab = btn("pill ok", "отвечен #" + ans, function () { jump(chan, ans); });
+        ab.title = "перейти к ответу #" + ans;
+        h.appendChild(ab);
+      } else if (!v.asks || v.asks.indexOf(chan + ":" + id) >= 0) h.appendChild(pill("открыт", "warn"));
+      else h.appendChild(pill("снят без ответа"));
+    }
     var dl = deadline(m, v.msgs);
     if (dl) {
       var past = now() >= dl.rb, t = (past ? "срок " + hm(dl.rb) + " истёк" : "ответ до " + hm(dl.rb));
@@ -997,7 +1073,7 @@ pre {
     h.appendChild(w);
     b.appendChild(h);
     if (/^\d+$/.test(re)) {
-      var q = byId[re], qb = btn("quote", null, function () { jump(chan, re); });
+      var q = byId[String(num(re))], qb = btn("quote", null, function () { jump(chan, re); });
       add(qb, el("span", "qn", "↩ #" + re), q ? hv(q, "From") + ": " + (firstLine(q.b, QUOTE) || "…") : "(сообщение не в снимке)");
       qb.title = "перейти к #" + re;
       b.appendChild(qb);
@@ -1042,8 +1118,14 @@ pre {
     var atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40, top = box.scrollTop;
     clear(box);
     tr.textContent = v.trunc ? "показаны последние " + v.trunc.shown + " из " + v.trunc.total + " сообщений" : "";
-    var byId = {};
-    v.msgs.forEach(function (m) { var id = hv(m, "Id"); if (id) byId[id] = m; });
+    var byId = {}, reBy = {}; // reBy: id → the first message of the channel with Re on it from the human or the message author (an answer, DESIGN §9.2)
+    v.msgs.forEach(function (m) {
+      var id = hv(m, "Id"), re = hv(m, "Re");
+      if (id) byId[String(num(id))] = m;
+      var q = byId[String(num(re))], fr = hv(m, "From");
+      if (id && /^\d+$/.test(re) && !reBy[String(num(re))] && (fr === "human" || (q && hv(q, "From") === fr))) reBy[String(num(re))] = num(id);
+    });
+    v.reBy = reBy;
     var shown = v.msgs.filter(function (m) {
       if (v.hideSys && hv(m, "Kind") === "system") return false;
       if (v.agent && hv(m, "From") !== v.agent && names(hv(m, "To")).indexOf(v.agent) < 0) return false;
@@ -1066,7 +1148,8 @@ pre {
     var cur = d && d.current, curId = cur ? cur.id : "";
     var agents = ((d && d.agents) || []).map(function (a) {
       return { name: a.name, harness: hv(a, "Harness"), model: hv(a, "Model"), state: a.state, seen: a.seen || 0,
-        note: a.note || "", drop: !!a.drop, stopped: !!a.stopped, joined: num(hv(a, "Joined-Epoch")) };
+        note: a.note || "", drop: !!a.drop, stopped: !!a.stopped, joined: num(hv(a, "Joined-Epoch")),
+        kp: typeof a.kp === "string" ? a.kp : "" };
     }).sort(function (a, b) { return (a.state === "gone") - (b.state === "gone") || natcmp(a.name, b.name); });
     setColors(agents);
     var cs = S.csig;
@@ -1080,13 +1163,24 @@ pre {
     sec("fresh", { hasData: !!d, stale: stale, time: meta.time || 0, version: meta.version || "", interval: interval }, renderFresh);
     sec("banners", { hasData: !!d, err: S.err, stale: stale, time: meta.time || 0, stop: !!meta.stop, stopped: meta.stopped || [] }, renderBanners);
 
+    // open questions to the human (DESIGN §9.2): "asks" of the snapshot; an older brg has none
+    var cth = cur && cur.task ? cur.task.h : null, cActive = !!cth && cth.Status === "active";
+    var hasAsks = !!d && Array.isArray(d.asks), asking = {}, kps = {};
+    var asks = (hasAsks ? d.asks : []).filter(function (x) { return x && x.h && num(hv(x, "Id")); }).map(function (x) {
+      return { id: num(hv(x, "Id")), chan: typeof x.chan === "string" && x.chan ? x.chan : hv(x, "Channel"), from: hv(x, "From"),
+        epoch: num(hv(x, "Epoch")), b: x.b || "" };
+    }).sort(function (a, b) { return (a.epoch - b.epoch) || (a.id - b.id); });
+    asks.forEach(function (q) { (asking[q.from] = asking[q.from] || []).push("#" + q.id); });
+    agents.forEach(function (a) { if (a.kp) kps[a.name] = a.kp; });
+    document.title = (asks.length ? "(" + asks.length + ") " : "") + (meta.project ? meta.project + " — " : "") + "brigada";
+    sec("asks", { asks: asks, kp: kps, defChan: cActive ? curId : "lobby", vid: tid, curId: curId, cs: cs }, renderAsks);
+
     var counts = { todo: 0, work: 0, review: 0, done: 0, cancelled: 0, other: 0 };
     items.forEach(function (i) { counts[i.st.col]++; });
     sec("task", { th: th, vid: tid, isCur: v ? v.isCur : true, missing: v ? v.missing || "" : "", hasData: !!d,
       counts: counts, closed: closed, cs: cs }, renderTask);
 
     // the brigade now: roles and work come from the current task while it is active
-    var cth = cur && cur.task ? cur.task.h : null, cActive = !!cth && cth.Status === "active";
     var cItems = !cActive ? [] : v && v.isCur ? items : (cur.items || []).filter(Boolean).map(itemOf);
     var work = {}, bad = {}, byItem = {};
     function w(n) { return work[n] || (work[n] = { doing: [], fixing: [], reviewing: [] }); }
@@ -1096,7 +1190,7 @@ pre {
     });
     agents.forEach(function (a) { if (a.state === "gone") bad[a.name] = "ушёл"; else if (a.drop) bad[a.name] = "возможно выпал"; });
     runs.forEach(function (r) { if (r.item) (byItem[r.item] = byItem[r.item] || []).push([r.id, r.status]); });
-    sec("agents", { agents: agents, host: cActive ? cth.Host || "" : "", lead: cActive ? cth.Lead || "" : "", work: work, pfx: cActive && v && !v.isCur ? curId : "", hasData: !!d, cs: cs }, renderAgents);
+    sec("agents", { agents: agents, host: cActive ? cth.Host || "" : "", lead: cActive ? cth.Lead || "" : "", work: work, pfx: cActive && v && !v.isCur ? curId : "", asking: asking, hasData: !!d, cs: cs }, renderAgents);
     sec("kanban", { items: items, runs: byItem, bad: isLive ? bad : {}, hasTask: !!t, tid: tid, live: isLive, closed: closed,
       closedAt: closed ? num(th["Closed-Epoch"]) : 0, cs: cs }, renderKanban);
     sec("runs", { runs: runs, hasTask: !!t, tid: tid, cs: cs }, renderRuns);
@@ -1112,7 +1206,8 @@ pre {
     var expired = msgs.filter(function (m) { var rb = num(hv(m, "Reply-By")); return rb && now() >= rb; }).length;
     var first = S.msgChan !== chan;
     S.msgChan = chan;
-    sec("msgs", { chan: chan, msgs: msgs, agent: S.agent, hideSys: S.hideSys, trunc: tr || null, expired: expired, first: first, cs: cs }, renderMsgs);
+    sec("msgs", { chan: chan, msgs: msgs, agent: S.agent, hideSys: S.hideSys, trunc: tr || null, expired: expired, first: first,
+      asks: hasAsks ? asks.map(function (q) { return q.chan + ":" + q.id; }) : null, cs: cs }, renderMsgs);
 
     sec("docs", { tab: S.docTab, hasTask: !!t, closed: closed, docs: t ? { brief: t.brief, plan: t.plan, summary: t.summary } : {} }, renderDocs);
     sec("tasks", { tasks: tasks, vid: tid, curId: curId }, renderTasks);
