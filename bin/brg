@@ -17,7 +17,7 @@ _brg_crlf=x
 case ${#_brg_crlf} in 1) ;; *) printf '%s\n' "brg: ОШИБКА: у файла $0 окончания строк CRLF (Windows) — bash его не выполнит." "Причина — git с core.autocrlf=true. Это .brigada/bin/brg — переустанови: bash <brigada>/bin/brg init <проект>. Это сам репозиторий brigada — удали bin/brg и восстанови: git checkout -- bin/brg (по .gitattributes он запишется с LF) или скачай brigada заново. Проверка: bash <brigada>/bin/brg doctor <проект>." >&2; exit 2 ;; esac #
 unset _brg_crlf
 
-BRG_VERSION=0.4.1
+BRG_VERSION=0.5.0
 # the caller's locale, restored for commands started by `brg run`
 _brg_lc_set=${LC_ALL+1}
 _brg_lc=${LC_ALL-}
@@ -793,14 +793,15 @@ stop_banner() {
   STOP_SHOWN=1
   echo "── STOP: человек остановил $w. Новую работу не начинай: сдай сделанное, если нужно (send, item done), и заверши ход."
 }
-# stop_refuse WHAT — commands that start work (item add|claim|reassign, run) are
-# refused while stopped; NEXT is "end the turn": wait would only return STOP.
+# stop_refuse WHAT — commands that start work (item add|claim|reassign, item review
+# --start, run) are refused while stopped; NEXT is "end the turn": wait would only
+# return STOP.
 stop_refuse() {
   local w
   stop_who_v w || return 0
   NEXT_ON_ERR="заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
   die "человек остановил $w — $1 не выполнено: при стопе новую работу не начинают" \
-    "Можно сдать сделанное и сообщить: send, item done|release|review, task close. Стоп снимает только человек."
+    "Можно сдать сделанное и сообщить: send, item done|release, item review --verdict, task close. Стоп снимает только человек."
 }
 
 touch_seen() { # [NAME] — Last-Seen := now (not for a read command without the key)
@@ -1504,7 +1505,16 @@ body_check() { # [KIND]
     fi
     return 0
   fi
-  case $BODY in *[![:space:]]*) ;; *) die "пустое сообщение" ;; esac
+  case $BODY in
+    *[![:space:]]*) ;;
+    *)
+      if [ "${1:-msg}" = opt ]; then # an optional text (a comment): empty is no text
+        BODY=
+        return 0
+      fi
+      die "пустое сообщение"
+      ;;
+  esac
   if [ $((${#BODY} + 1)) -gt "$MSG_MAX" ]; then
     die "сообщение $((${#BODY} + 1)) байт — больше лимита $MSG_MAX (msg_max_bytes)" \
       "Положи текст в файл (в задаче — в её shared/, иначе $RROOT/common/<тема>.md) и пришли путь."
@@ -1530,7 +1540,7 @@ usage_line_v() { # VAR CMD
     task) _ul_u="$BRG task new --as <имя> --title \"…\" [--cancel-current] [--file F] <<'BRG_EOF' постановка BRG_EOF | task close --as <lead> [--force] | task cancel --as <host|lead|human> | task show [T00N] | task list" ;;
     lead) _ul_u="$BRG lead give <имя> --as <lead> | lead take --as <имя>" ;;
     host) _ul_u="$BRG host give <имя> --as <host> | host take --as <имя>" ;;
-    item) _ul_u="$BRG item add --as <имя> --title \"…\" [--desc \"описание\" | --file F | <<'BRG_EOF' описание BRG_EOF] [--paths \"предлагаемые пути\"] | item claim I00N --as <имя> [--paths \"src/a,tests/a\"|none] | item done I00N --as <имя> [--note \"итог\"] [--result <путь>] | item release I00N --as <имя> | item reassign I00N --to <имя> --as <lead> | item review I00N --as <имя> --verdict ok|changes [--comment \"…\" | --file F | <<'BRG_EOF' комментарий BRG_EOF] | item list [--as <имя> --mine] [--status todo,claimed,done,cancelled] | item show I00N" ;;
+    item) _ul_u="$BRG item add --as <имя> --title \"…\" [--desc \"описание\" | --file F | <<'BRG_EOF' описание BRG_EOF] [--paths \"предлагаемые пути\"] [--no-review] | item claim I00N --as <имя> [--paths \"src/a,tests/a\"|none] | item done I00N --as <имя> [--note \"итог\"] [--result <путь>] [--no-review] | item release I00N --as <имя> | item reassign I00N --to <имя> --as <lead> | item review I00N --as <имя> --start | item review I00N --as <имя> --verdict ok|changes [--comment \"…\" | --file F | <<'BRG_EOF' комментарий BRG_EOF] | item review I00N --as <имя> --verdict skip [--comment \"почему\" | --file F] | item cancel I00N --as <имя> [--comment \"почему\" | --file F] | item list [--as <имя> --mine] [--status todo,claimed,done,cancelled] | item show I00N" ;;
     run) _ul_u="$BRG run --as <имя> [--sync] [--timeout 10m] [--item I00N] -- <команда> [аргументы…]  |  run list · run show R00N · run cancel R00N --as <имя>" ;;
     doctor) _ul_u="$BRG doctor  |  из репозитория brigada: bash /путь/к/brigada/bin/brg doctor [каталог_проекта]" ;;
     board) _ul_u="$BRG board [--interval S] [--once]" ;;
@@ -1552,7 +1562,7 @@ usage_print() {
     tail) echo "Переписка в читаемом виде: без канала — lobby и активная задача (следит за сменой задачи); -f — следить (Ctrl-C — выход)." ;;
     say) echo "Сообщение от human (по умолчанию всем, в канал активной задачи); снимает общий стоп и стоп названных агентов." ;;
     status) echo "Кто я, задача и моя роль, непрочитанное (без сдвига курсора), мои дедлайны, жив ли мой wait, NEXT. С именем без ключа — только просмотр (не подтверждает, что ты этот агент)." ;;
-    stop) echo "Остановить бригаду (или одного агента): wait возвращает STOP сразу и на ближайшем тике; любая команда агента печатает STOP первой строкой; item add|claim|reassign и запуск run отказывают." ;;
+    stop) echo "Остановить бригаду (или одного агента): wait возвращает STOP сразу и на ближайшем тике; любая команда агента печатает STOP первой строкой; item add|claim|reassign, item review --start и запуск run отказывают." ;;
     resume) echo "Снять стоп (весь или одного агента)." ;;
     init) echo "Создать/обновить <проект>/.brigada: bin/brg, README.md, PROTOCOL.md, board.html, config.default, VERSION; состояние и config не трогает. В корне проекта дописывает (или обновляет) короткий блок brigada в AGENTS.md (нет — создаёт и исключает из git) и в CLAUDE.md, если он есть и не импортирует AGENTS.md: тогда агенту достаточно сказать «подключись к бригаде». --no-agents-md — эти файлы не трогать." ;;
     task)
@@ -1561,9 +1571,11 @@ usage_print() {
       ;;
     lead | host) echo "Роль в активной задаче: give — передать (только текущий $1); take — взять, если текущий $1 asleep/gone." ;;
     item)
-      echo "Подзадачи активной задачи: add — добавить (todo; описание — --desc \"…\", stdin (heredoc) или --file; --paths — предлагаемые пути); claim — взять в работу с резервированием путей (--paths относительно корня проекта, через запятую; none — без правок файлов; без --paths — предлагаемые пути подзадачи; пересечение с чужими резервированиями — отказ, со своими (другие твои подзадачи) — предупреждение); повторный claim своей — сменить пути."
-      echo "done — готово (только исполнитель; снимает резервирования; --note — итог одной строкой до 500 байт, --result — файл с подробностями); release — вернуть в todo (исполнитель; lead — если исполнитель asleep/gone); reassign — передать другому (lead, если исполнитель asleep/gone)."
-      echo "review — ревью (не исполнитель; лучше агент другой модели): --verdict ok|changes, комментарий — --comment \"…\", stdin (heredoc) или --file; результат получают исполнитель и lead. list/show — посмотреть."
+      echo "Подзадачи активной задачи. Как работать — решает бригада; обязательно одно: стадия подзадачи в brg (её видит человек на доске) — такая, как на деле. Переводят её этими командами."
+      echo "add — добавить (todo; описание — --desc \"…\", stdin (heredoc) или --file; --paths — предлагаемые пути; --no-review — проверка не нужна, решили заранее); claim — взять в работу с резервированием путей (--paths относительно корня проекта, через запятую; none — без правок файлов; без --paths — предлагаемые пути подзадачи; пересечение с чужими резервированиями — отказ, со своими (другие твои подзадачи) — предупреждение); повторный claim своей — сменить пути; claim исполнителем сданной (done) — вернуть её в работу (правки, переделка; прежние пути)."
+      echo "done — сдать (только исполнитель; снимает резервирования; --note — итог одной строкой до 500 байт, --result — файл с подробностями): «на проверке», «готово» — после ревью ok; --no-review — сдать без проверки (сразу «готово · без проверки»). release — вернуть в todo (исполнитель; lead — если исполнитель asleep/gone); reassign — передать другому (lead, если исполнитель asleep/gone; так же — правки сданной). cancel — подзадача не нужна (todo — любой; в работе или сданная — исполнитель или lead; --comment или --file — почему, необязательно): «отменено», назад пути нет."
+      echo "review — проверка: --start — «взялся проверять» (не исполнитель; видно в сводке wait и item list; текста нет, stdin не читается); --verdict ok|changes — вердикт (не исполнитель; лучше агент другой модели), комментарий — --comment \"…\", stdin (heredoc) или --file; --verdict skip — проверка не нужна (любой, и исполнитель; комментарий необязателен — --comment или --file). Вердикт по сданной заканчивает круг проверки (Reviewing очищается). Результат получают исполнитель и lead. После changes исполнитель возвращает сданную подзадачу в работу тем же claim, правит и снова done."
+      echo "list/show — посмотреть: стадия (todo · в работе · на проверке · правки · готово · отменено), кто проверяет; list --status — по статусу (todo, claimed, done, cancelled)."
       echo "Длинные --title, --note, --desc, --comment не отвергаются, а обрезаются с пометкой «…(обрезано)» и предупреждением."
       ;;
     run)
@@ -1600,10 +1612,12 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
   task close --as <lead> [--force]   закрыть (нужен summary.md) · task cancel --as <host|lead>
   task show [T00N] · task list       задача: роли, пути, постановка · все задачи
   lead give <имя> --as <lead> · lead take --as <имя>   (то же: host give|take)
-  item add --as <имя> --title "…" [--desc "…"] [--paths "…"] < описание   подзадача (todo)
-  item claim I00N --as <имя> [--paths "src/a,tests/a"|none]   взять, зарезервировать пути
-  item done|release I00N --as <имя> · item reassign I00N --to <имя> --as <lead>
-  item review I00N --as <имя> --verdict ok|changes [--comment "…"] < комментарий
+  item add --as <имя> --title "…" [--desc "…"] [--paths "…"] [--no-review] < описание   подзадача
+  item claim I00N --as <имя> [--paths "src/a,tests/a"|none]   взять (свою сданную — вернуть в работу)
+  item done I00N --as <имя> [--note "…"] [--no-review] · item release|cancel I00N --as <имя>
+  item reassign I00N --to <имя> --as <lead>
+  item review I00N --as <имя> --start · --verdict ok|changes [--comment "…"] < комментарий
+  item review I00N --as <имя> --verdict skip [--comment "почему"]   проверка не нужна
   item list [--mine] [--status todo] · item show I00N
   run --as <имя> [--sync] [--timeout 10m] [--item I00N] -- <команда>   тесты/сборка по очереди;
                                      результат придёт сообщением · run list · run show|cancel R00N
@@ -1731,7 +1745,7 @@ AM_BEGIN='<!-- brigada:begin'
 AM_END='<!-- brigada:end'
 AM_BLOCK="$AM_BEGIN — блок от brg init, init его обновляет; не нужен — удали по brigada:end включительно и запускай init с --no-agents-md -->
 ## brigada
-Если человек просит «подключиться к бригаде» (brigada, .brigada) — прочитай \`.brigada/README.md\` и следуй ему. Подключиться — значит войти в рабочий цикл бригады и оставаться в нём до STOP: после \`join\` не отчитывайся человеку и не завершай ход — сразу \`wait\`. В бригаде ты координируешь свою часть через brg, а саму работу поручаешь своим подагентам (харнесс не умеет — делаешь сам, короткими шагами между \`wait\`). Без такой просьбы к бригаде не подключайся. Если работу тебе поручил другой агент (ты — подагент), к бригаде не подключайся и \`wait\` не вызывай ни при каких обстоятельствах — выполни поручение сам.
+Если человек просит «подключиться к бригаде» (brigada, .brigada) — прочитай \`.brigada/README.md\` и следуй ему. Подключиться — значит войти в рабочий цикл бригады и оставаться в нём до STOP: после \`join\` не отчитывайся человеку и не завершай ход — сразу \`wait\`. В бригаде ты только координатор: brg, переписка, решения, поручения подагентам и приём их результата; любую работу — чтение и правку кода, исследование, проверку чужой работы — делает твой подагент — одновременно один; больше — только с разрешения человека (харнесс без подагентов — делаешь сам, короткими шагами между \`wait\`). Без такой просьбы к бригаде не подключайся. Если работу тебе поручил другой агент (ты — подагент), к бригаде не подключайся и \`wait\` не вызывай ни при каких обстоятельствах — выполни поручение сам.
 $AM_END -->"
 AM_EXCLUDE=/AGENTS.md
 AM_EXCLUDE_NOTE='# brigada: AGENTS.md создан brg init — чтобы коммитить его, удали строку ниже'
@@ -2150,7 +2164,7 @@ cmd_join() {
   echo "Ожидание: $BRG wait --as $ASN — возвращается при сообщениях или через $T с."
   echo "Таймаут инструмента: $hint"
   win_note
-  echo "Правило: подключиться — значит работать в бригаде до STOP. Человеку о подключении не отчитывайся — сразу выполни NEXT (дал задачу в той же просьбе — сначала task new). Последнее действие каждого шага — wait; ход не завершай (кроме STOP). Свою работу поручай подагентам (если харнесс умеет), сам держи цикл (PROTOCOL.md)."
+  echo "Правило: подключиться — значит работать в бригаде до STOP. Человеку о подключении не отчитывайся — сразу выполни NEXT (дал задачу в той же просьбе — сначала task new). Последнее действие каждого шага — wait; ход не завершай (кроме STOP). Ты только координатор: любую работу (код, исследование, проверку) делает твой подагент — одновременно один; больше — только с разрешения человека; сам держишь цикл wait (PROTOCOL.md, раздел 2)."
   echo "── NEXT: $BRG wait --as $ASN"
 }
 
@@ -3545,18 +3559,36 @@ task_claimed_v() { # VAR DIR — ids of items with "Status: claimed"; TC_DESC: "
   done
   eval "$1=\$_tc_r"
 }
-task_cancel_items() { # DIR — claimed items → cancelled (DESIGN §6)
-  local f t c x rest
+# task_unreviewed_v VAR DIR — items handed in but not accepted (DESIGN §7.1.1):
+# "I003 (на проверке), I004 (правки)"; "" if none
+task_unreviewed_v() {
+  local _tu_id _tu_st _tu_as _tu_ti _tu_pa _tu_ce _tu_cr _tu_no _tu_re _tu_hi _tu_rv _tu_dr _tu_ri _tu_rn _tu_v _tu_r _tu_s _tu_o=
+  item_table "$2"
+  while IFS=$US read -r _tu_id _tu_st _tu_as _tu_ti _tu_pa _tu_ce _tu_cr _tu_no _tu_re _tu_hi _tu_rv _tu_dr _tu_ri _tu_rn _tu_v _tu_r; do
+    [ -n "$_tu_id" ] || continue
+    item_stage_v _tu_s "$_tu_st" "$_tu_rv" "$_tu_dr" "$_tu_rn" "$_tu_v" "$_tu_ri"
+    case $_tu_s in review | fix) ;; *) continue ;; esac
+    stage_name_v _tu_s "$_tu_s"
+    _tu_o="$_tu_o${_tu_o:+, }$_tu_id ($_tu_s)"
+  done <<BRG_TU_EOF
+$IT_TABLE
+BRG_TU_EOF
+  eval "$1=\$_tu_o"
+}
+# task_cancel_items DIR BY — claimed items → cancelled (DESIGN §6), with the headers
+# of item cancel (Cancelled, Cancelled-By; Reviewing cleared); ISO set
+task_cancel_items() {
+  local f c x rest
   task_claimed_v c "$1"
   rest="$c, "
   while [ -n "$c" ] && [ -n "$rest" ]; do
     x=${rest%%, *}
     rest=${rest#*, }
     f=$1/items/$x
-    [ -f "$f" ] || continue
-    t=${f%/*}/.tmp.${f##*/}.$$
-    awk 'h == 0 && $0 == "Status: claimed" { print "Status: cancelled"; next } $0 == "" { h = 1 } { print }' "$f" >"$t" &&
-      mv_retry "$t" "$f"
+    item_read "$f" || continue
+    [ "$IT_STATUS" = claimed ] || continue
+    IT_STATUS=cancelled IT_CANCELLED=$ISO IT_CANCELLED_BY=$2 IT_REVIEWING=
+    item_write "$f"
   done
 }
 task_release_reservations() { rm -rf "$1"/reservations/* 2>/dev/null; } # DIR
@@ -3581,7 +3613,7 @@ task_do_cancel() {
   local c r t=$NOW i=$ISO
   task_claimed_v c "$ACT_DIR"
   task_runs_v r "$ACT_DIR"
-  task_cancel_items "$ACT_DIR"
+  task_cancel_items "$ACT_DIR" "$1"
   task_release_reservations "$ACT_DIR"
   [ -n "$r" ] && task_stop_runs "$ACT_DIR" "$1" "при отмене задачи $ACT_ID" "$r"
   NOW=$t ISO=$i
@@ -3701,7 +3733,7 @@ task_new() {
   case $cleared in 1*) echo "Общий стоп снят. Остановленные агенты завершили ход — попроси человека написать им «продолжай»." ;; esac
   case $cleared in *me) echo "Стоп, поставленный тебе человеком, снят: он дал новую задачу." ;; esac
   echo "Как работать — решаете сообща; проверенный порядок (PROTOCOL.md, не обязателен): перекличка с --reply-by 10m (каждый один раз ответит: модель, сильные стороны, загрузка), затем план в shared/plan.md."
-  echo "Lead — фасилитатор: план и подзадачи — вместе с бригадой, работу раздай участникам; свою часть — силами подагентов, сам держи цикл wait."
+  echo "Lead — фасилитатор: план и подзадачи — вместе с бригадой, работу раздай участникам. Ты, как и все, только координатор: исследование и любую работу по своей части делает твой подагент — одновременно один; больше — только с разрешения человека; сам держи цикл wait. Как проверять подзадачи (другим участником — рекомендуется) — решаете сами; обязательно одно: стадии подзадач в brg — как на деле, человек смотрит их на доске (README, раздел 5)."
   echo "Человек читает твой чат, а не переписку brg: отчёты и вопросы ему пиши обычным текстом в своём чате перед очередным wait (копия для протокола — send --to human)."
   fit_warn_print
   echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
@@ -3822,7 +3854,7 @@ task_close() {
     die "прогоны задачи ещё идут: $TR_DESC" \
       "Дождись результатов (придут инициаторам сообщением; список: $BRG run list) или закрой принудительно — прогоны будут остановлены: $BRG task close --as $ASN --force"
   fi
-  [ -n "$c" ] && task_cancel_items "$ACT_DIR"
+  [ -n "$c" ] && task_cancel_items "$ACT_DIR" "$AGENT"
   [ -n "$r" ] && task_stop_runs "$ACT_DIR" "$AGENT" "при закрытии задачи $ACT_ID (--force)" "$r"
   NOW=$t ISO=$x
   task_release_reservations "$ACT_DIR"
@@ -3839,6 +3871,9 @@ task_close() {
   metric task.close id="$ACT_ID" force="${force:-0}" runs="${r// /,}"
   echo "── задача $ACT_ID «$TK_TITLE» закрыта. Строка добавлена в $RROOT/common/history.md; всем отправлено системное сообщение."
   [ -n "$c" ] && echo "Внимание: закрыта с --force; подзадачи $c отменены."
+  # not a refusal (DESIGN §7.1.1): brg does not require reviews, it only names them
+  task_unreviewed_v x "$ACT_DIR"
+  [ -n "$x" ] && echo "Внимание: не приняты: $x — brg закрытию не мешает, но скажи о них человеку в отчёте."
   if [ -n "$r" ]; then
     runs_await "$ACT_DIR" "$r"
     echo "$RA_TEXT"
@@ -4104,7 +4139,7 @@ item_files() { # DIR → ITEM_FILES[] (glob order: by number up to I999)
   for f in "$1"/items/I[0-9]*; do
     [ -f "$f" ] || continue
     n=${f##*/}
-    case $n in *.*) continue ;; esac
+    is_uint "${n#I}" || continue # I + digits only: not I001.reviews, I002~, I003.bak
     ITEM_FILES[${#ITEM_FILES[@]}]=$f
   done
 }
@@ -4124,7 +4159,7 @@ item_next_id_v() { # VAR DIR
 item_read() { # FILE → IT_* (IT_BODY: the description)
   local line hdr=1
   IT_ID= IT_TITLE= IT_STATUS= IT_CREATOR= IT_ASSIGNEE= IT_PATHS= IT_HINT= IT_CREATED= IT_CLAIMED= IT_CLAIMED_EPOCH=
-  IT_DONE= IT_RESULT= IT_NOTE= IT_EXTRA= IT_BODY=
+  IT_DONE= IT_RESULT= IT_NOTE= IT_EXTRA= IT_BODY= IT_REVIEW= IT_DONE_REVIEWS= IT_REVIEWING= IT_CANCELLED= IT_CANCELLED_BY=
   [ -f "$1" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     if [ -z "$hdr" ]; then
@@ -4146,6 +4181,11 @@ item_read() { # FILE → IT_* (IT_BODY: the description)
       'Done: '*) IT_DONE=${line#Done: } ;;
       'Result: '*) IT_RESULT=${line#Result: } ;;
       'Note: '*) IT_NOTE=${line#Note: } ;;
+      'Review: '*) IT_REVIEW=${line#Review: } ;;
+      'Done-Reviews: '*) IT_DONE_REVIEWS=${line#Done-Reviews: } ;;
+      'Reviewing: '*) IT_REVIEWING=${line#Reviewing: } ;;
+      'Cancelled: '*) IT_CANCELLED=${line#Cancelled: } ;;
+      'Cancelled-By: '*) IT_CANCELLED_BY=${line#Cancelled-By: } ;;
       *) IT_EXTRA=$IT_EXTRA$line$NL ;;
     esac
   done <"$1"
@@ -4160,11 +4200,15 @@ item_write() { # FILE — IT_* → FILE (tmp + mv)
     [ -z "$IT_ASSIGNEE" ] || printf 'Assignee: %s\n' "$IT_ASSIGNEE"
     [ -z "$IT_PATHS" ] || printf 'Paths: %s\n' "$IT_PATHS"
     [ -z "$IT_HINT" ] || printf 'Paths-Hint: %s\n' "$IT_HINT"
+    [ -z "$IT_REVIEW" ] || printf 'Review: %s\n' "$IT_REVIEW"
     printf 'Created: %s\n' "$IT_CREATED"
     [ -z "$IT_CLAIMED" ] || printf 'Claimed: %s\nClaimed-Epoch: %s\n' "$IT_CLAIMED" "$IT_CLAIMED_EPOCH"
     [ -z "$IT_DONE" ] || printf 'Done: %s\n' "$IT_DONE"
+    [ -z "$IT_DONE_REVIEWS" ] || printf 'Done-Reviews: %s\n' "$IT_DONE_REVIEWS"
     [ -z "$IT_RESULT" ] || printf 'Result: %s\n' "$IT_RESULT"
     [ -z "$IT_NOTE" ] || printf 'Note: %s\n' "$IT_NOTE"
+    [ -z "$IT_REVIEWING" ] || printf 'Reviewing: %s\n' "$IT_REVIEWING"
+    [ -z "$IT_CANCELLED" ] || printf 'Cancelled: %s\nCancelled-By: %s\n' "$IT_CANCELLED" "$IT_CANCELLED_BY"
     printf '%s\n%s\n' "$IT_EXTRA" "$IT_BODY"
   } >"$t" || ! mv_retry "$t" "$1"; then
     rm -f "$t"
@@ -4363,52 +4407,205 @@ paths_show_v() { # VAR PATHS — "src/a, tests/a" | "— (без правок ф
   eval "$1=\$_ps_s"
 }
 
+# Verdict records of an item: items/I001.reviews/<n>, n — a number from 1 (DESIGN
+# §7.1.1). Anything else there (2.bak, 3~, 0, an editor's backup) is not a record:
+# every reader skips it — the item table, review_info, item show, the board.
+# review_files DIR_OF_REVIEWS → RF_LIST: the names of the records in the order of
+# their numbers (space-separated), RF_N — how many
+review_files() {
+  local f x y r l= n2 skip
+  RF_LIST= RF_N=0
+  for f in "$1"/[0-9]*; do
+    [ -f "$f" ] || continue
+    x=${f##*/}
+    is_uint "$x" && [ ${#x} -le 9 ] && [ $((10#$x)) -ge 1 ] || continue
+    l="$l $x"
+    RF_N=$((RF_N + 1))
+  done
+  while [ -n "$l" ]; do # selection sort by number: an item has few records
+    r=
+    for y in $l; do [ -z "$r" ] || [ $((10#$y)) -lt $((10#$r)) ] && r=$y; done
+    RF_LIST="$RF_LIST${RF_LIST:+ }$r"
+    n2= skip=1
+    for y in $l; do
+      if [ -n "$skip" ] && [ "$y" = "$r" ]; then skip=; else n2="$n2 $y"; fi
+    done
+    l=$n2
+  done
+}
+
 # The item table of a task: one line per item, fields separated by US:
 # id status assignee title paths claimed_epoch creator note result paths_hint
+# review done_reviews reviewing rv_n rv_verdict rv_reviewer — the last three: the
+# number of verdict records, the verdict and the reviewer of the newest one. Input:
+# the item files, then their records (only the newest is read, at the end); a path
+# in a .reviews directory that is not a record is skipped (never an item).
 AWK_ITEMS='
-{
-  f = $0; split("", h)
+function hdrs(f,   l, k, v) {
+  split("", h)
   while ((getline l < f) > 0) {
     if (l == "") break
     k = l; sub(/:.*$/, "", k); v = l; sub(/^[^:]*:[ \t]*/, "", v); h[k] = v
   }
   close(f)
+}
+{
+  f = $0
+  if (f ~ /\.reviews\/[^\/]*$/) {
+    b = f; sub(/^.*\//, "", b)
+    if (b !~ /^[0-9]+$/ || length(b) > 9 || b + 0 < 1) next
+    id = f; sub(/\.reviews\/[^\/]*$/, "", id); sub(/^.*\//, "", id)
+    cnt[id]++
+    if (b + 0 > mx[id] + 0) { mx[id] = b + 0; nm[id] = b }
+    next
+  }
+  hdrs(f)
   id = f; sub(/^.*\//, "", id)
-  print id US h["Status"] US h["Assignee"] US h["Title"] US h["Paths"] US h["Claimed-Epoch"] US h["Creator"] US h["Note"] US h["Result"] US h["Paths-Hint"]
+  ids[++ni] = id; path[id] = f
+  row[id] = id US h["Status"] US h["Assignee"] US h["Title"] US h["Paths"] US h["Claimed-Epoch"] US h["Creator"] US h["Note"] US h["Result"] US h["Paths-Hint"] US h["Review"] US h["Done-Reviews"] US h["Reviewing"]
+}
+END {
+  for (i = 1; i <= ni; i++) {
+    id = ids[i]; v = ""; r = ""
+    if (nm[id] != "") { hdrs(path[id] ".reviews/" nm[id]); v = h["Verdict"]; r = h["Reviewer"] }
+    print row[id] US (cnt[id] + 0) US v US r
+  }
 }'
 item_table() { # DIR → IT_TABLE
+  local f x l=
   IT_TABLE=
   item_files "$1"
   [ ${#ITEM_FILES[@]} -gt 0 ] || return 0
-  IT_TABLE=$(printf '%s\n' "${ITEM_FILES[@]}" | awk -v US="$US" "$AWK_ITEMS")
-}
-# review_last DIR ITEM → RV_N (count), RV_LAST ("ok от claude-1" | "")
-review_last() {
-  local f v r
-  RV_N=0 RV_LAST=
-  for f in "$1/items/$2.reviews"/[0-9]*; do
+  for f in "$1"/items/I[0-9]*.reviews/[0-9]*; do
     [ -f "$f" ] || continue
-    RV_N=$((RV_N + 1))
+    x=${f##*/}
+    is_uint "$x" && [ ${#x} -le 9 ] && [ $((10#$x)) -ge 1 ] || continue # records only
+    l=$l$f$NL
   done
-  [ "$RV_N" -gt 0 ] || return 0
-  f=$1/items/$2.reviews/$RV_N
-  [ -f "$f" ] || return 0
-  v=$(sed -n 's/^Verdict: //p; /^$/q' "$f")
-  r=$(sed -n 's/^Reviewer: //p; /^$/q' "$f")
-  RV_LAST="$v от $r"
+  IT_TABLE=$({
+    printf '%s\n' "${ITEM_FILES[@]}"
+    printf '%s' "$l"
+  } | awk -v US="$US" "$AWK_ITEMS")
 }
-item_has_review() { # DIR ITEM — 0 if the item has at least one review record
-  local f
-  for f in "$1/items/$2.reviews"/[0-9]*; do
-    [ -f "$f" ] && return 0
-  done
-  return 1
+# review_info DIR ITEM → RI_N (verdict records), RI_NUM (the number of the newest;
+# 0 if none), RI_V / RI_R (its verdict and reviewer) — as in the item table
+review_info() {
+  local l nm
+  RI_N=0 RI_NUM=0 RI_V= RI_R=
+  review_files "$1/items/$2.reviews"
+  RI_N=$RF_N
+  [ "$RF_N" -gt 0 ] || return 0
+  nm=${RF_LIST##* }
+  RI_NUM=$((10#$nm))
+  while IFS= read -r l || [ -n "$l" ]; do
+    case $l in
+      '') break ;;
+      'Verdict: '*) RI_V=${l#Verdict: } ;;
+      'Reviewer: '*) RI_R=${l#Reviewer: } ;;
+    esac
+  done <"$1/items/$2.reviews/$nm"
 }
-# list_cap_v VAR LIST N — a ", "-separated LIST cut to N entries: "a, b, … +3"
+# item_stage_v VAR STATUS REVIEW DONE_REVIEWS N VERDICT REVIEWING — the stage of an
+# item (DESIGN §7.1.1), one rule for wait, item list|show, status, task close (and,
+# in JS, the board): todo | work | fix | review | accepted | cancelled (an unknown
+# status as is). REVIEW — its Review header ("no" exactly: no review needed),
+# DONE_REVIEWS — the verdicts when it was handed in (none: 0), N — the verdicts now,
+# VERDICT — of the newest one, REVIEWING — who is reviewing it now. IS_NOTE: work →
+# "rework" (the newest verdict is changes); review → "again" (handed in again after
+# changes), "after" (handed in after an ok: the work may have changed — reviewed in
+# work, an accepted item redone); accepted → "noreview" (Review: no, or the verdict
+# skip — a decision, not a review: always accepted).
+item_stage_v() {
+  local _is_s=$2 _is_d=$4 _is_n=$5
+  IS_NOTE=
+  is_uint "$_is_d" || _is_d=0
+  is_uint "$_is_n" || _is_n=0
+  case $2 in
+    claimed)
+      _is_s=work
+      [ "$6" = changes ] && IS_NOTE=rework
+      ;;
+    done)
+      if [ "$_is_n" -gt 0 ]; then
+        case $6 in
+          skip) _is_s=accepted IS_NOTE=noreview ;;
+          changes) # after it was handed in: changes to make; before: handed in again
+            if [ "$_is_n" -gt "$_is_d" ]; then _is_s=fix; else _is_s=review IS_NOTE=again; fi
+            ;;
+          *) # ok, or anything unexpected: after it was handed in — accepted; before —
+            # the work handed in since has not been reviewed
+            if [ "$_is_n" -gt "$_is_d" ]; then _is_s=accepted; else _is_s=review IS_NOTE=after; fi
+            ;;
+        esac
+      elif [ "$3" = no ]; then
+        _is_s=accepted IS_NOTE=noreview
+      else
+        _is_s=review
+      fi
+      # somebody is reviewing it: the review goes on ("changed our minds")
+      if [ "$_is_s" = accepted ] && [ -n "$7" ]; then _is_s=review IS_NOTE=; fi
+      ;;
+  esac
+  eval "$1=\$_is_s"
+}
+stage_name_v() { # VAR STAGE — for people: "в работе", "на проверке", …
+  local _sn_s=$2
+  case $2 in
+    work) _sn_s="в работе" ;;
+    fix) _sn_s="правки" ;;
+    review) _sn_s="на проверке" ;;
+    accepted) _sn_s="готово" ;;
+    cancelled) _sn_s="отменено" ;;
+  esac
+  eval "$1=\$_sn_s"
+}
+# stage_desc_v VAR STAGE REVIEWING REVIEWER — after item_stage_v (IS_NOTE), for
+# people: "в работе · правки по ревью от X", "на проверке (проверяет claude-2)",
+# "правки по ревью от X", "готово · без проверки", … (REVIEWER — of the newest verdict)
+stage_desc_v() {
+  local _sd_s _sd_w
+  stage_name_v _sd_s "$2"
+  case $2 in
+    work) [ "$IS_NOTE" = rework ] && _sd_s="$_sd_s · правки по ревью от ${4:-?}" ;;
+    fix) _sd_s="правки по ревью от ${4:-?}" ;;
+    review)
+      _sd_w="проверяет"
+      case $3 in *,*) _sd_w="проверяют" ;; esac
+      if [ -n "$3" ]; then _sd_w="$_sd_w ${3//,/, }"; else _sd_w="ждёт проверяющего"; fi
+      [ "$IS_NOTE" = again ] && _sd_w="пересдана, $_sd_w"
+      [ "$IS_NOTE" = after ] && _sd_w="сдана после ревью, $_sd_w"
+      _sd_s="$_sd_s ($_sd_w)"
+      ;;
+    accepted) [ "$IS_NOTE" = noreview ] && _sd_s="$_sd_s · без проверки" ;;
+  esac
+  eval "$1=\$_sd_s"
+}
+# item_stage_now_v VAR — the stage of the loaded item (IT_* as written, its review
+# records) for people; IS_STAGE — the stage, IS_NOTE, RI_* — as set on the way
+item_stage_now_v() {
+  local _sn_t
+  review_info "$ACT_DIR" "$IT_ID"
+  item_stage_v IS_STAGE "$IT_STATUS" "$IT_REVIEW" "$IT_DONE_REVIEWS" "$RI_N" "$RI_V" "$IT_REVIEWING"
+  stage_desc_v _sn_t "$IS_STAGE" "$IT_REVIEWING" "$RI_R"
+  eval "$1=\$_sn_t"
+}
+# list_drop_v VAR LIST NAME — a ","-list without NAME
+list_drop_v() {
+  local _ld_x=",$2,"
+  _ld_x=${_ld_x//",$3,"/,}
+  _ld_x=${_ld_x#,}
+  _ld_x=${_ld_x%,}
+  eval "$1=\$_ld_x"
+}
+# list_cap_v VAR LIST N [SEP] — a LIST of entries separated by SEP (default ", ")
+# cut to N entries, joined by ", ": "a, b, … +3"
 list_cap_v() {
-  local _lc_r= _lc_n=0 _lc_x _lc_rest=$2
+  local _lc_r= _lc_n=0 _lc_x _lc_rest=$2 _lc_s=${4:-, }
   while [ -n "$_lc_rest" ]; do
-    case $_lc_rest in *", "*) _lc_x=${_lc_rest%%, *} _lc_rest=${_lc_rest#*, } ;; *) _lc_x=$_lc_rest _lc_rest= ;; esac
+    case $_lc_rest in
+      *"$_lc_s"*) _lc_x=${_lc_rest%%"$_lc_s"*} _lc_rest=${_lc_rest#*"$_lc_s"} ;;
+      *) _lc_x=$_lc_rest _lc_rest= ;;
+    esac
     _lc_n=$((_lc_n + 1))
     [ "$_lc_n" -le "$3" ] && _lc_r="$_lc_r${_lc_r:+, }$_lc_x"
   done
@@ -4416,21 +4613,23 @@ list_cap_v() {
   eval "$1=\$_lc_r"
 }
 # task_digest_v VAR — one line about the active task (ACT_*), parts without content
-# left out: "T001: todo 2 · в работе I001 codex-1, I003 claude-2 · готово I002 ·
-# ревью ждут I002 · прогонов идёт 1" — shown by wait on a timeout, so the lead sees
-# the state without polling who / item list.
+# left out: "T001: todo 2 · в работе I001 codex-1 · на проверке I003 (claude-2), I005 ·
+# правки I004 codex-1 · готово I002 · прогонов идёт 1" (stages — DESIGN §7.1.1;
+# "(names)" — who is reviewing) — shown by wait on a timeout, so the lead sees the
+# state without polling who / item list.
 task_digest_v() {
-  local _dg_id _dg_st _dg_as _dg_ti _dg_pa _dg_x _dg_t=0 _dg_w= _dg_d= _dg_r= _dg_n=0 _dg_f _dg_l _dg_s _dg_o=
+  local _dg_id _dg_st _dg_as _dg_ti _dg_pa _dg_ce _dg_cr _dg_no _dg_re _dg_hi _dg_rv _dg_dr _dg_ri _dg_rn _dg_v _dg_r
+  local _dg_s _dg_t=0 _dg_w= _dg_c= _dg_x= _dg_d= _dg_n=0 _dg_f _dg_l _dg_o=
   item_table "$ACT_DIR"
-  while IFS=$US read -r _dg_id _dg_st _dg_as _dg_ti _dg_pa _dg_x; do
+  while IFS=$US read -r _dg_id _dg_st _dg_as _dg_ti _dg_pa _dg_ce _dg_cr _dg_no _dg_re _dg_hi _dg_rv _dg_dr _dg_ri _dg_rn _dg_v _dg_r; do
     [ -n "$_dg_id" ] || continue
-    case $_dg_st in
+    item_stage_v _dg_s "$_dg_st" "$_dg_rv" "$_dg_dr" "$_dg_rn" "$_dg_v" "$_dg_ri"
+    case $_dg_s in
       todo) _dg_t=$((_dg_t + 1)) ;;
-      claimed) _dg_w="$_dg_w${_dg_w:+, }$_dg_id ${_dg_as:-?}" ;;
-      done)
-        _dg_d="$_dg_d${_dg_d:+, }$_dg_id"
-        case $_dg_pa in '' | none) ;; *) item_has_review "$ACT_DIR" "$_dg_id" || _dg_r="$_dg_r${_dg_r:+, }$_dg_id" ;; esac
-        ;;
+      work) _dg_w="$_dg_w$US$_dg_id ${_dg_as:-?}" ;;
+      review) _dg_c="$_dg_c$US$_dg_id${_dg_ri:+ (${_dg_ri//,/, })}" ;;
+      fix) _dg_x="$_dg_x$US$_dg_id ${_dg_as:-?}" ;;
+      accepted) _dg_d="$_dg_d$US$_dg_id" ;;
     esac
   done <<BRG_DG_EOF
 $IT_TABLE
@@ -4451,12 +4650,14 @@ BRG_DG_EOF
     case $_dg_s in queued | running) _dg_n=$((_dg_n + 1)) ;; esac
   done
   [ "$_dg_t" -gt 0 ] && _dg_o="todo $_dg_t"
-  list_cap_v _dg_w "$_dg_w" 6
-  list_cap_v _dg_d "$_dg_d" 8
-  list_cap_v _dg_r "$_dg_r" 8
+  list_cap_v _dg_w "${_dg_w#"$US"}" 6 "$US"
+  list_cap_v _dg_c "${_dg_c#"$US"}" 8 "$US"
+  list_cap_v _dg_x "${_dg_x#"$US"}" 6 "$US"
+  list_cap_v _dg_d "${_dg_d#"$US"}" 8 "$US"
   [ -n "$_dg_w" ] && _dg_o="$_dg_o${_dg_o:+ · }в работе $_dg_w"
+  [ -n "$_dg_c" ] && _dg_o="$_dg_o${_dg_o:+ · }на проверке $_dg_c"
+  [ -n "$_dg_x" ] && _dg_o="$_dg_o${_dg_o:+ · }правки $_dg_x"
   [ -n "$_dg_d" ] && _dg_o="$_dg_o${_dg_o:+ · }готово $_dg_d"
-  [ -n "$_dg_r" ] && _dg_o="$_dg_o${_dg_o:+ · }ревью ждут $_dg_r"
   [ "$_dg_n" -gt 0 ] && _dg_o="$_dg_o${_dg_o:+ · }прогонов идёт $_dg_n"
   eval "$1=\"\$ACT_ID: \${_dg_o:-подзадач пока нет}\""
 }
@@ -4510,15 +4711,21 @@ item_opts() {
   local allowed=" $1 as " o
   shift
   IO_ID= IO_TITLE= IO_FILE= IO_PATHS= IO_TO= IO_RESULT= IO_NOTE= IO_VERDICT= IO_MINE= IO_STATUS= IO_TEXT=
+  IO_NOREVIEW= IO_START=
   while [ $# -gt 0 ]; do
     case $1 in
       -h | --help)
         usage_print item
         exit 0
         ;;
-      --mine)
-        case $allowed in *" mine "*) ;; *) usage_die "item $ISUB не принимает --mine" ;; esac
-        IO_MINE=1
+      --mine | --no-review | --start) # flags without a value
+        o=${1#--}
+        case $allowed in *" $o "*) ;; *) usage_die "item $ISUB не принимает $1" ;; esac
+        case $o in
+          mine) IO_MINE=1 ;;
+          no-review) IO_NOREVIEW=1 ;;
+          start) IO_START=1 ;;
+        esac
         shift
         ;;
       --*)
@@ -4555,12 +4762,12 @@ cmd_item() {
   [ $# -gt 0 ] && shift
   NEXT_ON_ERR="исправь команду и повтори (справка: $BRG item --help); закончив шаг — $BRG wait --as $AS_HINT"
   case $ISUB in
-    add | claim | done | release | reassign | review | list | show) "item_$ISUB" "$@" ;;
+    add | claim | done | release | reassign | review | cancel | list | show) "item_$ISUB" "$@" ;;
     -h | --help | help)
       usage_print item
       exit 0
       ;;
-    '') usage_die "нужна подкоманда: add | claim | done | release | reassign | review | list | show" ;;
+    '') usage_die "нужна подкоманда: add | claim | done | release | reassign | review | cancel | list | show" ;;
     *) usage_die "неизвестная подкоманда: item $ISUB" ;;
   esac
 }
@@ -4580,9 +4787,23 @@ item_body() {
   fi
 }
 
+# item_opt_body WHAT — an optional text (the comment of verdict skip, item cancel)
+# → BODY ("" if none): --comment / --file; stdin only if it is a regular file — a
+# heredoc in bash 3.2 or < file — read at once; a pipe or a terminal is not read
+# at all: nothing to wait for (a heredoc is a pipe in bash ≥ 5.1 — the docs say
+# --comment or --file)
+item_opt_body() {
+  BODY=
+  if [ -n "$IO_TEXT$IO_FILE" ]; then
+    item_body "$1"
+  elif [ ! -t 0 ] && [ -f /dev/stdin ]; then
+    read_body "" opt
+  fi
+}
+
 item_add() {
-  local title id gist w hint= hshown=
-  item_opts "title file desc paths" "$@"
+  local title id gist w hint= hshown= norev=
+  item_opts "title file desc paths no-review" "$@"
   [ -z "$IO_ID" ] || usage_die "лишний аргумент: $IO_ID"
   one_line_v title "$IO_TITLE" 100000
   [ -n "$title" ] || usage_die "нужен --title \"…\": коротко, что сделать (одна строка)"
@@ -4597,13 +4818,15 @@ item_add() {
   need_root
   need_agent write
   stop_refuse "item add"
-  NEXT_ON_ERR="исправь команду и повтори: $BRG item add --as $ASN --title \"…\" --desc \"что сделать, критерий готовности\" [--paths \"предлагаемые пути\"] (длинное — heredoc <<'BRG_EOF' или --file); закончив шаг — $BRG wait --as $ASN"
+  NEXT_ON_ERR="исправь команду и повтори: $BRG item add --as $ASN --title \"…\" --desc \"что сделать, критерий готовности\" [--paths \"предлагаемые пути\"] [--no-review] (длинное — heredoc <<'BRG_EOF' или --file); закончив шаг — $BRG wait --as $ASN"
   item_body --desc
   IT_BODY=$BODY
   item_begin
   item_next_id_v id "$ACT_DIR"
+  [ -n "$IO_NOREVIEW" ] && norev=no
   IT_ID=$id IT_TITLE=$title IT_STATUS=todo IT_CREATOR=$AGENT IT_ASSIGNEE= IT_PATHS= IT_HINT=$hint IT_CREATED=$ISO
-  IT_CLAIMED= IT_CLAIMED_EPOCH= IT_DONE= IT_RESULT= IT_NOTE= IT_EXTRA=
+  IT_CLAIMED= IT_CLAIMED_EPOCH= IT_DONE= IT_RESULT= IT_NOTE= IT_EXTRA= IT_REVIEW=$norev IT_DONE_REVIEWS= IT_REVIEWING=
+  IT_CANCELLED= IT_CANCELLED_BY=
   item_write "$ACT_DIR/items/$id"
   first_line_v gist "$IT_BODY" 200
   if [ -n "$hint" ]; then
@@ -4611,16 +4834,26 @@ item_add() {
   else
     BODY="$AGENT добавил подзадачу $id «$title»: $gist${NL}Подробно: $BRG item show $id · взять: $BRG item claim $id --as <имя> --paths <пути|none>"
   fi
+  if [ -n "$norev" ]; then
+    BODY="$BODY${NL}Стадия: todo; проверка не нужна (решение бригады, --no-review) — после item done сразу «готово · без проверки»."
+  else
+    BODY="$BODY${NL}Стадия: todo."
+  fi
   # news for the lead (wakes it); the others see it with their next batch
   item_say all "$TK_LEAD"
   lock_release task
   touch_seen
-  metric item.add task="$ACT_ID" id="$id" hint="${hint// /_}"
+  metric item.add task="$ACT_ID" id="$id" hint="${hint// /_}" review="${norev:-yes}"
   echo "── добавлена подзадача $id «$title» ($ACT_ID, todo)."
   if [ -n "$hint" ]; then
     echo "Предлагаемые пути: $hshown. Взять в работу: $BRG item claim $id --as <имя> — возьмёт их (другие — --paths \"…\")."
   else
     echo "Взять в работу: $BRG item claim $id --as <имя> --paths \"<файлы и каталоги через запятую>\" (только чтение — --paths none)."
+  fi
+  if [ -n "$norev" ]; then
+    echo "Проверка не нужна (--no-review): после item done подзадача сразу «готово · без проверки»."
+  else
+    echo "После item done — «на проверке», «готово» — после ревью ok (проверка другим участником — рекомендация; решили не проверять — item done --no-review или item review --verdict skip)."
   fi
   if [ "$TK_LEAD" != "$AGENT" ]; then
     echo "Lead $TK_LEAD получил уведомление (будящее); остальные увидят его вместе со следующими сообщениями."
@@ -4631,8 +4864,16 @@ item_add() {
   echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
 }
 
+# item_last_v VAR — "последний вердикт: ok от X" of the loaded item (after
+# review_info), "вердиктов нет" if none
+item_last_v() {
+  local _il_s="вердиктов нет"
+  [ "$RI_NUM" -gt 0 ] && _il_s="последний вердикт: #$RI_NUM ${RI_V:-?} от ${RI_R:-?}"
+  eval "$1=\$_il_s"
+}
+
 item_claim() {
-  local renew= old shown x hinted= nopaths="нужен --paths: файлы и каталоги, которые будешь менять (через запятую, от корня проекта); без правок файлов — --paths none"
+  local renew= back= fix= prev= old shown x was= last hinted= nopaths="нужен --paths: файлы и каталоги, которые будешь менять (через запятую, от корня проекта); без правок файлов — --paths none"
   item_opts "id paths" "$@"
   [ -z "$IO_PATHS" ] || paths_parse "$IO_PATHS"
   item_begin
@@ -4644,20 +4885,43 @@ item_claim() {
         "Свободные подзадачи: $BRG item list --status todo"
       renew=1
       ;;
+    done)
+      # back to work (DESIGN §7.1.1): changes after a review, redoing an accepted or
+      # unreviewed one, taking it off review — only by its assignee
+      item_stage_now_v was
+      item_last_v last
+      [ "$IT_ASSIGNEE" = "$AGENT" ] || die "$IT_ID — сдана ($IT_ASSIGNEE), стадия: $was; $last. Вернуть её в работу может только исполнитель $IT_ASSIGNEE" \
+        "Договорись с ним ($BRG send --as $ASN --to $IT_ASSIGNEE) или с lead; исполнитель asleep/gone — lead может передать правки: $BRG item reassign $IT_ID --to <имя> --as <lead>; свободные подзадачи: $BRG item list --status todo"
+      back=1
+      [ "$IS_STAGE" = fix ] && fix=1
+      ;;
+    cancelled) die "$IT_ID отменена${IT_CANCELLED_BY:+ ($IT_CANCELLED_BY)}: из cancelled пути назад нет" "Нужна снова — добавь новую подзадачу: $BRG item add --as $ASN --title \"…\"" ;;
     *) die "$IT_ID — $IT_STATUS: брать нечего" "Свободные подзадачи: $BRG item list --status todo" ;;
   esac
-  # without --paths: the proposed paths of the item (item add --paths), if any;
-  # an explicit --paths always wins
+  # without --paths: back to work — its previous paths; otherwise the proposed paths
+  # of the item (item add --paths), if any; an explicit --paths always wins
   if [ -z "$IO_PATHS" ]; then
     [ -z "$renew" ] || usage_die "$nopaths — повторный claim меняет пути $IT_ID, укажи полный список (сейчас: ${IT_PATHS:-none})"
-    [ -n "$IT_HINT" ] || usage_die "$nopaths (у $IT_ID нет предлагаемых путей)"
-    paths_parse "$IT_HINT"
-    hinted=1
+    if [ -n "$back" ] && [ -n "$IT_PATHS" ]; then
+      paths_parse "$IT_PATHS"
+      prev=1
+    else
+      [ -n "$IT_HINT" ] || usage_die "$nopaths (у $IT_ID нет предлагаемых путей)"
+      paths_parse "$IT_HINT"
+      hinted=1
+    fi
   fi
   res_conflicts "$ACT_DIR" "$PP_LIST" "$AGENT" "$IT_ID"
   if [ -n "$RC_LINES" ]; then
-    [ -n "$renew" ] && x="оставлена с прежними путями" || x="не взята"
+    if [ -n "$renew" ]; then
+      x="оставлена с прежними путями"
+    elif [ -n "$back" ]; then
+      x="не возвращена в работу"
+    else
+      x="не взята"
+    fi
     [ -n "$hinted" ] && x="$x (предлагаемые пути заняты — укажи свои: --paths …)"
+    [ -n "$prev" ] && x="$x (прежние пути заняты — укажи свои: --paths …)"
     die "пути пересекаются с чужими резервированиями — $IT_ID $x" \
       "Конфликты (твой путь ↔ занятый):" "$RC_LINES" \
       "Что делать: сузь --paths, возьми другую подзадачу или договорись с держателем ($BRG send --as $ASN --to <имя>) или с lead; держатель asleep/gone — lead может $BRG item reassign."
@@ -4672,23 +4936,46 @@ item_claim() {
     IT_CLAIMED=$ISO
     IT_CLAIMED_EPOCH=$NOW
   fi
+  # handed in again by item done: a new Done, Done-Reviews, note, result; a new
+  # round of review
+  [ -n "$back" ] && IT_DONE= IT_DONE_REVIEWS= IT_NOTE= IT_RESULT= IT_REVIEWING=
   item_write "$IT_FILE"
   paths_show_v shown "$PP_LIST"
   if [ -n "$renew" ]; then
     BODY="$AGENT сменил пути подзадачи $IT_ID «$IT_TITLE»: $shown"
+  elif [ -n "$fix" ]; then
+    BODY="$AGENT вернул $IT_ID «$IT_TITLE» в работу — правки по ревью #$RI_NUM · пути: $shown${NL}Стадия: в работе."
+  elif [ -n "$back" ]; then
+    BODY="$AGENT вернул $IT_ID «$IT_TITLE» в работу (была: $was) · пути: $shown${NL}Стадия: в работе."
   else
-    BODY="$AGENT взял $IT_ID «$IT_TITLE» · пути: $shown"
+    BODY="$AGENT взял $IT_ID «$IT_TITLE» · пути: $shown${NL}Стадия: в работе."
   fi
-  item_say all no # informational: who edits what
+  if [ -n "$back" ]; then
+    item_say all "$TK_LEAD" # handed-in work is back: the lead should know
+  else
+    item_say all no # informational: who edits what
+  fi
   lock_release task
   touch_seen
-  metric item.claim task="$ACT_ID" id="$IT_ID" paths="${PP_LIST// /_}" renew="${renew:-0}" hint="${hinted:-0}" own="${RO_IDS//, /,}"
+  metric item.claim task="$ACT_ID" id="$IT_ID" paths="${PP_LIST// /_}" renew="${renew:-0}" hint="${hinted:-0}" own="${RO_IDS//, /,}" back="${back:-0}" fix="${fix:-0}"
+  x="Резервирование: $shown"
+  [ -n "$prev" ] && x="Резервирование — прежние пути: $shown (нужны другие — повтори claim с --paths)"
   if [ -n "$renew" ]; then
     echo "── пути $IT_ID обновлены: $shown (были: $old)."
+  elif [ -n "$fix" ]; then
+    echo "── $IT_ID «$IT_TITLE» снова в работе — правки по ревью #$RI_NUM от $RI_R (замечания: $BRG item show $IT_ID). $x."
+  elif [ -n "$back" ]; then
+    echo "── $IT_ID «$IT_TITLE» снова в работе (была: $was). $x."
+    # skip is a decision, not a review: handed in again, the item is accepted at once
+    if [ "$RI_V" = skip ]; then
+      echo "Последний вердикт — skip (#$RI_NUM от $RI_R): после item done подзадача сразу станет «готово · без проверки»; нужна проверка — пусть проверяющий отметится: item review $IT_ID --as <имя> --start."
+    fi
   elif [ -n "$hinted" ]; then
     echo "── $IT_ID «$IT_TITLE» — твоя. Взяты предлагаемые пути: $shown (нужны другие — повтори claim с --paths)."
+    echo "Стадия: в работе."
   else
     echo "── $IT_ID «$IT_TITLE» — твоя. Резервирование: $shown."
+    echo "Стадия: в работе."
   fi
   if [ -n "$RO_LINES" ]; then
     x="lead'у ($BRG send --as $ASN --to $TK_LEAD) и человеку (в своём чате)"
@@ -4696,14 +4983,37 @@ item_claim() {
     printf '%s\n' "⚠ эти пути уже твои по $RO_IDS (твой путь ↔ твоё резервирование):" "$RO_LINES" \
       "Если $RO_IDS брал не ты — под твоим именем работает другая сессия: сообщи $x."
   fi
-  [ "$PP_LIST" = none ] || echo "Правь только эти пути; нужен ещё путь — повтори claim с полным списком. Тесты и сборку запускай через $BRG run --as $ASN --item $IT_ID -- <команда>."
-  echo "Описание: $BRG item show $IT_ID. Готово — $BRG item done $IT_ID --as $ASN --note \"что сделано, как проверено\"; бросаешь — item release."
-  echo "── NEXT: работай над $IT_ID; закончив шаг — $BRG wait --as $ASN"
+  [ -n "$renew" ] || echo "Работу выполняет твой подагент — поручи ему: $IT_ID и описание ($BRG item show $IT_ID), пути, критерий готовности, правила для подагента из README («Подагенты») и твоё полное имя $ASN. Сам вернись в wait; подагент закончит — прими результат (его отчёт, git diff --stat) и сдай."
+  [ "$PP_LIST" = none ] || echo "Правки — только в этих путях; нужен ещё путь — повтори claim с полным списком. Тесты и сборка — через $BRG run --as $ASN --item $IT_ID -- <команда>."
+  echo "Готово — $BRG item done $IT_ID --as $ASN --note \"что сделано, как проверено\"; бросаешь — item release; не нужна — item cancel."
+  if [ -n "$renew" ]; then
+    echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  else
+    echo "── NEXT: поручи $IT_ID подагенту, затем $BRG wait --as $ASN"
+  fi
+}
+
+# review_write VERDICT BODY ASSIGNEE_MODEL — a verdict record of the loaded item
+# (IT_*) by AGENT, immutable → RW_N (its number)
+review_write() {
+  local x t
+  RW_N=0
+  mkdir -p "$IT_FILE.reviews" 2>/dev/null
+  review_files "$IT_FILE.reviews"
+  [ "$RF_N" -gt 0 ] && x=${RF_LIST##* } && RW_N=$((10#$x))
+  RW_N=$((RW_N + 1))
+  t=$IT_FILE.reviews/.tmp.$$
+  if ! printf 'Item: %s\nReviewer: %s\nModel: %s\nVerdict: %s\nAssignee: %s\nAssignee-Model: %s\nStatus: %s\nTime: %s\nEpoch: %s\n\n%s\n' \
+    "$IT_ID" "$AGENT" "$A_MODEL" "$1" "$IT_ASSIGNEE" "$3" "$IT_STATUS" "$ISO" "$NOW" "$2" >"$t" ||
+    ! mv_retry "$t" "$IT_FILE.reviews/$RW_N"; then
+    rm -f "$t"
+    die "не удалось записать ревью $IT_FILE.reviews/$RW_N"
+  fi
 }
 
 item_done() {
-  local res= note shown
-  item_opts "id result note" "$@"
+  local res= note shown x st resub= pnum
+  item_opts "id result note no-review" "$@"
   if [ -n "$IO_RESULT" ]; then
     path_norm_v res "$IO_RESULT" || usage_die "--result: «$IO_RESULT» — $PN_ERR"
     [ -e "$PROJ/$res" ] || usage_die "--result: нет файла $res (путь от корня проекта)" \
@@ -4713,19 +5023,53 @@ item_done() {
   fit_v note "$note" 500 "--note" "--note — одна-две фразы; подробности — файлом (например, в shared/ задачи) и --result <путь>."
   item_begin
   item_load "$IO_ID"
+  if [ "$IT_STATUS" = done ] && [ "$IT_ASSIGNEE" = "$AGENT" ]; then
+    item_stage_now_v x
+    [ "$IS_STAGE" = fix ] && die "$IT_ID ждёт правок по ревью #$RI_NUM от $RI_R — сначала верни её в работу: $BRG item claim $IT_ID --as $ASN (прежние пути), затем правки и item done" \
+      "Замечания: $BRG item show $IT_ID"
+  fi
   [ "$IT_STATUS" = claimed ] || die "$IT_ID — $IT_STATUS, а не в работе (claimed)"
   [ "$IT_ASSIGNEE" = "$AGENT" ] || die "завершить $IT_ID может только исполнитель ($IT_ASSIGNEE)" \
     "Если $IT_ASSIGNEE asleep/gone, lead может переназначить: $BRG item reassign $IT_ID --to <имя> --as <lead>"
+  review_info "$ACT_DIR" "$IT_ID"
+  [ "$RI_V" = changes ] && resub=1
+  pnum=$RI_NUM
   paths_show_v shown "$IT_PATHS"
   res_remove "$ACT_DIR" "$IT_ID"
-  IT_STATUS=done IT_DONE=$ISO IT_RESULT=$res IT_NOTE=$note
+  # Done-Reviews: the verdicts before handing in (not the skip below)
+  IT_STATUS=done IT_DONE=$ISO IT_DONE_REVIEWS=$RI_N IT_RESULT=$res IT_NOTE=$note
+  # --no-review: handed in and the verdict skip at once — a verdict on a done item
+  # ends the round of review
+  [ -n "$IO_NOREVIEW" ] && IT_REVIEWING=
   item_write "$IT_FILE"
-  BODY="$AGENT завершил $IT_ID «$IT_TITLE»${note:+: $note}${res:+${NL}Результат: $res}"
+  [ -n "$IO_NOREVIEW" ] && review_write skip "при сдаче (item done --no-review)" "$A_MODEL"
+  item_stage_now_v st
+  if [ -n "$resub" ]; then
+    BODY="$AGENT пересдал $IT_ID «$IT_TITLE» после правок по ревью #$pnum${note:+: $note}${res:+${NL}Результат: $res}"
+  else
+    BODY="$AGENT завершил $IT_ID «$IT_TITLE»${note:+: $note}${res:+${NL}Результат: $res}"
+  fi
+  [ -n "$IO_NOREVIEW" ] && BODY="$BODY${NL}Проверка не нужна (item done --no-review)."
+  BODY="$BODY${NL}Стадия: $st."
+  [ "$IS_STAGE" = review ] && [ -z "$IT_REVIEWING" ] && BODY="$BODY Взяться за проверку: $BRG item review $IT_ID --as <имя> --start, затем --verdict ok|changes."
   item_say all "$TK_LEAD" # wakes the lead (acceptance); the others see it later
   lock_release task
   touch_seen
-  metric item.done task="$ACT_ID" id="$IT_ID"
+  metric item.done task="$ACT_ID" id="$IT_ID" stage="$IS_STAGE" reviews="$IT_DONE_REVIEWS" no_review="${IO_NOREVIEW:-0}"
   echo "── $IT_ID «$IT_TITLE» — done. Резервирование снято (${shown})."
+  case $IS_STAGE/$IS_NOTE in
+    accepted/noreview)
+      if [ -n "$IO_NOREVIEW" ]; then
+        echo "Стадия: $st — записан вердикт skip #$RW_N (проверка не нужна)."
+      elif [ "$RI_V" = skip ]; then
+        echo "Стадия: $st — проверку отменили раньше (вердикт skip #$RI_NUM от $RI_R)."
+      else
+        echo "Стадия: $st (item add --no-review)."
+      fi
+      ;;
+    review/after) echo "Стадия: $st — ревью #$RI_NUM ($RI_V от $RI_R) было до сдачи: нужна новая проверка (решили не проверять — item review $IT_ID --as $ASN --verdict skip)." ;;
+    *) echo "Стадия: $st. «Готово» — после ревью ok; замечания придут тебе ревью (changes — вернёшь её в работу item claim и пересдашь); решили не проверять — item review $IT_ID --as $ASN --verdict skip." ;;
+  esac
   [ "$TK_LEAD" != "$AGENT" ] && echo "Lead $TK_LEAD получил уведомление."
   [ -n "$note$res" ] || echo "Итог не указан: если не очевиден — коротко напиши lead'у, что сделано и как проверено."
   fit_warn_print
@@ -4751,7 +5095,8 @@ item_release() {
   paths_show_v shown "$IT_PATHS"
   res_remove "$ACT_DIR" "$IT_ID"
   BODY="$AGENT вернул $IT_ID «$IT_TITLE» в todo$by; резервирование снято ($shown)."
-  IT_STATUS=todo IT_ASSIGNEE= IT_PATHS= IT_CLAIMED= IT_CLAIMED_EPOCH=
+  # the work starts over: whoever was reviewing it has nothing to review
+  IT_STATUS=todo IT_ASSIGNEE= IT_PATHS= IT_CLAIMED= IT_CLAIMED_EPOCH= IT_REVIEWING=
   item_write "$IT_FILE"
   item_say all "$TK_LEAD"
   lock_release task
@@ -4762,7 +5107,7 @@ item_release() {
 }
 
 item_reassign() {
-  local cur shown warn=
+  local cur shown warn= fix= x st
   item_opts "id to" "$@"
   [ -n "$IO_TO" ] || usage_die "кому: item reassign I00N --to <имя> --as <lead>"
   case $IO_TO in ?*.*) IO_TO=${IO_TO%%.*} ;; esac # the key, if any, is dropped
@@ -4770,7 +5115,14 @@ item_reassign() {
   item_load "$IO_ID"
   [ "$TK_LEAD" = "$AGENT" ] || die "переназначать подзадачи может только lead ($TK_LEAD)" \
     "Если lead asleep/gone — возьми роль: $BRG lead take --as $ASN"
-  [ "$IT_STATUS" = claimed ] || die "$IT_ID — $IT_STATUS, а не в работе: исполнитель берёт её сам ($BRG item claim $IT_ID --as <имя> --paths …)"
+  # done, waiting for changes after a review (DESIGN §7.1.1): its assignee is the only
+  # one to claim it back, so the lead may hand the changes over like an item in work
+  if [ "$IT_STATUS" = done ]; then
+    item_stage_now_v x
+    [ "$IS_STAGE" = fix ] && fix=1
+  fi
+  [ "$IT_STATUS" = claimed ] || [ -n "$fix" ] ||
+    die "$IT_ID — $IT_STATUS, а не в работе: исполнитель берёт её сам ($BRG item claim $IT_ID --as <имя> --paths …)"
   valid_name "$IO_TO" && [ -f "$ROOT/agents/$IO_TO" ] || die "нет такого агента: $IO_TO" "Кто подключён: $BRG who"
   cur=$IT_ASSIGNEE
   [ "$IO_TO" != "$cur" ] || die "$IT_ID и так у $cur"
@@ -4792,88 +5144,225 @@ item_reassign() {
   fi
   res_write "$ACT_DIR" "$IT_ID" "$IO_TO" "${IT_PATHS:-none}"
   IT_ASSIGNEE=$IO_TO IT_CLAIMED=$ISO IT_CLAIMED_EPOCH=$NOW
+  # the new assignee does not review its own work
+  list_drop_v IT_REVIEWING "$IT_REVIEWING" "$IO_TO"
+  # changes after a review: back to work under the new assignee (as item claim does)
+  [ -n "$fix" ] && IT_STATUS=claimed IT_DONE= IT_DONE_REVIEWS= IT_NOTE= IT_RESULT= IT_REVIEWING=
   item_write "$IT_FILE"
+  item_stage_now_v st
   paths_show_v shown "${IT_PATHS:-none}"
-  BODY="lead $AGENT переназначил $IT_ID «$IT_TITLE»: $cur ($ST) → $IO_TO. Пути: $shown.${NL}$IO_TO: подзадача теперь твоя — $BRG item show $IT_ID; незавершённые правки $cur — в рабочем дереве."
+  x=
+  [ -n "$fix" ] && x=" (правки по ревью #$RI_NUM)"
+  BODY="lead $AGENT переназначил $IT_ID «$IT_TITLE»$x: $cur ($ST) → $IO_TO. Пути: $shown.${NL}$IO_TO: подзадача теперь твоя — $BRG item show $IT_ID; незавершённые правки $cur — в рабочем дереве.${NL}Стадия: $st."
   item_say all "$IO_TO"
   lock_release task
   touch_seen
-  metric item.reassign task="$ACT_ID" id="$IT_ID" from="$cur" to="$IO_TO"
-  echo "── $IT_ID «$IT_TITLE»: $cur → $IO_TO; резервирование ($shown) перешло к $IO_TO. Ему отправлено будящее сообщение."
+  metric item.reassign task="$ACT_ID" id="$IT_ID" from="$cur" to="$IO_TO" fix="${fix:-0}"
+  echo "── $IT_ID «$IT_TITLE»$x: $cur → $IO_TO; резервирование ($shown) перешло к $IO_TO. Ему отправлено будящее сообщение. Стадия: $st."
   [ -n "$warn" ] && echo "$warn"
   echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
 }
 
+# item_to_v VAR — the assignee and the lead of the loaded item, minus AGENT
+# (comma list; "" if nobody else)
+item_to_v() {
+  local _it_t=
+  [ -n "$IT_ASSIGNEE" ] && [ "$IT_ASSIGNEE" != "$AGENT" ] && _it_t=$IT_ASSIGNEE
+  [ "$TK_LEAD" != "$AGENT" ] && [ "$TK_LEAD" != "$IT_ASSIGNEE" ] && _it_t="$_it_t${_it_t:+,}$TK_LEAD"
+  eval "$1=\$_it_t"
+}
+
 item_review() {
-  local v n f t mk ak x others= to body warn= amodel
-  item_opts "id verdict file comment" "$@"
-  case $IO_VERDICT in
-    ok | changes) v=$IO_VERDICT ;;
-    '') usage_die "нужен --verdict ok|changes" ;;
-    *) usage_die "--verdict — ok или changes: $IO_VERDICT" ;;
-  esac
+  local v= mk ak x t others= to body= warn= amodel= shown again= st was
+  item_opts "id verdict file comment start" "$@"
+  if [ -n "$IO_START" ]; then
+    [ -z "$IO_VERDICT$IO_TEXT$IO_FILE" ] ||
+      usage_die "--start — только отметка «взялся проверять»: без --verdict, --comment и --file (вердикт — отдельной командой, когда проверка закончена)"
+  else
+    case $IO_VERDICT in
+      ok | changes | skip) v=$IO_VERDICT ;;
+      '') usage_die "нужен --verdict ok|changes|skip (или --start — взялся проверять)" ;;
+      *) usage_die "--verdict — ok или changes (или skip — проверка не нужна): $IO_VERDICT" ;;
+    esac
+  fi
   need_root
   need_agent write
-  NEXT_ON_ERR="исправь команду и повтори: $BRG item review I00N --as $ASN --verdict ok|changes --comment \"…\" (длинное — heredoc <<'BRG_EOF' или --file); закончив шаг — $BRG wait --as $ASN"
-  item_body --comment
-  body=$BODY
+  if [ -n "$IO_START" ]; then
+    # starts work (DESIGN §9); no text: stdin is not read at all
+    stop_refuse "item review --start"
+    NEXT_ON_ERR="исправь команду и повтори: $BRG item review I00N --as $ASN --start; закончив шаг — $BRG wait --as $ASN"
+  else
+    NEXT_ON_ERR="исправь команду и повтори: $BRG item review I00N --as $ASN --verdict ok|changes|skip --comment \"…\" (длинное — heredoc <<'BRG_EOF' или --file); закончив шаг — $BRG wait --as $ASN"
+    # skip: the comment is optional — never waited for (see item_opt_body)
+    if [ "$v" = skip ]; then
+      item_opt_body --comment
+    else
+      item_body --comment
+    fi
+    body=$BODY
+  fi
   item_begin
   item_load "$IO_ID"
   case $IT_STATUS in
     claimed | done) ;;
-    *) die "$IT_ID — $IT_STATUS: ревьюить нечего (ревью — для подзадач в работе или готовых)" ;;
+    *) die "$IT_ID — $IT_STATUS: ревьюить нечего (ревью — для подзадач в работе или сданных)" ;;
   esac
-  [ "$IT_ASSIGNEE" != "$AGENT" ] || die "$IT_ID делал ты — своё ревью не засчитывается" \
-    "Попроси ревью другого агента, лучше другой модели: $BRG send --as $ASN --to <имя>"
-  # same model as the assignee while another model is online: a warning, not a refusal
-  profile_read "$ROOT/agents/$IT_ASSIGNEE"
-  amodel=$P_MODEL
-  model_key_v ak "$amodel"
-  model_key_v mk "$A_MODEL"
-  if [ -n "$mk" ] && [ "$mk" = "$ak" ]; then
-    list_agents
-    for x in $AGENT_NAMES; do
-      [ "$x" = "$AGENT" ] || [ "$x" = "$IT_ASSIGNEE" ] && continue
-      agent_state "$x"
-      case $ST in waiting | working) ;; *) continue ;; esac
-      model_key_v t "$P_MODEL"
-      [ -n "$t" ] && [ "$t" != "$mk" ] && others="$others${others:+, }$x ($P_MODEL)"
-    done
-    [ -n "$others" ] && warn="Внимание: ты на той же модели ($A_MODEL), что и исполнитель $IT_ASSIGNEE, а онлайн есть агент другой модели: $others. Ревью другой моделью ловит больше ошибок — по возможности попроси его (PROTOCOL)."
+  if [ "$v" != skip ]; then # skip is a decision of the brigade, not a review: anybody
+    [ "$IT_ASSIGNEE" != "$AGENT" ] || die "$IT_ID делал ты — своё ревью не засчитывается" \
+      "Попроси ревью другого агента, лучше другой модели: $BRG send --as $ASN --to <имя>; проверка не нужна — $BRG item review $IT_ID --as $ASN --verdict skip --comment \"почему\""
+    # same model as the assignee while another model is online: a warning, not a refusal
+    profile_read "$ROOT/agents/$IT_ASSIGNEE"
+    amodel=$P_MODEL
+    model_key_v ak "$amodel"
+    model_key_v mk "$A_MODEL"
+    if [ -n "$mk" ] && [ "$mk" = "$ak" ]; then
+      list_agents
+      for x in $AGENT_NAMES; do
+        [ "$x" = "$AGENT" ] || [ "$x" = "$IT_ASSIGNEE" ] && continue
+        agent_state "$x"
+        case $ST in waiting | working) ;; *) continue ;; esac
+        model_key_v t "$P_MODEL"
+        [ -n "$t" ] && [ "$t" != "$mk" ] && others="$others${others:+, }$x ($P_MODEL)"
+      done
+      [ -n "$others" ] && warn="Внимание: ты на той же модели ($A_MODEL), что и исполнитель $IT_ASSIGNEE, а онлайн есть агент другой модели: $others. Ревью другой моделью ловит больше ошибок — по возможности попроси его (PROTOCOL)."
+    fi
+  else
+    profile_read "$ROOT/agents/$IT_ASSIGNEE" && amodel=$P_MODEL
   fi
-  mkdir -p "$IT_FILE.reviews" 2>/dev/null
-  n=0
-  for f in "$IT_FILE.reviews"/[0-9]*; do
-    [ -f "$f" ] || continue
-    x=${f##*/}
-    is_uint "$x" && [ "$x" -gt "$n" ] && n=$x
-  done
-  n=$((n + 1))
-  t=$IT_FILE.reviews/.tmp.$$
-  if ! printf 'Item: %s\nReviewer: %s\nModel: %s\nVerdict: %s\nAssignee: %s\nAssignee-Model: %s\nStatus: %s\nTime: %s\nEpoch: %s\n\n%s\n' \
-    "$IT_ID" "$AGENT" "$A_MODEL" "$v" "$IT_ASSIGNEE" "$amodel" "$IT_STATUS" "$ISO" "$NOW" "$body" >"$t" ||
-    ! mv_retry "$t" "$IT_FILE.reviews/$n"; then
-    rm -f "$t"
-    die "не удалось записать ревью $IT_FILE.reviews/$n"
+  if [ -n "$IO_START" ]; then # "I am reviewing it" (DESIGN §7.1.1): the name into Reviewing
+    case ",$IT_REVIEWING," in
+      *",$AGENT,"*) again=1 ;;
+      *)
+        IT_REVIEWING=$IT_REVIEWING${IT_REVIEWING:+,}$AGENT
+        item_write "$IT_FILE"
+        item_stage_now_v st
+        BODY="$AGENT взялся проверять $IT_ID «$IT_TITLE» (исполнитель $IT_ASSIGNEE)${NL}Стадия: $st."
+        item_say all no # informational, like claim
+        ;;
+    esac
+    lock_release task
+    touch_seen
+    metric item.review.start task="$ACT_ID" id="$IT_ID" again="${again:-0}" same_model="${warn:+1}"
+    [ -n "$again" ] && item_stage_now_v st
+    paths_show_v shown "${IT_PATHS:-none}"
+    if [ -n "$again" ]; then
+      echo "── ты уже проверяешь $IT_ID «$IT_TITLE» — отметка есть (проверяют: ${IT_REVIEWING//,/, }). Стадия: $st."
+    else
+      echo "── ты проверяешь $IT_ID «$IT_TITLE» (исполнитель $IT_ASSIGNEE, $IT_STATUS): бригада видит это в сводке wait и в item list. Стадия: $st."
+    fi
+    [ -n "$warn" ] && echo "$warn"
+    echo "Проверку делает твой подагент — поручи ему: смотреть сам diff, а не отчёт исполнителя — git diff -- <пути> (новые файлы — git status --short -- <пути> и целиком); пути $IT_ID: $shown; что и с каким критерием сделать — $BRG item show $IT_ID; при необходимости тесты — $BRG run --as $ASN --sync -- <команда>; правила для подагента — README («Подагенты») и твоё полное имя $ASN."
+    echo "Вердикт пишешь ты: $BRG item review $IT_ID --as $ASN --verdict ok|changes --comment \"что не так и где\"."
+    echo "── NEXT: поручи проверку $IT_ID подагенту, затем $BRG wait --as $ASN"
+    return 0
   fi
-  to=$IT_ASSIGNEE
-  [ "$TK_LEAD" != "$AGENT" ] && [ "$TK_LEAD" != "$IT_ASSIGNEE" ] && to="$to,$TK_LEAD"
-  trunc_v x "$body" $((MSG_MAX - 600))
-  if [ "$v" = ok ]; then t="ok — замечаний нет"; else t="changes — нужны правки"; fi
-  BODY="ревью $IT_ID «$IT_TITLE» от $AGENT ($A_MODEL): $t$NL$x"
+  item_stage_now_v was
+  was=$IS_STAGE
+  review_write "$v" "$body" "$amodel"
+  # a verdict on a done item ends the round of review (who still reviews — --start
+  # again); on an item in work it takes only its author out
+  if [ "$IT_STATUS" = done ]; then
+    x=
+  else
+    list_drop_v x "$IT_REVIEWING" "$AGENT"
+  fi
+  if [ "$x" != "$IT_REVIEWING" ]; then
+    IT_REVIEWING=$x
+    item_write "$IT_FILE"
+  fi
+  item_stage_now_v st
+  item_to_v to
+  trunc_v x "$body" $((MSG_MAX - 900))
+  case $v in
+    ok) t="ok — замечаний нет" ;;
+    changes) t="changes — нужны правки" ;;
+    skip) t="skip — проверка не нужна" ;;
+  esac
+  if [ "$v" = skip ]; then
+    BODY="$AGENT: $IT_ID «$IT_TITLE» — $t"
+  else
+    BODY="ревью $IT_ID «$IT_TITLE» от $AGENT ($A_MODEL): $t"
+  fi
+  [ -n "$x" ] && BODY="$BODY$NL$x"
   [ ${#x} -lt ${#body} ] && BODY="$BODY${NL}(обрезано; целиком: $BRG item show $IT_ID)"
-  item_say "$to" -
+  case $v/$IT_STATUS/$was in
+    changes/done/*)
+      BODY="$BODY${NL}$IT_ASSIGNEE, как пересдать: $BRG item claim $IT_ID --as <имя> (вернёт в работу с прежними путями) → правки (силами подагента) → $BRG item done $IT_ID --as <имя> --note \"что исправлено\"."
+      ;;
+    changes/*) BODY="$BODY${NL}$IT_ASSIGNEE: подзадача ещё в работе — внеси правки (силами подагента) и сдай: $BRG item done $IT_ID --as <имя>." ;;
+    ok/done/fix) BODY="$BODY${NL}$IT_ASSIGNEE: правки не нужны — $IT_ID готова." ;;
+    skip/done/fix) BODY="$BODY${NL}$IT_ASSIGNEE: правки не нужны — $IT_ID готова, без проверки." ;;
+    skip/claimed/*) BODY="$BODY${NL}После item done — сразу «готово · без проверки»." ;;
+  esac
+  BODY="$BODY${NL}Стадия: $st."
+  if [ -n "$to" ]; then
+    item_say "$to" -
+  else
+    item_say all no # the assignee and the lead wrote it themselves: for the record
+  fi
   lock_release task
   touch_seen
-  metric item.review task="$ACT_ID" id="$IT_ID" verdict="$v" n="$n" same_model="${warn:+1}"
-  echo "── ревью #$n по $IT_ID записано ($v); сообщение отправлено: ${to//,/, }."
+  metric item.review task="$ACT_ID" id="$IT_ID" verdict="$v" n="$RW_N" same_model="${warn:+1}" stage="$IS_STAGE"
+  if [ "$v" = skip ]; then
+    echo "── решение #$RW_N по $IT_ID записано (skip — проверка не нужна)${to:+; сообщение отправлено: ${to//,/, }}."
+  else
+    echo "── ревью #$RW_N по $IT_ID записано ($v); сообщение отправлено: ${to//,/, }."
+  fi
+  case $IS_STAGE in
+    fix) echo "Стадия $IT_ID: $st — исполнитель вернёт её в работу (item claim) и пересдаст." ;;
+    *) echo "Стадия $IT_ID: $st." ;;
+  esac
   [ -n "$warn" ] && echo "$warn"
   fit_warn_print
   echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
 }
 
+# item cancel: the item is not needed (DESIGN §7.1.1) — todo: anybody; claimed/done:
+# the assignee or the lead. Not starting work: allowed while stopped.
+item_cancel() {
+  local body= to x shown
+  item_opts "id comment file" "$@"
+  need_root
+  need_agent write
+  NEXT_ON_ERR="исправь команду и повтори: $BRG item cancel I00N --as $ASN [--comment \"почему\"]; закончив шаг — $BRG wait --as $ASN"
+  item_opt_body --comment # optional: never waited for
+  body=$BODY
+  item_begin
+  item_load "$IO_ID"
+  case $IT_STATUS in
+    todo) ;;
+    claimed | done)
+      [ "$IT_ASSIGNEE" = "$AGENT" ] || [ "$TK_LEAD" = "$AGENT" ] ||
+        die "отменить $IT_ID ($IT_STATUS) может исполнитель ($IT_ASSIGNEE) или lead ($TK_LEAD)" \
+          "Предложи им: $BRG send --as $ASN --to $IT_ASSIGNEE"
+      ;;
+    cancelled) die "$IT_ID уже отменена${IT_CANCELLED_BY:+ ($IT_CANCELLED_BY${IT_CANCELLED:+, $IT_CANCELLED})}: из cancelled пути назад нет" "Нужна снова — добавь новую подзадачу: $BRG item add --as $ASN --title \"…\"" ;;
+    *) die "$IT_ID — $IT_STATUS: отменять нечего" ;;
+  esac
+  x=$IT_STATUS
+  paths_show_v shown "${IT_PATHS:-none}"
+  res_remove "$ACT_DIR" "$IT_ID"
+  IT_STATUS=cancelled IT_CANCELLED=$ISO IT_CANCELLED_BY=$AGENT IT_REVIEWING=
+  item_write "$IT_FILE"
+  trunc_v body "$body" $((MSG_MAX - 600))
+  BODY="$AGENT отменил $IT_ID «$IT_TITLE» (была: $x)${body:+: $body}"
+  [ "$x" = claimed ] && BODY="$BODY${NL}Резервирование снято ($shown); $IT_ASSIGNEE: прекрати правки по $IT_ID — незавершённое остаётся в рабочем дереве."
+  BODY="$BODY${NL}Стадия: отменено (из cancelled пути назад нет; нужна снова — новая подзадача: item add)."
+  item_to_v to
+  item_say all "${to:-no}" # wakes the lead and the assignee
+  lock_release task
+  touch_seen
+  metric item.cancel task="$ACT_ID" id="$IT_ID" from="$x"
+  echo "── $IT_ID «$IT_TITLE» отменена (была: $x). Стадия: отменено."
+  [ "$x" = claimed ] && echo "Резервирование снято ($shown)."
+  [ -n "$to" ] && echo "Уведомлены: ${to//,/, }."
+  fit_warn_print
+  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+}
+
 item_list() {
-  local id st as ti pa ce cr no re hi line shown age ok cnt=0 ct=0 cc=0 cd=0 cx=0 x rest
+  local id st as ti pa ce cr no re hi rv dr ri rn rvv rvr line shown age ok cnt=0 x rest s sd
+  local ct=0 cw=0 cf=0 cr_=0 ca=0 cx=0
   item_opts "mine status" "$@"
   [ -z "$IO_ID" ] || usage_die "лишний аргумент: $IO_ID (одну подзадачу покажет item show)"
   need_root
@@ -4890,11 +5379,20 @@ item_list() {
   done
   active_task && task_read "$ACT_DIR" || die "нет активной задачи — подзадач нет" "Все задачи: $BRG task list"
   item_table "$ACT_DIR"
-  while IFS=$US read -r id st as ti pa ce cr no re hi; do
+  while IFS=$US read -r id st as ti pa ce cr no re hi rv dr ri rn rvv rvr; do
     [ -n "$id" ] || continue
-    case $st in todo) ct=$((ct + 1)) ;; claimed) cc=$((cc + 1)) ;; done) cd=$((cd + 1)) ;; cancelled) cx=$((cx + 1)) ;; esac
+    item_stage_v s "$st" "$rv" "$dr" "$rn" "$rvv" "$ri"
+    case $s in
+      todo) ct=$((ct + 1)) ;;
+      work) cw=$((cw + 1)) ;;
+      fix) cf=$((cf + 1)) ;;
+      review) cr_=$((cr_ + 1)) ;;
+      accepted) ca=$((ca + 1)) ;;
+      cancelled) cx=$((cx + 1)) ;;
+    esac
     [ -z "$IO_STATUS" ] || case ",${IO_STATUS//[[:space:]]/}," in *",$st,"*) ;; *) continue ;; esac
     [ -z "$IO_MINE" ] || [ "$as" = "$AGENT" ] || continue
+    stage_desc_v sd "$s" "$ri" "$rvr"
     line="$id · $st"
     case $st in
       todo)
@@ -4903,32 +5401,43 @@ item_list() {
           paths_show_v shown "$hi"
           line="$line · предлагаемые пути: $shown"
         fi
+        [ "$rv" = no ] && line="$line · без проверки"
         ;;
       claimed)
         paths_show_v shown "$pa"
         age=
         is_uint "$ce" && dur_v age $((NOW - ce))
         line="$line · $as · «$ti» · пути: $shown${age:+ · $age}"
+        [ "$IS_NOTE" = rework ] && line="$line · правки по ревью от $rvr"
+        [ -n "$ri" ] && line="$line · проверяет ${ri//,/, }"
+        [ "$rv" = no ] && line="$line · без проверки"
         ;;
+      done) line="$line · $sd · ${as:-—} · «$ti»${no:+ · итог: $no}${re:+ · $re}" ;;
       *) line="$line · ${as:-—} · «$ti»${no:+ · итог: $no}${re:+ · $re}" ;;
     esac
-    review_last "$ACT_DIR" "$id"
-    [ "$RV_N" -gt 0 ] && line="$line · ревью: $RV_LAST"
-    [ "$RV_N" -gt 1 ] && line="$line (всего $RV_N)"
+    is_uint "$rn" || rn=0
+    if [ "$rn" -gt 0 ]; then
+      if [ "$rvv" = skip ]; then
+        line="$line · решение: без проверки (${rvr:-?})"
+      else
+        line="$line · ревью: ${rvv:-?} от ${rvr:-?}"
+      fi
+    fi
+    [ "$rn" -gt 1 ] && line="$line (всего $rn)"
     echo "$line"
     cnt=$((cnt + 1))
   done <<BRG_IL_EOF
 $IT_TABLE
 BRG_IL_EOF
   [ "$cnt" -gt 0 ] || echo "── подзадач${IO_MINE:+ твоих}${IO_STATUS:+ со статусом $IO_STATUS} нет"
-  echo "── $ACT_ID: todo $ct · в работе $cc · готово $cd · отменено $cx"
+  echo "── $ACT_ID: todo $ct · в работе $cw · правки $cf · на проверке $cr_ · готово $ca · отменено $cx"
   metric item.list task="$ACT_ID"
   [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
   return 0
 }
 
 item_show() {
-  local shown f line r age runs= x
+  local shown f line r age runs= x s
   item_opts "id" "$@"
   need_root
   get_now
@@ -4939,6 +5448,32 @@ item_show() {
   active_task && task_read "$ACT_DIR" || die "нет активной задачи — подзадач нет" "Все задачи: $BRG task list"
   item_load "$IO_ID"
   echo "── $IT_ID «$IT_TITLE» · $IT_STATUS · задача $ACT_ID"
+  # the stage (DESIGN §7.1.1)
+  item_stage_now_v x
+  s=$IS_STAGE
+  case $s/$IS_NOTE in
+    work/rework) x="в работе — правки по ревью #$RI_NUM от $RI_R" ;;
+    review/again) x="на проверке — пересдана после ревью #$RI_NUM (changes от $RI_R)" ;;
+    review/after) x="на проверке — сдана после ревью #$RI_NUM (${RI_V:-?} от $RI_R): нужна новая проверка" ;;
+    review/*) x="на проверке" ;; # who reviews — the next line
+    fix/*) x="правки по ревью #$RI_NUM от $RI_R — исполнитель возвращает её в работу: $BRG item claim $IT_ID --as <имя> (прежние пути), затем item done" ;;
+    accepted/noreview)
+      if [ "$RI_V" = skip ]; then
+        x="$x (решил $RI_R: вердикт skip #$RI_NUM)"
+      else
+        x="$x (решение при планировании: item add --no-review)"
+      fi
+      ;;
+    accepted/*) [ "$RI_NUM" -gt 0 ] && x="$x (#$RI_NUM: ${RI_V:-?} от $RI_R)" ;;
+    cancelled/*) x="$x (${IT_CANCELLED_BY:-?}${IT_CANCELLED:+, $IT_CANCELLED}; назад пути нет)" ;;
+  esac
+  echo "Стадия: $x"
+  if [ -n "$IT_REVIEWING" ]; then
+    echo "Проверяют: ${IT_REVIEWING//,/, }"
+  elif [ "$s" = review ]; then
+    echo "Проверяющего пока нет — взяться: $BRG item review $IT_ID --as <имя> --start"
+  fi
+  [ "$IT_REVIEW" = no ] && echo "Проверка не нужна (item add --no-review)"
   echo "Создал: $IT_CREATOR · $IT_CREATED"
   if [ -n "$IT_ASSIGNEE" ]; then
     age=
@@ -4970,8 +5505,9 @@ item_show() {
   [ -n "$runs" ] && echo "Прогоны: $runs"
   echo "── описание ──"
   printf '%s\n' "$IT_BODY"
-  for f in "$IT_FILE.reviews"/[0-9]*; do
-    [ -f "$f" ] || continue
+  review_files "$IT_FILE.reviews"
+  for x in $RF_LIST; do
+    f=$IT_FILE.reviews/$x
     r=$(awk 'BEGIN { h = 1 } h && $0 == "" { h = 0; next } h { k = $0; sub(/:.*$/, "", k); v = $0; sub(/^[^:]*: /, "", v); a[k] = v; next }
       !h { b = b "  " $0 "\n" }
       END { printf "── ревью #%s: %s от %s (%s) · %s\n%s", n, a["Verdict"], a["Reviewer"], a["Model"], a["Time"], b }' n="${f##*/}" "$f")
@@ -4982,32 +5518,51 @@ item_show() {
   return 0
 }
 
-# my_items_lines — AGENT's items in work and their reservations (for status)
+# my_items_lines — for status: the stages of the task's items, AGENT's items in work
+# (and their reservations) or waiting for its changes, the items it is reviewing
 my_items_lines() {
-  local id st as ti pa ce cr no re hi shown ct=0 cc=0 cd=0 mine= age my="Мои подзадачи"
+  local id st as ti pa ce cr no re hi rv dr ri rn rvv rvr shown s mine= revs= age my="Мои подзадачи"
+  local ct=0 cw=0 cf=0 cr_=0 ca=0
   [ -n "${AS_NOKEY:-}" ] && my="Подзадачи $AGENT" # no key: do not confirm the identity
   item_table "$ACT_DIR"
   [ -n "$IT_TABLE" ] || {
     echo "Подзадачи: нет (lead добавляет: $BRG item add)"
     return 0
   }
-  while IFS=$US read -r id st as ti pa ce cr no re hi; do
+  while IFS=$US read -r id st as ti pa ce cr no re hi rv dr ri rn rvv rvr; do
     [ -n "$id" ] || continue
-    case $st in todo) ct=$((ct + 1)) ;; claimed) cc=$((cc + 1)) ;; done) cd=$((cd + 1)) ;; esac
-    [ "$st" = claimed ] && [ "$as" = "$AGENT" ] || continue
-    paths_show_v shown "$pa"
-    age=
-    is_uint "$ce" && dur_v age $((NOW - ce))
-    mine="$mine  $id «$ti» · пути: $shown${age:+ · в работе $age}$NL"
+    item_stage_v s "$st" "$rv" "$dr" "$rn" "$rvv" "$ri"
+    case $s in
+      todo) ct=$((ct + 1)) ;;
+      work) cw=$((cw + 1)) ;;
+      fix) cf=$((cf + 1)) ;;
+      review) cr_=$((cr_ + 1)) ;;
+      accepted) ca=$((ca + 1)) ;;
+    esac
+    case $s in review | work) case ",$ri," in *",$AGENT,"*) revs="$revs  $id «$ti» · исполнитель $as$NL" ;; esac ;; esac
+    [ "$as" = "$AGENT" ] || continue
+    case $s in
+      work)
+        paths_show_v shown "$pa"
+        age=
+        is_uint "$ce" && dur_v age $((NOW - ce))
+        mine="$mine  $id «$ti» · пути: $shown${age:+ · в работе $age}"
+        [ "$IS_NOTE" = rework ] && mine="$mine · правки по ревью от $rvr"
+        mine=$mine$NL
+        ;;
+      fix) mine="$mine  $id «$ti» · правки по ревью от $rvr — верни в работу: $BRG item claim $id --as $ASN (прежние пути)$NL" ;;
+    esac
   done <<BRG_MI_EOF
 $IT_TABLE
 BRG_MI_EOF
-  echo "Подзадачи $ACT_ID: todo $ct · в работе $cc · готово $cd ($BRG item list)"
+  echo "Подзадачи $ACT_ID: todo $ct · в работе $cw · правки $cf · на проверке $cr_ · готово $ca ($BRG item list)"
   if [ -n "$mine" ]; then
     printf '%s и резервирования:\n%s' "$my" "$mine"
   else
     if [ "$ct" -gt 0 ]; then echo "$my: нет — свободные: $BRG item list --status todo"; else echo "$my: нет"; fi
   fi
+  [ -z "$revs" ] || printf 'Проверяю (вердикт — %s):\n%s' "$BRG item review I00N --as $ASN --verdict ok|changes" "$revs"
+  return 0
 }
 
 # ── run: tests/builds under the global exec lock (DESIGN §7) ──────────────
@@ -6683,8 +7238,10 @@ board_task() {
     bjo "R$US$f$US"
     bjk reviews
     bjo "["
-    for r in "$f.reviews"/[0-9]*; do
-      [ -f "$r" ] && bjo "r$US$r"
+    # only the records (not "2.bak", "0"), by number (glob order: 1 10 2)
+    review_files "$f.reviews"
+    for r in $RF_LIST; do
+      bjo "r$US$f.reviews/$r"
     done
     bjo "]"
     bjo "}"

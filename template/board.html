@@ -3,141 +3,353 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>brigada — доска</title>
 <!--
   brigada board: a read-only page for the human (DESIGN §9.1). Opened as file://
   without a server. `brg board` writes run/board/data.js (window.BRG_BOARD) and
   run/board/T00N.js (window.BRG_TASKS) next to this file; the page reloads data.js
   every 2 s with a classic script tag. Data go into the page only through
-  textContent / createElement — never innerHTML.
+  textContent / createElement / safe attributes — never parsed as markup.
 -->
 <style>
 :root {
-  --bg: #f6f7f9; --card: #ffffff; --fg: #1d2330; --muted: #677085; --border: #dde1e8;
-  --accent: #2f6fdf; --ok: #1f8a4c; --warn: #b26a00; --bad: #c62f2f; --sysbg: #f1f3f6;
-  --warnbg: #fff5e0; --badbg: #fdeaea; --okbg: #e7f5ec; --humanbg: #eef4ff; --code: #f1f3f6;
+  --bg: #f4f5f7; --panel: #ffffff; --sunken: #eef0f3; --fg: #1a2130; --muted: #5d6676; --faint: #8b93a2;
+  --line: #e1e4ea; --line2: #d0d5dd; --accent: #2b6cd4; --accentbg: #e7effc;
+  --ok: #1b7f47; --okbg: #e3f3e9; --warn: #995a00; --warnbg: #fcf1dc; --bad: #bf342e; --badbg: #fbe8e7;
+  --rev: #6e46c6; --revbg: #efe9fb; --human: #c98500; --humanbg: #fff8e7; --humanline: #f0dcaa;
+  --code: #f2f4f7; --shadow: 0 1px 2px rgba(20, 28, 45, .06);
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
+/* agent colors: --c fills the avatar and the stripe, --ct colors text */
+.c0 { --c: #2b6cd4; --ct: #2560bd; } .c1 { --c: #0c8476; --ct: #0a7468; }
+.c2 { --c: #7a4fd6; --ct: #6a40c4; } .c3 { --c: #c4510f; --ct: #ad470c; }
+.c4 { --c: #2d8a3f; --ct: #257836; } .c5 { --c: #b8338c; --ct: #a32a7b; }
+.c6 { --c: #6b7d12; --ct: #5b6b0c; } .c7 { --c: #cc3355; --ct: #b52a4a; }
+.c8 { --c: #0a7ea8; --ct: #086e93; } .c9 { --c: #4f5a96; --ct: #444e86; }
+.ch { --c: #e0a019; --ct: #9a6700; } .cs { --c: #9aa1ae; --ct: #6f7787; }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14171c; --card: #1c2027; --fg: #e3e6eb; --muted: #949cab; --border: #2e343e;
-    --accent: #6ea0ff; --ok: #4cc27f; --warn: #e2a33a; --bad: #f06a6a; --sysbg: #20252d;
-    --warnbg: #3a2e14; --badbg: #3d1d1f; --okbg: #183325; --humanbg: #1d2a42; --code: #232931;
+    --bg: #0f1115; --panel: #181b21; --sunken: #13151a; --fg: #e3e6eb; --muted: #9ba3b2; --faint: #6e7686;
+    --line: #272c35; --line2: #343a46; --accent: #6ea0ff; --accentbg: #1a2740;
+    --ok: #55c486; --okbg: #14291c; --warn: #e6aa48; --warnbg: #2d2410; --bad: #f2776f; --badbg: #351a1a;
+    --rev: #b39fff; --revbg: #231d37; --human: #e8aa2c; --humanbg: #231e12; --humanline: #4c3d1b;
+    --code: #121419; --shadow: none;
   }
+  .c0 { --c: #3d7be3; --ct: #8db3ff; } .c1 { --c: #12968a; --ct: #5fd4c5; }
+  .c2 { --c: #8a62e6; --ct: #bca5ff; } .c3 { --c: #d4621d; --ct: #ffa46e; }
+  .c4 { --c: #36994a; --ct: #82da93; } .c5 { --c: #c8479b; --ct: #f592d1; }
+  .c6 { --c: #7c921e; --ct: #c6d86d; } .c7 { --c: #d64463; --ct: #ff93a9; }
+  .c8 { --c: #158fbb; --ct: #72cff1; } .c9 { --c: #6370b4; --ct: #aab3ea; }
+  .ch { --c: #e8aa2c; --ct: #ffcf6e; } .cs { --c: #5d6575; --ct: #8f97a6; }
 }
 * { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--fg);
-  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
-header {
-  position: sticky; top: 0; z-index: 5; background: var(--bg);
-  border-bottom: 1px solid var(--border); padding: 8px 16px;
-}
-.top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-#proj { font-weight: 700; font-size: 16px; }
-.top label { min-width: 0; max-width: 100%; }
-#tasksel { max-width: 70vw; font: inherit; padding: 2px 4px; background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; }
-#tline { margin-top: 4px; }
-#tline .ttl { font-weight: 600; font-size: 15px; }
-#foot { color: var(--muted); font-size: 12px; margin-left: auto; }
-.banner { margin-top: 6px; padding: 6px 10px; border-radius: 6px; background: var(--warnbg); }
-.banner.bad { background: var(--badbg); font-weight: 600; }
-main {
-  display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
-  gap: 16px; padding: 16px; align-items: start;
-}
-.col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-@media (max-width: 1000px) { main { grid-template-columns: minmax(0, 1fr); } }
-section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; min-width: 0; }
-h2 { margin: 0 0 8px; font-size: 15px; }
-h2 .cnt { color: var(--muted); font-weight: 400; }
+button, select, input { font: inherit; color: inherit; }
+code, .mono { font-family: var(--mono); font-size: 12.5px; }
+.hide { display: none !important; }
+.faint { color: var(--faint); }
 .muted { color: var(--muted); }
-.empty { color: var(--muted); font-style: italic; }
-.badge { display: inline-block; padding: 0 6px; border-radius: 9px; font-size: 12px; line-height: 18px; border: 1px solid var(--border); white-space: nowrap; }
-.b-ok, .st-waiting, .ts-done { color: var(--ok); border-color: var(--ok); }
-.b-bad, .ts-cancelled { color: var(--bad); border-color: var(--bad); }
-.b-warn, .st-asleep { color: var(--warn); border-color: var(--warn); }
-.st-working, .ts-active { color: var(--accent); border-color: var(--accent); }
-.st-gone { color: var(--muted); }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
-.card { border: 1px solid var(--border); border-radius: 6px; padding: 8px; min-width: 0; overflow-wrap: anywhere; }
-.card.dim { opacity: .6; }
-.card.warn { background: var(--warnbg); }
-.card.changes { border-left: 4px solid var(--bad); }
-.card .nm { font-weight: 600; }
-.card .ln { margin-top: 2px; }
-.note { color: var(--warn); font-weight: 600; }
-.kanban { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-@media (max-width: 700px) { .kanban { grid-template-columns: minmax(0, 1fr); } }
-.kcol { background: var(--sysbg); border-radius: 6px; padding: 6px; min-width: 0; }
-.kcol h3 { margin: 2px 2px 6px; font-size: 13px; }
-.kcol .card { background: var(--card); margin-bottom: 6px; }
-.kcol .card.warn { background: var(--warnbg); }
-details > summary { cursor: pointer; }
-.desc { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
-pre, code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
-pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; padding: 6px 8px; background: var(--code); border-radius: 4px; max-height: 360px; overflow: auto; }
-.run { border-bottom: 1px solid var(--border); padding: 4px 0; }
-.run:last-child { border-bottom: 0; }
-.run > summary { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; list-style: none; }
-.run > summary::-webkit-details-marker { display: none; }
-.run > summary::before { content: "▸"; color: var(--muted); }
-.run[open] > summary::before { content: "▾"; }
-.run .cmd { flex: 1 1 200px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; align-items: center; }
-.tab { font: inherit; padding: 2px 10px; border: 1px solid var(--border); border-radius: 14px; background: transparent; color: var(--fg); cursor: pointer; }
-.tab.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-.ctl { font: inherit; background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 1px 4px; }
-#msglist { max-height: 75vh; overflow: auto; padding-right: 4px; }
-.msg { padding: 6px 8px; border-radius: 6px; margin-bottom: 6px; border: 1px solid var(--border); overflow-wrap: anywhere; }
-.msg.sys { background: var(--sysbg); color: var(--muted); border-style: dashed; }
-.msg.human { background: var(--humanbg); }
-.msg.flash { outline: 2px solid var(--accent); }
-.mh { font-size: 12.5px; color: var(--muted); }
-.mh b { color: var(--fg); }
-.msg.sys .mh b { color: var(--muted); }
-.mb { margin-top: 2px; white-space: pre-wrap; }
-.dl { margin-left: 4px; }
-a.re, a.lnk { color: var(--accent); text-decoration: none; cursor: pointer; }
-a.re:hover, a.lnk:hover { text-decoration: underline; }
-.doc { max-height: 70vh; overflow: auto; }
-.trow { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 4px 6px; border-radius: 6px; cursor: pointer; align-items: baseline; }
-.trow:hover { background: var(--sysbg); }
-.trow.sel { background: var(--humanbg); }
-.trow .sum { flex-basis: 100%; color: var(--muted); padding-left: 2px; }
+
+/* top bar */
+.top {
+  position: -webkit-sticky; position: sticky; top: 0; z-index: 10;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+  min-height: 52px; padding: 8px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+#proj { font-weight: 700; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brand .sub { color: var(--faint); font-size: 12.5px; white-space: nowrap; }
+#tasksel {
+  max-width: 100%; min-width: 0; padding: 5px 8px; border-radius: 8px;
+  background: var(--sunken); border: 1px solid var(--line); cursor: pointer;
+}
+.tsel { display: flex; flex: 0 1 auto; min-width: 0; max-width: 560px; }
+.fresh { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.fresh .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.fresh.stale .dot { background: var(--warn); }
+.fresh.off .dot { background: var(--faint); }
+
+/* banners */
+#banners { max-width: 1720px; margin: 0 auto; padding: 0 20px; }
+#banners:empty { display: none; }
+.banner {
+  margin-top: 12px; padding: 9px 14px; border-radius: 10px; font-size: 13.5px;
+  background: var(--warnbg); border: 1px solid transparent; overflow-wrap: anywhere;
+}
+.banner b { margin-right: 4px; }
+.banner.bad { background: var(--badbg); }
+.banner.stop { background: var(--badbg); border-color: var(--bad); }
+.banner.stop b { color: var(--bad); letter-spacing: .04em; }
+.banner code { background: var(--panel); padding: 1px 6px; border-radius: 5px; }
+
+/* layout: the task on the left, the chat on the right */
+main {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 33%);
+  grid-template-rows: auto auto auto auto auto 1fr;
+  gap: 16px 20px; padding: 16px 20px 28px; max-width: 1720px; margin: 0 auto;
+}
+main > .sec { grid-column: 1; min-width: 0; align-self: start; }
+#s-msgs { grid-column: 2; grid-row: 1 / span 6; min-width: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); }
+h2 {
+  display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px;
+  font-size: 12px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+}
+h2 .cnt { font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--faint); }
+.sec.mini { display: flex; align-items: baseline; gap: 8px; padding: 0 4px; font-size: 13px; }
+.sec.mini .mt { font-size: 12px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.empty { color: var(--muted); }
+
+/* pills, chips, avatars */
+.pill {
+  display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; line-height: 18px;
+  white-space: nowrap; background: var(--sunken); color: var(--muted); vertical-align: middle;
+}
+.pill.ok { background: var(--okbg); color: var(--ok); }
+.pill.warn { background: var(--warnbg); color: var(--warn); }
+.pill.bad { background: var(--badbg); color: var(--bad); }
+.pill.rev { background: var(--revbg); color: var(--rev); }
+.pill.acc { background: var(--accentbg); color: var(--accent); }
+.pill.wrap { white-space: normal; }
+.av {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 50%; background: var(--c); color: #fff;
+  font-size: 10px; font-weight: 700; letter-spacing: -.02em; line-height: 1; vertical-align: middle;
+}
+.ch .av, .av.ch { color: #2b1d00; }
+.av.xs { width: 18px; height: 18px; font-size: 8.5px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; vertical-align: middle; }
+.chip .nm { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip.sm .av { width: 20px; height: 20px; font-size: 9px; }
+.chip.sm .nm { font-size: 12.5px; }
+.lnk { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; text-align: left; }
+.lnk:hover { text-decoration: underline; }
+
+/* task */
+.thead { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 16px; }
+.ttitle { flex: 1 1 320px; min-width: 0; margin: 0; font-size: 20px; line-height: 1.3; font-weight: 650; overflow-wrap: anywhere; }
+.ttitle .tid { color: var(--faint); font-weight: 600; margin-right: 6px; }
+.tstat { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); white-space: nowrap; padding-top: 3px; }
+.pill.ts-active { background: var(--accentbg); color: var(--accent); }
+.pill.ts-done { background: var(--okbg); color: var(--ok); }
+.pill.ts-cancelled { background: var(--sunken); color: var(--muted); }
+.troles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin-top: 10px; font-size: 13px; }
+.troles .lab { color: var(--faint); font-size: 12px; margin-right: 6px; }
+.past { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.prog { margin-top: 14px; }
+.bar { display: flex; height: 8px; border-radius: 999px; background: var(--sunken); overflow: hidden; }
+.bar .seg { height: 100%; }
+.seg.done { background: var(--ok); } .seg.review { background: var(--rev); } .seg.work { background: var(--accent); }
+.plab { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; margin-top: 6px; font-size: 12.5px; color: var(--muted); }
+.plab b { color: var(--fg); font-weight: 600; }
+.lg::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; background: var(--faint); vertical-align: 0; }
+.lg.review::before { background: var(--rev); } .lg.work::before { background: var(--accent); } .lg.todo::before { background: var(--line2); }
+
+/* brigade */
+.strip { display: flex; flex-wrap: wrap; gap: 8px; }
+.achip {
+  display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 100%;
+  padding: 6px 14px 6px 7px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel);
+}
+.achip.dim { opacity: .55; }
+.achip.drop { background: var(--warnbg); border-color: var(--warn); }
+.avw { position: relative; flex: none; }
+.avw .av { width: 30px; height: 30px; font-size: 11px; }
+.sdot { position: absolute; right: -2px; bottom: -2px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--panel); background: var(--faint); }
+.achip.drop .sdot { border-color: var(--warnbg); }
+.s-waiting .sdot { background: var(--ok); }
+.s-working .sdot { background: var(--accent); }
+.s-asleep .sdot { background: var(--warn); }
+.s-gone .sdot { background: var(--panel); box-shadow: inset 0 0 0 2px var(--faint); }
+.ab { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.ab .l1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ab .l1 .nm { font-weight: 650; font-size: 13.5px; white-space: nowrap; }
+.ab .l2 { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ab .l2 .doing { color: var(--fg); font-weight: 600; }
+.ab .l2 .fixing { color: var(--bad); font-weight: 600; }
+.ab .l2 .revw { color: var(--rev); font-weight: 600; }
+.role { font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 1px 5px; border-radius: 5px; background: var(--sunken); color: var(--muted); }
+.role.stop { background: var(--badbg); color: var(--bad); }
+.warns { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.wline { padding: 7px 12px; border-radius: 10px; background: var(--warnbg); color: var(--fg); font-size: 13px; overflow-wrap: anywhere; }
+.wline b { color: var(--warn); }
+
+/* kanban */
+.kanban { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.kanban.k5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.kcol { background: var(--sunken); border-radius: 12px; padding: 8px; min-width: 0; }
+.kcol h3 { display: flex; align-items: center; gap: 7px; margin: 2px 4px 8px; font-size: 12.5px; font-weight: 650; color: var(--fg); }
+.kcol h3 .kd { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.kcol h3 .n { margin-left: auto; color: var(--faint); font-weight: 500; }
+.k-work h3 .kd { background: var(--accent); } .k-review h3 .kd { background: var(--rev); }
+.k-done h3 .kd { background: var(--ok); } .k-cancelled h3 .kd { background: var(--line2); }
+.kempty { color: var(--faint); font-size: 12.5px; padding: 2px 6px 6px; }
+.card {
+  position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 9px 11px 10px; margin-bottom: 8px; box-shadow: var(--shadow); overflow-wrap: anywhere; min-width: 0;
+}
+.card:last-child { margin-bottom: 0; }
+.card.fix { box-shadow: inset 3px 0 0 var(--bad), var(--shadow); }
+.card.st-cancelled { opacity: .6; }
+.crow { display: flex; align-items: center; gap: 6px; }
+.card .num { font-family: var(--mono); font-size: 11px; color: var(--faint); font-weight: 600; }
+.vmark { margin-left: auto; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; font-size: 11px; font-weight: 700; }
+.vmark.ok { background: var(--okbg); color: var(--ok); }
+.vmark.bad { background: var(--badbg); color: var(--bad); }
+.card .ttl { margin: 2px 0 7px; font-size: 14px; line-height: 1.35; font-weight: 600; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 7px; }
+.tags .pill { white-space: normal; }
+.revline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-bottom: 7px; font-size: 12px; color: var(--rev); }
+.revline.wait { color: var(--faint); }
+.why { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; margin: -2px 0 7px; font-size: 12px; color: var(--muted); }
+.cfoot { display: flex; align-items: center; gap: 8px; justify-content: space-between; min-width: 0; }
+.cfoot .chip { flex: 0 1 auto; }
+.cfoot .tm { flex: none; font-size: 12px; color: var(--faint); white-space: nowrap; }
+.cfoot .tm.live { color: var(--muted); }
+.acc-by { display: inline-flex; align-items: center; gap: 4px; }
+details > summary { cursor: pointer; list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+.more > summary { margin-top: 7px; font-size: 12px; color: var(--faint); }
+.more > summary::before, .run > summary::before, .sys > summary::before { content: "▸"; display: inline-block; width: 1em; color: var(--faint); }
+.more[open] > summary::before, .run[open] > summary::before, .sys[open] > summary::before { content: "▾"; }
+.dbody { margin-top: 6px; padding-top: 8px; border-top: 1px dashed var(--line2); font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; }
+.dbody .k { color: var(--faint); margin-right: 4px; }
+.rvw { padding: 6px 8px; border-radius: 8px; background: var(--sunken); }
+.rvw .rh { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--muted); }
+.rvw .pre { margin-top: 4px; }
+.rvw.skip { background: transparent; border: 1px dashed var(--line2); }
+
+/* runs */
+.runs { display: flex; flex-direction: column; }
+.run { border-top: 1px solid var(--line); }
+.run:first-child { border-top: 0; }
+.run > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 7px 2px; }
+.run .rid { font-weight: 600; color: var(--muted); }
+.run .cmd { flex: 1 1 160px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rmeta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--faint); white-space: nowrap; }
+.tag { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.rbody { padding: 0 2px 10px 18px; font-size: 12.5px; }
+pre {
+  white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; padding: 8px 10px; background: var(--code);
+  border: 1px solid var(--line); border-radius: 8px; max-height: 360px; overflow: auto; font-family: var(--mono); font-size: 12px;
+}
+
+/* docs, tasks */
+.dhead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 10px; }
+.dhead h2 { margin: 0; }
+.seg2 { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border-radius: 9px; background: var(--sunken); }
+.seg2 button { border: 0; background: transparent; padding: 3px 11px; border-radius: 7px; cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.seg2 button.on { background: var(--panel); color: var(--fg); font-weight: 600; box-shadow: var(--shadow); }
+.seg2 button.off { color: var(--faint); }
+.doc { max-height: 60vh; overflow: auto; font-size: 13.5px; line-height: 1.55; }
+.trow {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; width: 100%; padding: 7px 8px;
+  border: 0; border-radius: 9px; background: transparent; text-align: left; cursor: pointer;
+}
+.trow:hover { background: var(--sunken); }
+.trow.sel { background: var(--accentbg); }
+.trow .tid { font-family: var(--mono); font-size: 12px; color: var(--faint); font-weight: 600; }
+.trow .tt { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.trow .sum { flex-basis: 100%; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+
+/* chat */
+.msgpane {
+  position: -webkit-sticky; position: sticky; top: 68px; height: calc(100vh - 84px); min-height: 360px;
+  display: flex; flex-direction: column; padding: 0; overflow: hidden;
+}
+.mphead { padding: 12px 14px 10px; border-bottom: 1px solid var(--line); }
+.mphead h2 { margin-bottom: 8px; }
+.mctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.mctl label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.mctl select { padding: 2px 6px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); max-width: 160px; }
+#msgtrunc { margin-top: 6px; font-size: 12px; color: var(--faint); }
+#msgtrunc:empty { display: none; }
+#msglist { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px; background: var(--sunken); }
+.msg {
+  background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--c); border-radius: 10px;
+  padding: 8px 12px 10px; margin-bottom: 10px; box-shadow: var(--shadow); overflow-wrap: anywhere; min-width: 0;
+}
+.msg.human { background: var(--humanbg); border-color: var(--humanline); border-left-color: var(--human); }
+.msg.flash, .sys.flash { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mh { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; font-size: 12.5px; color: var(--muted); }
+.mh .to { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 4px; min-width: 0; }
+.mh .rn { color: var(--ct); font-weight: 600; }
+.mh .all { color: var(--muted); }
+.mh .when { margin-left: auto; font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+.quote {
+  display: block; width: 100%; margin-top: 6px; padding: 3px 8px; border: 0; border-left: 2px solid var(--line2);
+  border-radius: 0 6px 6px 0; background: var(--sunken); font-size: 12px; color: var(--muted); text-align: left; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.quote:hover { color: var(--fg); }
+.quote .qn { color: var(--accent); margin-right: 4px; }
+.mb { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; line-height: 1.55; font-size: 13.5px; }
+.mb.clip { max-height: 18.6em; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent); mask-image: linear-gradient(to bottom, #000 72%, transparent); }
+.mexp { margin-top: 4px; font-size: 12.5px; }
+.sys { margin: -2px 0 8px; padding: 0 4px; font-size: 12px; color: var(--faint); line-height: 1.45; overflow-wrap: anywhere; }
+.sys > summary { display: block; }
+.sys > div:first-child::before { content: ""; display: inline-block; width: 1em; }
+.sys .sw { font-weight: 600; color: var(--ct); }
+.sys .st { color: var(--faint); }
+.sys .sb { margin: 4px 0 2px 1em; padding: 6px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); white-space: pre-wrap; font-size: 12px; color: var(--muted); }
+
+@media (max-width: 1240px) {
+  main { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+  #s-msgs { grid-column: 1; grid-row: auto; }
+  #s-task { order: 1; } #s-agents { order: 2; } #s-kanban { order: 3; } #s-msgs { order: 4; }
+  #s-runs { order: 5; } #s-docs { order: 6; } #s-tasks { order: 7; }
+  .msgpane { position: static; height: auto; min-height: 0; }
+  #msglist { max-height: 75vh; }
+}
+@media (max-width: 680px) {
+  .top { position: static; padding: 8px 12px; }
+  main { padding: 12px 12px 24px; gap: 12px; }
+  #banners { padding: 0 12px; }
+  .kanban, .kanban.k5 { grid-template-columns: minmax(0, 1fr); }
+  .fresh { margin-left: 0; }
+  .ttitle { font-size: 18px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .s-working .sdot { animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+}
 </style>
 </head>
 <body>
-<header>
-  <div class="top">
-    <span id="proj">brigada</span>
-    <label class="muted">задача: <select id="tasksel" aria-label="Задача"></select></label>
-    <span id="foot"></span>
-  </div>
-  <div id="tline"></div>
-  <div id="banners"></div>
+<header class="top">
+  <div class="brand"><span id="proj">brigada</span><span class="sub">доска бригады</span></div>
+  <label class="tsel"><span class="sr">Задача</span><select id="tasksel" aria-label="Задача"></select></label>
+  <div id="fresh" class="fresh off"></div>
 </header>
+<div id="banners"></div>
 <main>
-  <div class="col">
-    <section id="s-agents"><h2>Бригада</h2><div id="agents"></div></section>
-    <section id="s-kanban"><h2>Подзадачи</h2><div id="kanban"></div></section>
-    <section id="s-runs"><h2>Прогоны</h2><div id="runs"></div></section>
-    <section id="s-docs"><h2>Документы</h2><div class="tabs" id="doctabs"></div><div id="doc" class="doc"></div></section>
-    <section id="s-tasks"><h2>Задачи</h2><div id="tasks"></div></section>
-  </div>
-  <div class="col">
-    <section id="s-msgs">
-      <h2>Переписка</h2>
-      <div class="tabs" id="msgtabs"></div>
-      <div class="tabs">
-        <label class="muted">агент: <select id="magent" class="ctl"></select></label>
-        <label class="muted"><input type="checkbox" id="msys"> скрыть системные</label>
+  <section id="s-task" class="sec hide"></section>
+  <section id="s-agents" class="sec hide"></section>
+  <section id="s-kanban" class="sec hide"></section>
+  <section id="s-msgs">
+    <div class="panel msgpane">
+      <div class="mphead">
+        <h2>Переписка</h2>
+        <div class="mctl">
+          <div class="seg2" id="msgtabs"></div>
+          <label>агент <select id="magent"></select></label>
+          <label><input type="checkbox" id="msys"> скрыть системные</label>
+        </div>
+        <div id="msgtrunc"></div>
       </div>
-      <div id="msgtrunc" class="muted"></div>
       <div id="msglist"></div>
-    </section>
-  </div>
+    </div>
+  </section>
+  <section id="s-runs" class="sec hide"></section>
+  <section id="s-docs" class="sec hide"></section>
+  <section id="s-tasks" class="sec hide"></section>
 </main>
 <script>
 (function () {
@@ -147,13 +359,13 @@ a.re:hover, a.lnk:hover { text-decoration: underline; }
   var TASK_RU = { active: "идёт", done: "закрыта", cancelled: "отменена" };
   var RUN_RU = { queued: "в очереди", running: "идёт", done: "готово", failed: "ошибка", timeout: "таймаут", killed: "остановлен", cancelled: "отменён" };
   var RUN_FINAL = { done: 1, failed: 1, timeout: 1, killed: 1, cancelled: 1 };
-  var COLS = [["todo", "todo"], ["claimed", "в работе"], ["done", "готово"], ["cancelled", "отменено"]];
   var DOCS = [["brief", "Постановка", "постановки нет"], ["plan", "План", "плана нет — его пишет lead в shared/plan.md задачи"], ["summary", "Итог", "итога ещё нет — summary.md нужен для закрытия задачи"]];
   var RUN_CMD = "bash .brigada/bin/brg board (Windows: .\\.brigada\\bin\\brg.cmd board)";
+  var PAL = 10, CLIP_LINES = 12, CLIP_CHARS = 1200, QUOTE = 80;
 
   var S = {
-    data: null, err: "", sel: "", msgTab: "task", agent: "", hideSys: false, docTab: "brief",
-    open: {}, last: {}, tload: {}, msgChan: ""
+    data: null, err: "", sel: "", msgTab: "task", agent: "", hideSys: false, docTab: "",
+    open: {}, last: {}, tload: {}, msgChan: "", colors: {}, csig: ""
   };
 
   // ── helpers ──
@@ -178,9 +390,10 @@ a.re:hover, a.lnk:hover { text-decoration: underline; }
   function now() { return Math.floor(Date.now() / 1000); }
   function dur(s) {
     s = Math.max(0, Math.floor(s));
-    if (s < 120) return s + " с";
-    if (s < 7200) return Math.round(s / 60) + " мин";
-    return Math.round(s / 3600) + " ч";
+    if (s < 60) return s + " с";
+    if (s < 3600) return Math.floor(s / 60) + " мин";
+    if (s < 86400) return Math.floor(s / 3600) + " ч" + (Math.floor(s / 60) % 60 ? " " + Math.floor(s / 60) % 60 + " мин" : "");
+    return Math.floor(s / 86400) + " д" + (Math.floor(s / 3600) % 24 ? " " + Math.floor(s / 3600) % 24 + " ч" : "");
   }
   function ago(s) {
     s = Math.max(0, Math.floor(s));
@@ -203,15 +416,26 @@ a.re:hover, a.lnk:hover { text-decoration: underline; }
     return a < b ? -1 : a > b ? 1 : 0;
   }
   function taskId(t) { var m = /^(T\d{3,6})(-|$)/.exec(t && typeof t.dir === "string" ? t.dir : ""); return m ? m[1] : ""; }
-  // a span kept current by tick(): "ago" (… назад) or "dur" (… с) since an epoch
-  function live(fmt, since) {
-    var e = el("span", "live");
+  function firstLine(s, max) {
+    var ls = String(s || "").split("\n"), i, x = "";
+    for (i = 0; i < ls.length; i++) { x = ls[i].replace(/^\s+|\s+$/g, ""); if (x) break; }
+    return x.length > max ? x.slice(0, max - 1) + "…" : x;
+  }
+  // a span kept current by tick(): "ago" (… назад) or "dur" (… мин) since an epoch
+  function live(fmt, since, cls) {
+    var e = el("span", "live" + (cls ? " " + cls : ""));
     e.setAttribute("data-fmt", fmt);
     e.setAttribute("data-since", String(since));
     e.textContent = fmt === "ago" ? ago(now() - since) : dur(now() - since);
     return e;
   }
-  function badge(text, cls) { return el("span", "badge" + (cls ? " " + cls : ""), text); }
+  function pill(text, cls) { return el("span", "pill" + (cls ? " " + cls : ""), text); }
+  function btn(cls, text, fn) {
+    var b = el("button", cls, text);
+    b.type = "button";
+    b.addEventListener("click", fn);
+    return b;
+  }
   // <details> keeps its open state across re-renders
   function details(key, cls) {
     var d = el("details", cls);
@@ -224,6 +448,56 @@ a.re:hover, a.lnk:hover { text-decoration: underline; }
     if (S.last[name] === k) return;
     S.last[name] = k;
     fn(input);
+  }
+  function head(box, title, cnt) {
+    var h = el("h2", null, title);
+    if (cnt) h.appendChild(el("span", "cnt", cnt));
+    box.appendChild(h);
+    return h;
+  }
+  // an empty section: one short line instead of a panel
+  function mini(box, title, text) {
+    box.className = "sec mini";
+    add(box, el("span", "mt", title), el("span", "faint", text));
+  }
+
+  // ── agent colors (DESIGN §9.1): stable by name — a hash, collisions resolved in join order ──
+  function hash(s) {
+    var h = 5381, i;
+    for (i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+    return h;
+  }
+  function setColors(agents) {
+    var m = {}, used = {}, n = 0;
+    agents.slice().sort(function (a, b) { return (a.joined - b.joined) || natcmp(a.name, b.name); }).forEach(function (a) {
+      var h = hash(a.name) % PAL, c = h, k;
+      if (n < PAL) for (k = 0; k < PAL; k++) { c = (h + k) % PAL; if (!used[c]) break; }
+      used[c] = 1;
+      n++;
+      m[a.name] = c;
+    });
+    S.colors = m;
+    S.csig = JSON.stringify(m);
+  }
+  function colorCls(name) {
+    if (name === "human") return "ch";
+    if (!name || name === "brg") return "cs";
+    return "c" + (typeof S.colors[name] === "number" ? S.colors[name] : hash(name) % PAL);
+  }
+  // avatar text: a harness letter + the number (claude-2 → C2, codex-1 → X1)
+  var HARNESS_LETTER = { claude: "C", codex: "X", opencode: "O", gemini: "G", human: "H" };
+  function initials(name) {
+    var m = /^(.*?)(?:-(\d+))?$/.exec(name || "?"), p = (m && m[1] ? m[1] : "?").toLowerCase().split("-")[0] || "?";
+    var l = HARNESS_LETTER[p] || (p.charAt(0).toUpperCase() + p.charAt(1));
+    return l + (m && m[2] ? m[2] : "");
+  }
+  function avatar(name, cls) {
+    var a = el("span", "av " + colorCls(name) + (cls ? " " + cls : ""), initials(name));
+    a.title = name;
+    return a;
+  }
+  function chip(name, cls) {
+    return add(el("span", "chip " + colorCls(name) + (cls ? " " + cls : "")), el("span", "av", initials(name)), el("span", "nm", name));
   }
 
   // ── data ──
@@ -266,15 +540,48 @@ a.re:hover, a.lnk:hover { text-decoration: underline; }
     return { id: id, t: null, trunc: {}, isCur: false, missing: !known ? "unknown" : S.tload[id] === "loading" ? "loading" : "fail" };
   }
   function itemOf(r) {
-    var revs = (r.reviews || []).filter(Boolean).slice().sort(function (a, b) { return num(a.f) - num(b.f); });
-    return {
+    // review records: numeric file names only, as brg counts them (DESIGN §7.1.1)
+    var revs = (r.reviews || []).filter(function (x) { return x && /^\d+$/.test(String(x.f)); })
+      .sort(function (a, b) { return num(a.f) - num(b.f); });
+    var it = {
       id: hv(r, "Id") || r.f, title: hv(r, "Title"), status: hv(r, "Status"), assignee: hv(r, "Assignee"),
       creator: hv(r, "Creator"), paths: hv(r, "Paths"), hint: hv(r, "Paths-Hint"), claimed: num(hv(r, "Claimed-Epoch")),
-      done: isoEpoch(hv(r, "Done")), note: hv(r, "Note"), result: hv(r, "Result"), desc: r.b || "",
+      created: isoEpoch(hv(r, "Created")), done: isoEpoch(hv(r, "Done")), note: hv(r, "Note"), result: hv(r, "Result"), desc: r.b || "",
+      cancelled: isoEpoch(hv(r, "Cancelled")), cancelledBy: hv(r, "Cancelled-By"),
+      reviewFlag: hv(r, "Review"), doneRevs: num(hv(r, "Done-Reviews")), reviewingRaw: hv(r, "Reviewing"), reviewing: names(hv(r, "Reviewing")),
       reviews: revs.map(function (v) {
         return { n: num(v.f), verdict: hv(v, "Verdict"), reviewer: hv(v, "Reviewer"), model: hv(v, "Model"), time: num(hv(v, "Epoch")), b: v.b || "" };
-      })
+      }),
+      last: null
     };
+    var mx = 0; // the newest record: the greatest number above 0 (as brg: b + 0 > mx)
+    it.reviews.forEach(function (x) { if (x.n > mx) { mx = x.n; it.last = x; } });
+    it.st = stageOf(it);
+    return it;
+  }
+  // DESIGN §7.1.1 — the stage, the same rule as brg's item_stage_v. col: todo | work |
+  // review | done | cancelled | other. The newest verdict: changes — special, skip —
+  // «готово · без проверки», anything else (ok, odd values) — «готово». fix — changes
+  // (claimed: «правки по ревью»; done: «правки», shown in the work column); again —
+  // handed in again after changes; noReview — without review (plan — by Review: no)
+  function stageOf(it) {
+    var n = it.reviews.length, last = it.last, v = last ? last.verdict : "", d = it.doneRevs;
+    var s = { col: "other", fix: false, again: false, after: false, noReview: false, plan: false, last: last };
+    if (it.status === "todo") s.col = "todo";
+    else if (it.status === "cancelled") s.col = "cancelled";
+    else if (it.status === "claimed") { s.col = "work"; s.fix = v === "changes"; }
+    else if (it.status === "done") {
+      if (n > 0) { // n > d: a verdict after the hand-in; 0 < n ≤ d: handed in after it
+        if (v === "changes") { if (n > d) { s.col = "work"; s.fix = true; } else { s.col = "review"; s.again = true; } }
+        else if (v === "skip") { s.col = "done"; s.noReview = true; }
+        else if (n > d) s.col = "done";
+        else { s.col = "review"; s.after = true; } // handed in after ok: the work may have changed
+      } else if (it.reviewFlag === "no") { s.col = "done"; s.noReview = true; s.plan = true; }
+      else s.col = "review";
+      // someone is reviewing — the review is going on («передумали, проверка нужна»)
+      if (s.col === "done" && it.reviewingRaw !== "") { s.col = "review"; s.noReview = false; s.plan = false; }
+    }
+    return s;
   }
   function runOf(r) {
     return {
@@ -285,176 +592,348 @@ a.re:hover, a.lnk:hover { text-decoration: underline; }
     };
   }
 
-  // ── sections ──
+  // ── header ──
   function renderHead(v) {
     $("proj").textContent = v.project || "brigada";
     document.title = (v.project ? v.project + " — " : "") + "brigada";
     var sel = $("tasksel");
     clear(sel);
-    var o = el("option", null, "текущая" + (v.curId ? " (" + v.curId + ")" : ""));
+    var o = el("option", null, "текущая задача" + (v.curId ? " · " + v.curId : ""));
     o.value = "";
     sel.appendChild(o);
     v.tasks.slice().reverse().forEach(function (t) {
-      var x = el("option", null, t[0] + " · " + (TASK_RU[t[2]] || t[2]) + " · " + t[1]);
+      var x = el("option", null, t[0] + " · " + t[1] + " — " + (TASK_RU[t[2]] || t[2]));
       x.value = t[0];
       sel.appendChild(x);
     });
     sel.value = v.sel && v.tasks.some(function (t) { return t[0] === v.sel; }) ? v.sel : "";
-    var tl = $("tline");
-    clear(tl);
-    if (v.th) {
-      var h = v.th, st = h.Status || "", ce = num(h["Created-Epoch"]), xe = num(h["Closed-Epoch"]);
-      add(tl, el("span", "ttl", v.vid + " «" + (h.Title || "") + "»"), " ", badge(TASK_RU[st] || st, "ts-" + st),
-        el("span", "muted", " · host " + (h.Host || "—") + " · lead " + (h.Lead || "—") + " · "));
-      if (st === "active" && ce) add(tl, el("span", "muted", "идёт "), live("dur", ce));
-      else if (ce && xe) add(tl, el("span", "muted", "длилась " + dur(xe - ce) + ", " + hm(xe)));
-      if (!v.isCur) {
-        var a = el("a", "lnk", "к текущей");
-        a.href = "#";
-        a.addEventListener("click", function (e) { e.preventDefault(); location.hash = ""; });
-        add(tl, el("span", "muted", " · прошлая задача · "), a);
-      }
-    } else if (v.missing === "loading") {
-      add(tl, el("span", "muted", v.vid + ": загружаю…"));
-    } else if (v.missing) {
-      add(tl, el("span", "muted", v.vid + ": данных нет — кэш задачи пишет brg board (" + RUN_CMD + ")"));
-    } else if (v.hasData) {
-      add(tl, el("span", "muted", "задач ещё нет"));
-    }
   }
-
+  function renderFresh(v) {
+    var f = $("fresh");
+    clear(f);
+    if (!v.hasData) { f.className = "fresh off"; add(f, el("span", "dot"), "нет снимка"); f.title = ""; return; }
+    f.className = "fresh" + (v.stale ? " stale" : "");
+    add(f, el("span", "dot"), "снимок ", live("ago", v.time));
+    f.title = "brg " + v.version + " · снимок " + hm(v.time) + " · обновляется раз в " + v.interval + " с";
+  }
   function renderBanners(v) {
     var b = $("banners");
     clear(b);
-    function line(text, bad) { var e = el("div", "banner" + (bad ? " bad" : ""), text); b.appendChild(e); return e; }
+    function line(kind, label, text) {
+      var e = el("div", "banner" + (kind ? " " + kind : ""));
+      if (label) e.appendChild(el("b", null, label));
+      if (text) e.appendChild(document.createTextNode(text));
+      b.appendChild(e);
+      return e;
+    }
     if (!v.hasData) {
-      if (v.err === "nofile") line("Снимка ещё нет — запусти в корне проекта: " + RUN_CMD, true);
-      else if (v.err === "parse") line("Снимок не прочитан (ошибка в run/board/data.js) — перезапусти brg board", true);
+      if (v.err === "nofile") add(line("bad", "Снимка ещё нет.", " Запусти в корне проекта: "), el("code", null, RUN_CMD));
+      else if (v.err === "parse") line("bad", "Снимок не прочитан", " (ошибка в run/board/data.js) — перезапусти brg board");
       return;
     }
-    if (v.err) line("Снимок не читается — показаны последние данные. Запусти: " + RUN_CMD);
-    if (v.stale) add(line("Доска не обновляется: последний снимок "), live("ago", v.time), " — brg board остановлен? " + RUN_CMD);
-    if (v.stop) line("STOP: человек остановил бригаду (снять: brg resume)", true);
-    if (v.stopped.length) line("Остановлены агенты: " + v.stopped.join(", ") + " (снять: brg resume <имя>)");
+    if (v.err) add(line("warn", "Снимок не читается", " — показаны последние данные. Запусти: "), el("code", null, RUN_CMD));
+    if (v.stale) add(line("warn", "Доска не обновляется:", " последний снимок "), live("ago", v.time), " — brg board остановлен? ", el("code", null, RUN_CMD));
+    if (v.stop) add(line("stop", "STOP", " — человек остановил бригаду. Снять: "), el("code", null, "brg resume"));
+    if (v.stopped.length) add(line("warn", "Остановлены агенты:", " " + v.stopped.join(", ") + " — снять: "), el("code", null, "brg resume <имя>"));
   }
 
-  function renderAgents(v) {
-    var box = $("agents");
+  // ── task: title, status, roles, progress ──
+  function renderTask(v) {
+    var box = $("s-task");
     clear(box);
-    if (!v.agents.length) { box.appendChild(el("div", "empty", "агентов нет — скажи агенту «подключись к бригаде» (без блока brigada в AGENTS.md — «подключись к .brigada, прочитай инструкцию в .brigada/README.md»)")); return; }
-    var wrap = el("div", "cards");
-    v.agents.forEach(function (a) {
-      var role = [], mine = v.items[a.name] || [];
-      if (a.name === v.host) role.push("host");
-      if (a.name === v.lead) role.push("lead");
-      var c = el("div", "card" + (a.drop ? " warn" : "") + (a.state === "gone" && !role.length && !mine.length ? " dim" : ""));
-      add(c, add(el("div", "ln"), el("span", "nm", a.name), " ", badge(STATE_RU[a.state] || a.state, "st-" + a.state),
-        a.stopped ? " " : null, a.stopped ? badge("stop", "b-bad") : null, a.left ? " " : null, a.left ? badge("leave", "") : null));
-      add(c, el("div", "ln muted", (a.harness || "?") + " · " + (a.model || "?")));
-      if (v.hasTask) add(c, el("div", "ln", "роль: " + (role.length ? role.join(" и ") : "участник")));
-      if (mine.length) add(c, el("div", "ln", "в работе: " + mine.join(", ")));
-      if (a.note) add(c, el("div", "ln note", a.note + (a.drop ? " — напиши агенту в его чат «продолжай»" : "")));
-      if (a.seen > 0) add(c, add(el("div", "ln muted"), "последний вызов brg: ", live("ago", a.seen)));
-      wrap.appendChild(c);
+    if (!v.th) {
+      if (!v.hasData) { box.className = "sec hide"; return; }
+      box.className = "sec panel";
+      if (v.missing === "loading") box.appendChild(el("div", "empty", v.vid + ": загружаю…"));
+      else if (v.missing) box.appendChild(el("div", "empty", v.vid + ": данных нет — кэш задачи пишет brg board (" + RUN_CMD + ")"));
+      else box.appendChild(el("div", "empty", "Задач ещё нет — бригада заведёт задачу, когда ты её поставишь."));
+      if (!v.isCur) box.appendChild(add(el("div", "past"), btn("lnk", "← к текущей задаче", function () { location.hash = ""; })));
+      return;
+    }
+    box.className = "sec panel";
+    var h = v.th, st = h.Status || "", ce = num(h["Created-Epoch"]), xe = num(h["Closed-Epoch"]);
+    var top = el("div", "thead");
+    top.appendChild(add(el("h1", "ttitle"), el("span", "tid", v.vid + " ·"), h.Title || "(без названия)"));
+    var ts = add(el("div", "tstat"), pill(TASK_RU[st] || st, "ts-" + st));
+    if (st === "active" && ce) add(ts, live("dur", ce));
+    else if (ce && xe) { var x = el("span", null, "длилась " + dur(xe - ce)); x.title = "закрыта " + hm(xe); ts.appendChild(x); }
+    top.appendChild(ts);
+    box.appendChild(top);
+    var r = el("div", "troles");
+    [["host", h.Host], ["lead", h.Lead]].forEach(function (p) {
+      r.appendChild(add(el("span"), el("span", "lab", p[0]), p[1] ? chip(p[1], "sm") : el("span", "faint", "—")));
     });
-    box.appendChild(wrap);
+    box.appendChild(r);
+    if (!v.isCur) box.appendChild(add(el("div", "past"), "прошлая задача ·", btn("lnk", "к текущей", function () { location.hash = ""; })));
+    var c = v.counts, total = c.todo + c.work + c.review + c.done;
+    if (total) {
+      var p = el("div", "prog"), bar = el("div", "bar");
+      ["done", "review", "work"].forEach(function (k) {
+        if (!c[k]) return;
+        var s = el("span", "seg " + k);
+        s.style.width = (100 * c[k] / total) + "%";
+        bar.appendChild(s);
+      });
+      p.appendChild(bar);
+      var lab = add(el("div", "plab"), el("b", null, "готово " + c.done + " из " + total));
+      if (c.review) lab.appendChild(el("span", "lg review", (v.closed ? "не проверено " : "на проверке ") + c.review));
+      if (c.work) lab.appendChild(el("span", "lg work", "в работе " + c.work));
+      if (c.todo) lab.appendChild(el("span", "lg todo", "todo " + c.todo));
+      if (c.cancelled) lab.appendChild(el("span", "faint", "отменено " + c.cancelled));
+      p.appendChild(lab);
+      box.appendChild(p);
+    }
   }
 
-  function renderKanban(v) {
-    var box = $("kanban");
+  // ── brigade: a strip of agent chips ──
+  function renderAgents(v) {
+    var box = $("s-agents");
     clear(box);
-    if (!v.hasTask) { box.appendChild(el("div", "empty", "нет задачи")); return; }
-    if (!v.items.length) { box.appendChild(el("div", "empty", "подзадач нет")); return; }
-    var k = el("div", "kanban");
-    COLS.forEach(function (col) {
-      var its = v.items.filter(function (i) { return i.status === col[0]; });
-      var c = add(el("div", "kcol"), add(el("h3", null, col[1] + " "), el("span", "muted", String(its.length))));
+    if (!v.hasData) { box.className = "sec hide"; return; }
+    box.className = "sec panel";
+    var on = v.agents.filter(function (a) { return a.state !== "gone"; }).length;
+    head(box, "Бригада", v.agents.length ? "в бригаде " + on + (v.agents.length > on ? " · ушли " + (v.agents.length - on) : "") : "");
+    if (!v.agents.length) {
+      box.appendChild(el("div", "empty", "Агентов нет — скажи агенту «подключись к бригаде» (без блока brigada в AGENTS.md — «подключись к .brigada, прочитай инструкцию в .brigada/README.md»)."));
+      return;
+    }
+    var strip = el("div", "strip"), warns = el("div", "warns");
+    v.agents.forEach(function (a) {
+      var w = v.work[a.name] || { doing: [], fixing: [], reviewing: [] }, roles = [];
+      if (a.name === v.host) roles.push("host");
+      if (a.name === v.lead) roles.push("lead");
+      var busy = roles.length || w.doing.length || w.fixing.length || w.reviewing.length;
+      var c = el("div", "achip " + colorCls(a.name) + " s-" + a.state + (a.drop ? " drop" : "") + (a.state === "gone" && !busy ? " dim" : ""));
+      c.appendChild(add(el("span", "avw"), el("span", "av", initials(a.name)), el("span", "sdot")));
+      var l1 = add(el("span", "l1"), el("span", "nm", a.name));
+      roles.forEach(function (r) { l1.appendChild(el("span", "role", r)); });
+      if (a.stopped) l1.appendChild(el("span", "role stop", "stop"));
+      var l2 = add(el("span", "l2"), STATE_RU[a.state] || a.state);
+      function part(label, ids, cls) { if (ids.length) add(l2, " · ", el("span", cls, label + " " + (v.pfx ? v.pfx + ": " : "") + ids.join(", "))); }
+      part("делает", w.doing, "doing");
+      part("правки", w.fixing, "fixing");
+      part("проверяет", w.reviewing, "revw");
+      if (a.model) add(l2, " · ", el("span", "faint", a.model));
+      c.appendChild(add(el("span", "ab"), l1, l2));
+      c.title = a.name + " — " + (STATE_RU[a.state] || a.state) + "\n" + (a.harness || "?") + " · " + (a.model || "?") +
+        (a.seen > 0 ? "\nпоследний вызов brg: " + hm(a.seen) : "") + (a.note ? "\n" + a.note : "");
+      strip.appendChild(c);
+      if (a.drop) {
+        warns.appendChild(add(el("div", "wline"), el("b", null, a.name + ": " + a.note), " — напиши агенту в его чат «продолжай»."));
+      }
+    });
+    box.appendChild(strip);
+    if (warns.firstChild) box.appendChild(warns);
+  }
+
+  // ── kanban ──
+  function renderKanban(v) {
+    var box = $("s-kanban");
+    clear(box);
+    if (!v.hasTask) { box.className = "sec hide"; return; }
+    if (!v.items.length) { mini(box, "Подзадачи", v.closed ? "не было" : "пока нет — их заводит lead или участники (brg item add)"); return; }
+    box.className = "sec panel";
+    head(box, "Подзадачи", String(v.items.filter(function (i) { return i.st.col !== "cancelled"; }).length));
+    var cols = [["todo", "todo"], ["work", "в работе"], ["review", v.closed ? "не проверено" : "на проверке"], ["done", "готово"]];
+    if (v.items.some(function (i) { return i.st.col === "cancelled"; })) cols.push(["cancelled", "отменено"]);
+    var k = el("div", "kanban" + (cols.length > 4 ? " k5" : ""));
+    cols.forEach(function (col) {
+      var its = v.items.filter(function (i) { return i.st.col === col[0]; });
+      var c = el("div", "kcol k-" + col[0]);
+      c.appendChild(add(el("h3"), el("span", "kd"), col[1], el("span", "n", String(its.length))));
+      if (!its.length) c.appendChild(el("div", "kempty", "—"));
       its.forEach(function (it) { c.appendChild(itemCard(it, v)); });
       k.appendChild(c);
     });
-    var other = v.items.filter(function (i) { return !COLS.some(function (c) { return c[0] === i.status; }); });
     box.appendChild(k);
-    other.forEach(function (it) { box.appendChild(itemCard(it, v)); });
+    var other = v.items.filter(function (i) { return i.st.col === "other"; });
+    if (other.length) {
+      var o = el("div", "kcol");
+      o.style.marginTop = "10px";
+      o.appendChild(add(el("h3"), el("span", "kd"), "другой статус", el("span", "n", String(other.length))));
+      other.forEach(function (it) { o.appendChild(itemCard(it, v)); });
+      box.appendChild(o);
+    }
+  }
+  // time in the stage: [epoch, label for the title, ongoing]
+  function stageTime(it) {
+    var st = it.st, last = st.last;
+    if (st.col === "todo") return [it.created, "создана", true];
+    if (st.col === "work" && it.status === "claimed") return [it.claimed, "в работе с", true];
+    if (st.col === "work") return [last ? last.time : 0, "правки запрошены", true];
+    if (st.col === "review") return [it.done, "сдана", true];
+    if (st.col === "done") return [last && last.time > it.done ? last.time : it.done, "готово", false];
+    if (st.col === "cancelled") return [it.cancelled, "отменена", false];
+    return [0, "", false];
   }
   function itemCard(it, v) {
-    var last = it.reviews.length ? it.reviews[it.reviews.length - 1] : null;
-    var bad = it.assignee && v.bad[it.assignee] && it.status === "claimed";
-    var c = el("div", "card" + (bad ? " warn" : "") + (last && last.verdict === "changes" ? " changes" : ""));
-    add(c, add(el("div", "ln"), el("b", null, it.id), " " + it.title));
-    var m = el("div", "ln muted");
-    if (it.assignee) add(m, el("span", bad ? "note" : null, it.assignee + (bad ? " (" + v.bad[it.assignee] + ")" : "")));
-    var p = it.paths || (it.hint ? "? " + it.hint : "");
-    if (p && p !== "none") add(m, it.assignee ? " · " : null, el("span", "mono", p.split(",").join(", ")));
-    else if (p === "none") add(m, it.assignee ? " · " : null, "без правок файлов");
-    if (m.firstChild) c.appendChild(m);
-    if (it.status === "claimed" && it.claimed) add(c, add(el("div", "ln muted"), "в работе ", live("dur", it.claimed)));
-    if (it.status === "done" && it.done) add(c, el("div", "ln muted", "сдано " + hm(it.done)));
-    if (last) {
-      var ok = last.verdict === "ok";
-      add(c, add(el("div", "ln"), badge((ok ? "✓ ok" : "✗ " + last.verdict) + " от " + last.reviewer, ok ? "b-ok" : "b-bad"),
-        it.reviews.length > 1 ? el("span", "muted", " · ревью: " + it.reviews.length) : null));
+    var st = it.st, last = st.last, a = it.assignee;
+    var c = el("div", "card st-" + st.col + (st.fix ? " fix" : ""));
+    var top = add(el("div", "crow"), el("span", "num", it.id));
+    // the verdict mark: ok on an accepted item, changes while they are pending
+    var okm = !!last && last.verdict === "ok" && st.col === "done", bad = !!last && last.verdict === "changes" && (st.fix || st.again);
+    if (okm || bad) {
+      var mk = el("span", "vmark " + (okm ? "ok" : "bad"), okm ? "✓" : "✗");
+      mk.title = "последнее ревью #" + last.n + ": " + last.verdict + " от " + last.reviewer;
+      top.appendChild(mk);
     }
-    var rs = v.runs[it.id] || [];
-    if (rs.length) {
-      var rl = add(el("div", "ln muted"), "прогоны: ");
-      rs.forEach(function (r, i) {
-        add(rl, i ? ", " : null, el("span", r[1] === "done" ? "" : RUN_FINAL[r[1]] ? "note" : "", r[0] + " " + (RUN_RU[r[1]] || r[1])));
-      });
-      c.appendChild(rl);
+    c.appendChild(top);
+    c.appendChild(el("div", "ttl", it.title || "(без названия)"));
+    var tags = el("div", "tags");
+    if (st.fix && last) tags.appendChild(pill("правки по ревью от " + last.reviewer, "bad wrap"));
+    if (st.noReview) tags.appendChild(pill("без проверки"));
+    if (st.again) tags.appendChild(pill("пересдана после правок", "rev"));
+    if (st.after) tags.appendChild(pill("сдана после ревью — нужна новая проверка", "rev wrap"));
+    if (v.live && a && v.bad[a] && (st.col === "work" || st.col === "todo")) tags.appendChild(pill("исполнитель " + v.bad[a], "warn"));
+    if (tags.firstChild) c.appendChild(tags);
+    // who decided «без проверки»: Review: no at planning (the creator) or a skip record
+    if (st.noReview) {
+      var who = st.plan ? it.creator : last ? last.reviewer : "";
+      var why = st.plan ? "при планировании" : last && last.b ? firstLine(last.b, 100) : "";
+      if (who || why) c.appendChild(add(el("div", "why"), "решил ", who ? avatar(who, "xs") : null, who ? " " + who : "", why ? (st.plan ? " " : ": ") + why : ""));
     }
-    if (it.desc || it.note || it.result || it.reviews.length) {
-      var d = details("item:" + v.tid + ":" + it.id, "desc");
-      d.appendChild(el("summary", "muted", "подробнее"));
-      if (it.desc) d.appendChild(el("div", "pre", it.desc));
-      if (it.note) d.appendChild(el("div", "pre", "итог: " + it.note));
-      if (it.result) add(d, add(el("div"), "результат: ", el("span", "mono", it.result)));
+    if (st.col === "cancelled" && it.cancelledBy) c.appendChild(add(el("div", "why"), "отменил ", avatar(it.cancelledBy, "xs"), " " + it.cancelledBy));
+    if (st.col === "review" || (it.reviewing.length && st.col === "work")) {
+      if (it.reviewing.length) {
+        var rl = add(el("div", "revline"), "проверяет");
+        it.reviewing.forEach(function (n) { rl.appendChild(chip(n, "sm")); });
+        c.appendChild(rl);
+      } else if (!v.closed) c.appendChild(el("div", "revline wait", "ждёт проверяющего"));
+    }
+    var foot = el("div", "cfoot");
+    if (a) foot.appendChild(chip(a, "sm"));
+    else foot.appendChild(el("span", "faint", st.col === "todo" ? "никто не взял" : "—"));
+    var t = stageTime(it);
+    if (t[0]) {
+      var tm;
+      if (t[2] && v.live) tm = live("dur", t[0], "tm live");
+      else tm = el("span", "tm", st.col === "done" || st.col === "cancelled" ? hm(t[0]) : dur((v.closedAt || now()) - t[0]));
+      tm.title = t[1] + " " + hm(t[0]);
+      if (st.col === "done" && last && last.verdict === "ok") {
+        var acc = add(el("span", "acc-by tm"), avatar(last.reviewer, "xs"), tm);
+        acc.title = "принял " + last.reviewer + " · " + hm(t[0]);
+        foot.appendChild(acc);
+      } else foot.appendChild(tm);
+    }
+    c.appendChild(foot);
+    // details: paths, description, note, result, reviews, runs
+    var rs = v.runs[it.id] || [], p = it.paths || it.hint;
+    if (p || it.desc || it.note || it.result || it.reviews.length || rs.length || it.creator) {
+      var d = details("item:" + v.tid + ":" + it.id, "more");
+      var nrev = it.reviews.filter(function (r) { return r.verdict !== "skip"; }).length;
+      d.appendChild(el("summary", null, "подробнее" + (nrev ? " · ревью " + nrev : "") + (rs.length ? " · прогоны " + rs.length : "")));
+      var b = el("div", "dbody");
+      if (p === "none") b.appendChild(add(el("div"), el("span", "k", "пути:"), "без правок файлов"));
+      else if (p) b.appendChild(add(el("div"), el("span", "k", it.paths ? "пути:" : "предложены пути:"), el("span", "mono", p.split(",").join(", "))));
+      if (it.desc) b.appendChild(el("div", "pre", it.desc));
+      if (it.note) b.appendChild(add(el("div", "pre"), el("span", "k", "итог:"), it.note));
+      if (it.result) b.appendChild(add(el("div"), el("span", "k", "результат:"), el("span", "mono", it.result)));
       it.reviews.forEach(function (r) {
-        var rv = el("div", "desc");
-        add(rv, el("div", "muted", "ревью #" + r.n + " · " + r.verdict + " · " + r.reviewer + (r.model ? " (" + r.model + ")" : "") + (r.time ? " · " + hm(r.time) : "")));
-        if (r.b) rv.appendChild(el("div", "pre", r.b));
-        d.appendChild(rv);
+        // skip is a decision («без проверки — X: почему»), not a review verdict
+        var skip = r.verdict === "skip", rv = el("div", "rvw" + (skip ? " skip" : ""));
+        var vp = skip ? pill("без проверки") : r.verdict === "ok" ? pill("✓ ok", "ok") : r.verdict === "changes" ? pill("✗ changes", "bad") : pill(r.verdict || "?");
+        rv.appendChild(add(el("div", "rh"), vp, chip(r.reviewer, "sm"), r.model && !skip ? el("span", "faint", r.model) : null,
+          el("span", "faint", "#" + r.n + (r.time ? " · " + hm(r.time) : ""))));
+        if (r.b) rv.appendChild(skip ? add(el("div", "pre"), el("span", "k", "почему:"), r.b) : el("div", "pre", r.b));
+        b.appendChild(rv);
       });
+      if (rs.length) {
+        var rl2 = add(el("div"), el("span", "k", "прогоны:"));
+        rs.forEach(function (r, i) { add(rl2, i ? ", " : null, el("span", r[1] === "done" ? null : RUN_FINAL[r[1]] ? "fixing" : null, r[0] + " " + (RUN_RU[r[1]] || r[1]))); });
+        b.appendChild(rl2);
+      }
+      if (it.creator) b.appendChild(add(el("div", "faint"), "создал " + it.creator));
+      d.appendChild(b);
       c.appendChild(d);
     }
-    if (it.creator) c.appendChild(el("div", "ln muted", "создал " + it.creator));
     return c;
   }
 
+  // ── runs ──
   function runStatus(r) {
-    var t = RUN_RU[r.status] || r.status, cls = r.status === "done" ? "b-ok" : RUN_FINAL[r.status] ? "b-bad" : "b-warn";
+    var t = RUN_RU[r.status] || r.status, cls = r.status === "done" ? "ok" : r.status === "cancelled" ? "" : RUN_FINAL[r.status] ? "bad" : r.status === "running" ? "acc" : "warn";
     if (!RUN_FINAL[r.status]) {
-      if (r.rh === "dead") { t += " · раннер мёртв"; cls = "b-bad"; }
-      else if (r.rh === "stale") { t += " · раннер не отвечает" + (r.rhAge !== null ? " " + r.rhAge + " с" : ""); cls = "b-bad"; }
-      else if (r.rh === "nostart") { t += " · раннер не запустился"; cls = "b-bad"; }
+      if (r.rh === "dead") { t += " · раннер мёртв"; cls = "bad"; }
+      else if (r.rh === "stale") { t += " · раннер не отвечает" + (r.rhAge !== null ? " " + r.rhAge + " с" : ""); cls = "bad"; }
+      else if (r.rh === "nostart") { t += " · раннер не запустился"; cls = "bad"; }
     }
-    return badge(t, cls);
+    return pill(t, cls);
   }
   function renderRuns(v) {
-    var box = $("runs");
+    var box = $("s-runs");
     clear(box);
-    if (!v.hasTask) { box.appendChild(el("div", "empty", "нет задачи")); return; }
-    if (!v.runs.length) { box.appendChild(el("div", "empty", "прогонов не было")); return; }
+    if (!v.hasTask) { box.className = "sec hide"; return; }
+    if (!v.runs.length) { mini(box, "Прогоны", "не было"); return; }
+    box.className = "sec panel";
+    var going = v.runs.filter(function (r) { return !RUN_FINAL[r.status]; }).length;
+    head(box, "Прогоны", v.runs.length + (going ? " · идёт " + going : ""));
+    var list = el("div", "runs");
     v.runs.slice().reverse().forEach(function (r) {
-      var d = details("run:" + r.id, "run");
-      var s = el("summary");
-      add(s, el("b", null, r.id), runStatus(r), el("span", "muted", r.agent + (r.item ? " · " + r.item : "")));
+      var d = details("run:" + v.tid + ":" + r.id, "run");
+      var s = add(el("summary"), el("span", "rid mono", r.id), runStatus(r));
       var c = el("code", "cmd", r.cmd);
       c.title = r.cmd;
       s.appendChild(c);
-      if (r.start && !r.fin && !RUN_FINAL[r.status]) add(s, add(el("span", "muted"), live("dur", r.start)));
-      else if (r.start && r.fin) s.appendChild(el("span", "muted", dur(r.fin - r.start)));
-      if (r.exit !== "") s.appendChild(el("span", "muted", "код " + r.exit));
+      var m = el("span", "rmeta");
+      if (r.agent) m.appendChild(avatar(r.agent, "xs"));
+      if (r.item) m.appendChild(el("span", "tag", r.item));
+      if (r.start && !r.fin && !RUN_FINAL[r.status]) m.appendChild(live("dur", r.start));
+      else if (r.start && r.fin) m.appendChild(el("span", null, dur(r.fin - r.start)));
+      if (r.exit !== "") m.appendChild(el("span", null, "код " + r.exit));
+      s.appendChild(m);
       d.appendChild(s);
-      d.appendChild(el("div", "pre mono", r.cmd));
+      var b = el("div", "rbody");
+      b.appendChild(add(el("div", "muted"), r.agent ? r.agent : "", r.item ? " · " + r.item : "", r.start ? " · запущен " + hm(r.start) : ""));
+      b.appendChild(el("div", "pre mono", r.cmd));
       var info = [];
       if (r.note) info.push(r.note);
       if (r.by) info.push("остановил " + r.by + (r.how ? " (" + r.how + ")" : ""));
-      if (info.length) d.appendChild(el("div", "pre muted", info.join(" · ")));
-      d.appendChild(el("pre", null, r.tail || (r.status === "queued" ? "(ещё не запущен)" : "(лог пуст или ещё не прочитан)")));
-      box.appendChild(d);
+      if (info.length) b.appendChild(el("div", "pre muted", info.join(" · ")));
+      b.appendChild(el("pre", null, r.tail || (r.status === "queued" ? "(ещё не запущен)" : "(лог пуст или ещё не прочитан)")));
+      d.appendChild(b);
+      list.appendChild(d);
+    });
+    box.appendChild(list);
+  }
+
+  // ── documents ──
+  function renderDocs(v) {
+    var box = $("s-docs");
+    clear(box);
+    if (!v.hasTask) { box.className = "sec hide"; return; }
+    var have = DOCS.filter(function (d) { return v.docs[d[0]]; });
+    if (!have.length) { mini(box, "Документы", "постановки, плана и итога пока нет"); return; }
+    box.className = "sec panel";
+    var tab = v.tab || (v.closed && v.docs.summary ? "summary" : have[0][0]);
+    var hd = el("div", "dhead"), seg = el("div", "seg2");
+    hd.appendChild(el("h2", null, "Документы"));
+    DOCS.forEach(function (d) {
+      var b = btn((tab === d[0] ? "on" : "") + (v.docs[d[0]] ? "" : " off"), d[1], function () { S.docTab = d[0]; render(); });
+      seg.appendChild(b);
+    });
+    hd.appendChild(seg);
+    box.appendChild(hd);
+    var cur = DOCS.filter(function (d) { return d[0] === tab; })[0] || DOCS[0], t = v.docs[cur[0]];
+    box.appendChild(t ? el("div", "doc pre", t) : el("div", "empty", cur[2]));
+  }
+
+  // ── tasks ──
+  function renderTasks(v) {
+    var box = $("s-tasks");
+    clear(box);
+    if (v.tasks.length < 2) { box.className = "sec hide"; return; }
+    box.className = "sec panel";
+    head(box, "Задачи", String(v.tasks.length));
+    v.tasks.slice().reverse().forEach(function (t) {
+      var r = btn("trow" + (t.id === v.vid ? " sel" : ""), null, function () { location.hash = t.id === v.curId ? "" : t.id; });
+      add(r, el("span", "tid", t.id), el("span", "tt", t.title || "(без названия)"), pill(TASK_RU[t.status] || t.status, "ts-" + t.status),
+        t.id === v.curId ? el("span", "faint", "текущая") : null);
+      if (t.sum) r.appendChild(el("span", "sum", t.sum));
+      box.appendChild(r);
     });
   }
 
+  // ── chat ──
   // DESIGN §8: a reply — a non-system message of an expected addressee after the original,
   // with Re: <id> or addressed to the sender (personally or all)
   function deadline(m, all) {
@@ -481,10 +960,7 @@ a.re:hover, a.lnk:hover { text-decoration: underline; }
     var tabs = $("msgtabs");
     clear(tabs);
     [["task", v.tid ? "Задача " + v.tid : "Задача", v.nTask], ["lobby", "lobby", v.nLobby]].forEach(function (t) {
-      var b = el("button", "tab" + (S.msgTab === t[0] ? " on" : ""), t[1] + " (" + t[2] + ")");
-      b.type = "button";
-      b.addEventListener("click", function () { S.msgTab = t[0]; render(); });
-      tabs.appendChild(b);
+      tabs.appendChild(btn(S.msgTab === t[0] ? "on" : "", t[1] + " · " + t[2], function () { S.msgTab = t[0]; render(); }));
     });
     var sel = $("magent");
     clear(sel);
@@ -495,74 +971,88 @@ a.re:hover, a.lnk:hover { text-decoration: underline; }
     sel.value = v.names.indexOf(S.agent) >= 0 ? S.agent : "";
     $("msys").checked = S.hideSys;
   }
+  function recips(to) {
+    var s = el("span", "to");
+    s.appendChild(el("span", "faint", "→"));
+    if (to.indexOf("all") >= 0 || !to.length) { s.appendChild(el("span", "all", "всем")); return s; }
+    to.forEach(function (n, i) { add(s, el("span", "rn " + colorCls(n), n + (i < to.length - 1 ? "," : ""))); });
+    return s;
+  }
+  function msgBlock(m, v, byId) {
+    var id = num(hv(m, "Id")), from = hv(m, "From"), re = hv(m, "Re"), to = names(hv(m, "To")), chan = v.chan;
+    var body = String(m.b || "").replace(/\s+$/, "");
+    var b = el("div", "msg " + colorCls(from) + (from === "human" ? " human" : ""));
+    if (id) b.id = "m-" + chan + "-" + id;
+    var h = add(el("div", "mh"), chip(from || "?", "sm"), recips(to));
+    if (to.length && to.indexOf("all") < 0) h.appendChild(pill("лично"));
+    var dl = deadline(m, v.msgs);
+    if (dl) {
+      var past = now() >= dl.rb, t = (past ? "срок " + hm(dl.rb) + " истёк" : "ответ до " + hm(dl.rb));
+      if (dl.yes.length) t += " · ответили: " + dl.yes.join(", ");
+      if (dl.no.length) t += (past ? " · не ответили: " : " · ждём: ") + dl.no.join(", ");
+      h.appendChild(pill(t, (past && dl.no.length ? "bad" : dl.no.length ? "warn" : "ok") + " wrap"));
+    }
+    var w = el("span", "when", hm(num(hv(m, "Epoch"))) + (id ? " · #" + id : ""));
+    w.title = hv(m, "Time");
+    h.appendChild(w);
+    b.appendChild(h);
+    if (/^\d+$/.test(re)) {
+      var q = byId[re], qb = btn("quote", null, function () { jump(chan, re); });
+      add(qb, el("span", "qn", "↩ #" + re), q ? hv(q, "From") + ": " + (firstLine(q.b, QUOTE) || "…") : "(сообщение не в снимке)");
+      qb.title = "перейти к #" + re;
+      b.appendChild(qb);
+    }
+    var mb = el("div", "mb", body), key = "msg:" + chan + ":" + id;
+    b.appendChild(mb);
+    if (body.length > CLIP_CHARS || body.split("\n").length > CLIP_LINES) {
+      var x = el("button", "lnk mexp");
+      var sync = function () {
+        mb.className = "mb" + (S.open[key] ? "" : " clip");
+        x.textContent = S.open[key] ? "свернуть" : "показать целиком";
+      };
+      x.type = "button";
+      x.addEventListener("click", function () { S.open[key] = !S.open[key]; sync(); });
+      sync();
+      b.appendChild(x);
+    }
+    return b;
+  }
+  // system messages: one quiet line; a multi-line body unfolds
+  function sysMsg(m, v) {
+    var id = num(hv(m, "Id")), from = hv(m, "From"), to = names(hv(m, "To")), chan = v.chan;
+    var body = String(m.b || "").replace(/\s+$/, ""), multi = body.indexOf("\n") >= 0, fl = firstLine(body, 400) || "…";
+    var own = !!from && fl.indexOf(from + " ") === 0; // "claude-1 взял I001 …": the name is not repeated
+    var line = add(el(multi ? "summary" : "div"), el("span", "st", hm(num(hv(m, "Epoch"))) + " "), el("span", "sw", from || "brg"),
+      own ? fl.slice(from.length) : " · " + fl, to.length && to.indexOf("all") < 0 ? el("span", "st", " → " + to.join(", ")) : null);
+    var e;
+    if (multi) {
+      e = details("sys:" + chan + ":" + id, "sys " + colorCls(from));
+      e.appendChild(line);
+      e.appendChild(el("div", "sb", body));
+    } else {
+      e = el("div", "sys " + colorCls(from));
+      e.appendChild(line);
+    }
+    if (id) e.id = "m-" + chan + "-" + id;
+    e.title = "#" + id + " · " + hv(m, "Time");
+    return e;
+  }
   function renderMsgs(v) {
     var box = $("msglist"), tr = $("msgtrunc");
     var atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40, top = box.scrollTop;
-    var chan = v.chan;
     clear(box);
     tr.textContent = v.trunc ? "показаны последние " + v.trunc.shown + " из " + v.trunc.total + " сообщений" : "";
+    var byId = {};
+    v.msgs.forEach(function (m) { var id = hv(m, "Id"); if (id) byId[id] = m; });
     var shown = v.msgs.filter(function (m) {
       if (v.hideSys && hv(m, "Kind") === "system") return false;
       if (v.agent && hv(m, "From") !== v.agent && names(hv(m, "To")).indexOf(v.agent) < 0) return false;
       return true;
     });
     if (!shown.length) box.appendChild(el("div", "empty", v.msgs.length ? "нет сообщений по фильтру" : "сообщений нет"));
-    shown.forEach(function (m) {
-      var id = num(hv(m, "Id")), from = hv(m, "From"), re = hv(m, "Re"), sys = hv(m, "Kind") === "system";
-      var b = el("div", "msg" + (sys ? " sys" : "") + (from === "human" ? " human" : ""));
-      if (id) b.id = "m-" + chan + "-" + id;
-      var h = add(el("div", "mh"), "#" + (id || "?") + " ", sys ? "[система] " : null, el("b", null, from), " → " + hv(m, "To"));
-      if (/^\d+$/.test(re)) {
-        var a = el("a", "re", "re #" + re);
-        a.href = "#";
-        a.addEventListener("click", function (e) { e.preventDefault(); jump(chan, re); });
-        add(h, " · ", a);
-      }
-      add(h, " · " + hm(num(hv(m, "Epoch"))));
-      var dl = deadline(m, v.msgs);
-      if (dl) {
-        var past = now() >= dl.rb, t = "дедлайн " + hm(dl.rb) + (past ? " истёк" : "");
-        if (dl.yes.length) t += " · ответили: " + dl.yes.join(", ");
-        if (dl.no.length) t += (past ? " · не ответили: " : " · ждём: ") + dl.no.join(", ");
-        add(h, " ", badge(t, past && dl.no.length ? "b-bad dl" : dl.no.length ? "b-warn dl" : "b-ok dl"));
-      }
-      b.appendChild(h);
-      b.appendChild(el("div", "mb", m.b || ""));
-      box.appendChild(b);
-    });
+    shown.forEach(function (m) { box.appendChild(hv(m, "Kind") === "system" ? sysMsg(m, v) : msgBlock(m, v, byId)); });
     if (v.first || atEnd) box.scrollTop = box.scrollHeight;
     else box.scrollTop = top;
-  }
-
-  function renderDocs(v) {
-    var tabs = $("doctabs"), box = $("doc");
-    clear(tabs);
-    DOCS.forEach(function (d) {
-      var b = el("button", "tab" + (S.docTab === d[0] ? " on" : ""), d[1] + (v.docs[d[0]] === null ? "" : " ✓"));
-      b.type = "button";
-      b.addEventListener("click", function () { S.docTab = d[0]; render(); });
-      tabs.appendChild(b);
-    });
-    clear(box);
-    if (!v.hasTask) { box.appendChild(el("div", "empty", "нет задачи")); return; }
-    var cur = DOCS.filter(function (d) { return d[0] === S.docTab; })[0], t = v.docs[cur[0]];
-    if (t === null || t === "") box.appendChild(el("div", "empty", cur[2]));
-    else box.appendChild(el("div", "pre", t));
-  }
-
-  function renderTasks(v) {
-    var box = $("tasks");
-    clear(box);
-    if (!v.tasks.length) { box.appendChild(el("div", "empty", "задач ещё не было")); return; }
-    v.tasks.slice().reverse().forEach(function (t) {
-      var r = el("div", "trow" + (t.id === v.vid ? " sel" : ""));
-      add(r, el("b", null, t.id), badge(TASK_RU[t.status] || t.status, "ts-" + t.status), t.title,
-        t.id === v.curId ? el("span", "muted", "· текущая") : null,
-        el("span", "muted", "host " + t.host + " · lead " + t.lead));
-      if (t.sum) r.appendChild(el("div", "sum", t.sum));
-      r.addEventListener("click", function () { location.hash = t.id === v.curId ? "" : t.id; });
-      box.appendChild(r);
-    });
   }
 
   // ── render ──
@@ -571,29 +1061,45 @@ a.re:hover, a.lnk:hover { text-decoration: underline; }
     var interval = typeof meta.interval === "number" ? meta.interval : 2;
     var stale = !!d && now() - (meta.time || 0) > Math.max(10, 3 * interval);
     var tasks = ((d && d.tasks) || []).map(function (x) {
-      return { id: taskId(x), title: hv(x, "Title"), status: hv(x, "Status"), host: hv(x, "Host"), lead: hv(x, "Lead"), sum: x.sum || "" };
+      return { id: taskId(x), title: hv(x, "Title"), status: hv(x, "Status"), sum: x.sum || "" };
     }).filter(function (x) { return x.id; });
-    var curId = d && d.current ? d.current.id : "";
-    var items = t ? (t.items || []).filter(Boolean).map(itemOf) : [];
-    var runs = t ? (t.runs || []).filter(Boolean).map(runOf) : [];
+    var cur = d && d.current, curId = cur ? cur.id : "";
     var agents = ((d && d.agents) || []).map(function (a) {
       return { name: a.name, harness: hv(a, "Harness"), model: hv(a, "Model"), state: a.state, seen: a.seen || 0,
-        note: a.note || "", drop: !!a.drop, stopped: !!a.stopped, left: !!hv(a, "Left") };
+        note: a.note || "", drop: !!a.drop, stopped: !!a.stopped, joined: num(hv(a, "Joined-Epoch")) };
     }).sort(function (a, b) { return (a.state === "gone") - (b.state === "gone") || natcmp(a.name, b.name); });
+    setColors(agents);
+    var cs = S.csig;
     var th = t && t.task ? t.task.h : null;
+    var closed = !!th && th.Status !== "active";
+    var isLive = !!(v && v.isCur && th && th.Status === "active");
+    var items = t ? (t.items || []).filter(Boolean).map(itemOf) : [];
+    var runs = t ? (t.runs || []).filter(Boolean).map(runOf) : [];
 
-    sec("head", { project: meta.project, tasks: tasks.map(function (x) { return [x.id, x.title, x.status]; }), curId: curId,
-      sel: S.sel, vid: tid, th: th, isCur: v ? v.isCur : true, missing: v ? v.missing || "" : "", hasData: !!d }, renderHead);
+    sec("head", { project: meta.project, tasks: tasks.map(function (x) { return [x.id, x.title, x.status]; }), curId: curId, sel: S.sel }, renderHead);
+    sec("fresh", { hasData: !!d, stale: stale, time: meta.time || 0, version: meta.version || "", interval: interval }, renderFresh);
     sec("banners", { hasData: !!d, err: S.err, stale: stale, time: meta.time || 0, stop: !!meta.stop, stopped: meta.stopped || [] }, renderBanners);
-    $("foot").textContent = d ? "brg " + meta.version + " · снимок " + hm(meta.time) + " · раз в " + interval + " с" : "";
 
-    var mine = {}, bad = {}, byItem = {};
-    items.forEach(function (i) { if (i.status === "claimed" && i.assignee) (mine[i.assignee] = mine[i.assignee] || []).push(i.id); });
+    var counts = { todo: 0, work: 0, review: 0, done: 0, cancelled: 0, other: 0 };
+    items.forEach(function (i) { counts[i.st.col]++; });
+    sec("task", { th: th, vid: tid, isCur: v ? v.isCur : true, missing: v ? v.missing || "" : "", hasData: !!d,
+      counts: counts, closed: closed, cs: cs }, renderTask);
+
+    // the brigade now: roles and work come from the current task while it is active
+    var cth = cur && cur.task ? cur.task.h : null, cActive = !!cth && cth.Status === "active";
+    var cItems = !cActive ? [] : v && v.isCur ? items : (cur.items || []).filter(Boolean).map(itemOf);
+    var work = {}, bad = {}, byItem = {};
+    function w(n) { return work[n] || (work[n] = { doing: [], fixing: [], reviewing: [] }); }
+    cItems.forEach(function (i) {
+      if (i.st.col === "work" && i.assignee) w(i.assignee)[i.status === "claimed" ? "doing" : "fixing"].push(i.id);
+      if (i.st.col === "review" || i.st.col === "work") i.reviewing.forEach(function (n) { w(n).reviewing.push(i.id); });
+    });
     agents.forEach(function (a) { if (a.state === "gone") bad[a.name] = "ушёл"; else if (a.drop) bad[a.name] = "возможно выпал"; });
     runs.forEach(function (r) { if (r.item) (byItem[r.item] = byItem[r.item] || []).push([r.id, r.status]); });
-    sec("agents", { agents: agents, host: th ? th.Host || "" : "", lead: th ? th.Lead || "" : "", items: mine, hasTask: !!t }, renderAgents);
-    sec("kanban", { items: items, runs: byItem, bad: bad, hasTask: !!t, tid: tid }, renderKanban);
-    sec("runs", { runs: runs, hasTask: !!t }, renderRuns);
+    sec("agents", { agents: agents, host: cActive ? cth.Host || "" : "", lead: cActive ? cth.Lead || "" : "", work: work, pfx: cActive && v && !v.isCur ? curId : "", hasData: !!d, cs: cs }, renderAgents);
+    sec("kanban", { items: items, runs: byItem, bad: isLive ? bad : {}, hasTask: !!t, tid: tid, live: isLive, closed: closed,
+      closedAt: closed ? num(th["Closed-Epoch"]) : 0, cs: cs }, renderKanban);
+    sec("runs", { runs: runs, hasTask: !!t, tid: tid, cs: cs }, renderRuns);
 
     var lobby = (d && d.lobby) || [], tmsgs = t ? t.messages || [] : [];
     var msgs = S.msgTab === "lobby" ? lobby : tmsgs, chan = S.msgTab === "lobby" ? "lobby" : tid;
@@ -606,9 +1112,9 @@ a.re:hover, a.lnk:hover { text-decoration: underline; }
     var expired = msgs.filter(function (m) { var rb = num(hv(m, "Reply-By")); return rb && now() >= rb; }).length;
     var first = S.msgChan !== chan;
     S.msgChan = chan;
-    sec("msgs", { chan: chan, msgs: msgs, agent: S.agent, hideSys: S.hideSys, trunc: tr || null, expired: expired, first: first }, renderMsgs);
+    sec("msgs", { chan: chan, msgs: msgs, agent: S.agent, hideSys: S.hideSys, trunc: tr || null, expired: expired, first: first, cs: cs }, renderMsgs);
 
-    sec("docs", { tab: S.docTab, hasTask: !!t, docs: t ? { brief: t.brief, plan: t.plan, summary: t.summary } : {} }, renderDocs);
+    sec("docs", { tab: S.docTab, hasTask: !!t, closed: closed, docs: t ? { brief: t.brief, plan: t.plan, summary: t.summary } : {} }, renderDocs);
     sec("tasks", { tasks: tasks, vid: tid, curId: curId }, renderTasks);
   }
 

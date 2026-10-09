@@ -97,7 +97,7 @@ test_docs_mention_only_real_commands_and_flags() {
       case $cmd in
         task) subs="new close cancel show list" ;;
         lead | host) subs="give take" ;;
-        item) subs="add claim done release reassign review list show" ;;
+        item) subs="add claim done release reassign review cancel list show" ;;
         run) subs="list show cancel" ;;
         *) sb= ;; # a lowercase argument (doctor <dir>, tail lobby), not a subcommand
       esac

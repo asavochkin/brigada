@@ -350,3 +350,25 @@ test_board_cli_errors_and_init() {
   assert_contains "$out" "не найдено состояние brigada"
   assert_eq "bin" "$(ls -A "$p/.brigada")" "board without state created files"
 }
+
+# Review records on the board: only numeric names (not "2.bak"), by number (not glob order).
+test_board_reviews_numeric_only() {
+  local a c d out r
+  new_proj
+  a=$(join_as claude opus)
+  c=$(join_as codex gpt)
+  task_new_as "$a" "Ревью на доске"
+  d=$(tdir T001)
+  brg item add --as "$a" --title "Одна" --desc d >/dev/null || fail "item add"
+  mkdir -p "$d/items/I001.reviews"
+  for r in 1:first 2:second 10:tenth 2.bak:backup; do
+    printf 'Item: I001\nReviewer: x\nVerdict: v-%s\n\nтело\n' "${r#*:}" >"$d/items/I001.reviews/${r%%:*}"
+  done
+  brg board --once >/dev/null || fail "board --once"
+  out=$(bdata)
+  assert_not_contains "$out" '"Verdict":"v-backup"' "a non-numeric review file"
+  case $out in
+    *'"Verdict":"v-first"'*'"Verdict":"v-second"'*'"Verdict":"v-tenth"'*) ;;
+    *) fail "reviews not in numeric order" ;;
+  esac
+}
