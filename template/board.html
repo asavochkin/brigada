@@ -173,6 +173,7 @@ button.pill:hover { text-decoration: underline; }
   padding: 6px 14px 6px 7px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel);
 }
 .achip.dim { opacity: .55; }
+.achip.gone-n { padding: 6px 14px; font-size: 12.5px; color: var(--muted); cursor: default; }
 .achip.drop { background: var(--warnbg); border-color: var(--warn); }
 .avw { position: relative; flex: none; }
 .avw .av { width: 30px; height: 30px; font-size: 11px; }
@@ -756,14 +757,15 @@ pre {
       return;
     }
     var strip = el("div", "strip"), warns = el("div", "warns");
+    var hidden = []; // gone agents with no role, work or open question: only counted
     v.agents.forEach(function (a) {
       var w = v.work[a.name] || { doing: [], fixing: [], reviewing: [] }, roles = [];
       if (a.name === v.host) roles.push("host");
       if (a.name === v.lead) roles.push("lead");
       var busy = roles.length || w.doing.length || w.fixing.length || w.reviewing.length;
       var asks = v.asking[a.name] || [];
-      var c = el("div", "achip " + colorCls(a.name) + " s-" + a.state + (a.drop ? " drop" : "") + (asks.length ? " asking" : "") +
-        (a.state === "gone" && !busy && !asks.length ? " dim" : ""));
+      if (a.state === "gone" && !busy && !asks.length) { hidden.push(a.name); return; }
+      var c = el("div", "achip " + colorCls(a.name) + " s-" + a.state + (a.drop ? " drop" : "") + (asks.length ? " asking" : ""));
       c.appendChild(add(el("span", "avw"), el("span", "av", initials(a.name)), el("span", "sdot")));
       var l1 = add(el("span", "l1"), el("span", "nm", a.name));
       if (a.kp) { // the key prefix: the human finds the agent's window by "name.kp" (DESIGN §9.2)
@@ -788,6 +790,11 @@ pre {
         warns.appendChild(add(el("div", "wline"), el("b", null, a.name + ": " + a.note), " — напиши агенту в его чат «продолжай»."));
       }
     });
+    if (hidden.length) {
+      var g = el("div", "achip dim gone-n", "ушли " + hidden.length);
+      g.title = "ушедшие агенты: " + hidden.join(", ");
+      strip.appendChild(g);
+    }
     box.appendChild(strip);
     if (warns.firstChild) box.appendChild(warns);
   }
