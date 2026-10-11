@@ -343,10 +343,10 @@ test_heartbeat_and_liveness_files() {
   sleep 2.2
   s1=$(cat "$B/run/seen/${A%%.*}")
   [ "$s1" -gt "$s0" ] || fail "heartbeat did not update Last-Seen ($s0 → $s1)"
-  assert_contains "$(brg who)" "${A%%.*} · claude · m · waiting"
+  assert_contains "$(brg who)" "${A%%.*} · claude · m · ждёт"
   wait_pid $WP 6 || fail "wait hung"
   assert_file_not_exists "$B/run/wait/${A%%.*}.hb"
-  assert_contains "$(brg who)" "${A%%.*} · claude · m · working"
+  assert_contains "$(brg who)" "${A%%.*} · claude · m · работает"
 }
 
 test_wait_argument_errors_print_next() {
@@ -460,6 +460,7 @@ test_timeout_digest_of_the_task() {
   ack_all "$A" "$d"
   out=$(brg wait --as "$A" --timeout 0)
   assert_eq "T001: todo 1 · в работе I002 ${Bn%%.*} · на проверке I003 (${A%%.*}, ${Bn%%.*}) · правки I004 ${c%%.*} · готово I005, I006 · прогонов идёт 1
+Ты проверяешь I003: если подагент работает — wait с --busy \"проверка I003\".
 ── нет новых (0 с) · ход не завершай · NEXT: bash $BRG wait --as $A --timeout 0" "$out"
   # delivered messages: no digest
   send_as "$Bn" "есть новости"

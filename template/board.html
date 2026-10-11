@@ -9,7 +9,8 @@
   brigada board: a read-only page for the human (DESIGN §9.1). Opened as file://
   without a server. `brg board` writes run/board/data.js (window.BRG_BOARD) and
   run/board/T00N.js (window.BRG_TASKS) next to this file; the page reloads data.js
-  every 2 s with a classic script tag. Data go into the page only through
+  every 2 s with a classic script tag. The agent state words (DESIGN §5.2): "ждёт" =
+  free, "работает · подпись · N мин" = busy mark. Data go into the page only through
   textContent / createElement / safe attributes — never parsed as markup.
 -->
 <style>
@@ -157,6 +158,8 @@ button.pill:hover { text-decoration: underline; }
 .troles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin-top: 10px; font-size: 13px; }
 .troles .lab { color: var(--faint); font-size: 12px; margin-right: 6px; }
 .past { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.tfin { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.tfin b { color: var(--ok); font-weight: 650; }
 .prog { margin-top: 14px; }
 .bar { display: flex; height: 8px; border-radius: 999px; background: var(--sunken); overflow: hidden; }
 .bar .seg { height: 100%; }
@@ -179,8 +182,9 @@ button.pill:hover { text-decoration: underline; }
 .avw .av { width: 30px; height: 30px; font-size: 11px; }
 .sdot { position: absolute; right: -2px; bottom: -2px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--panel); background: var(--faint); }
 .achip.drop .sdot { border-color: var(--warnbg); }
-.s-waiting .sdot { background: var(--ok); }
-.s-working .sdot { background: var(--accent); }
+.s-waiting .sdot { background: var(--faint); }
+.achip.w-work .sdot { background: var(--c); }
+.achip.w-work .l2 .wk { color: var(--ct); font-weight: 650; }
 .s-asleep .sdot { background: var(--warn); }
 .s-gone .sdot { background: var(--panel); box-shadow: inset 0 0 0 2px var(--faint); }
 .ab { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
@@ -335,7 +339,7 @@ pre {
   .ttitle { font-size: 18px; }
 }
 @media (prefers-reduced-motion: no-preference) {
-  .s-working .sdot { animation: pulse 2s ease-in-out infinite; }
+  .achip.w-work .sdot { animation: pulse 2s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: .45; } }
 }
 </style>
@@ -384,7 +388,7 @@ pre {
 
   var S = {
     data: null, err: "", sel: "", msgTab: "task", agent: "", hideSys: false, docTab: "",
-    open: {}, last: {}, tload: {}, msgChan: "", colors: {}, csig: ""
+    open: {}, last: {}, tload: {}, msgChan: "", colors: {}, csig: "", idleSince: 0
   };
 
   // ── helpers ──
@@ -486,6 +490,17 @@ pre {
     for (i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
     return h;
   }
+  // the state of an agent for people (DESIGN §5.2, §9.1): ждёт = free (a live wait, no busy mark);
+  // работает[ · подпись] with how long (mark) or "не на связи N мин" (no wait for a while)
+  function offline(a) { var m = /не на связи ([^·]+?)\s*(?:·|$)/.exec(a.note || ""); return m ? "не на связи " + m[1] : ""; }
+  function workText(a) { // plain text, no live parts
+    if (a.halt) return "остановлен";
+    if (a.state === "waiting" && !a.mark) return "ждёт";
+    if (a.state === "gone" || a.state === "asleep") return STATE_RU[a.state];
+    return "работает" + (a.mark && a.mark.note ? " · " + a.mark.note : "") +
+      (a.state === "waiting" && a.mark ? " · " + dur(now() - a.mark.since) : offline(a) ? " · " + offline(a) : "");
+  }
+  function isWorking(a) { return !a.halt && (a.state === "working" || (a.state === "waiting" && !!a.mark)); }
   function setColors(agents) {
     var m = {}, used = {}, n = 0;
     agents.slice().sort(function (a, b) { return (a.joined - b.joined) || natcmp(a.name, b.name); }).forEach(function (a) {
@@ -653,6 +668,8 @@ pre {
     if (v.stale) add(line("warn", "Доска не обновляется:", " последний снимок "), live("ago", v.time), " — brg board остановлен? ", el("code", null, RUN_CMD));
     if (v.stop) add(line("stop", "STOP", " — человек остановил бригаду. Снять: "), el("code", null, "brg resume"));
     if (v.stopped.length) add(line("warn", "Остановлены агенты:", " " + v.stopped.join(", ") + " — снять: "), el("code", null, "brg resume <имя>"));
+    // all wait, nobody works, no questions and runs, yet the task goes on (DESIGN §9.1)
+    if (v.idle) add(line("", "Бригада простаивает", " уже "), live("dur", v.idle), ": никто не работает, вопросов и прогонов нет, а задача идёт. Скажи бригаде, что дальше: ", el("code", null, "brg say \"…\""));
   }
 
   // ── questions to the human (DESIGN §9.2): open ones, oldest first ──
@@ -723,6 +740,18 @@ pre {
       r.appendChild(add(el("span"), el("span", "lab", p[0]), p[1] ? chip(p[1], "sm") : el("span", "faint", "—")));
     });
     box.appendChild(r);
+    if (v.fin) {
+      var f = v.fin, fl = add(el("div", "tfin"), el("b", null, "подзадачи готовы"), " · lead ", f.lead ? chip(f.lead, "sm") : el("span", "faint", "не назначен"));
+      if (f.lead) {
+        if (f.state === "waiting" && !f.mark) add(fl, "ждёт — итог ещё не подведён");
+        else if (f.state === "waiting" || f.state === "working") {
+          add(fl, "работает" + (f.mark && f.mark.note ? ": " + f.mark.note : ""));
+          if (f.state === "waiting" && f.mark && f.mark.since) add(fl, " · ", live("dur", f.mark.since));
+          else if (f.off) add(fl, " · " + f.off);
+        } else add(fl, "не на связи (" + (STATE_RU[f.state] || f.state || "нет") + ")");
+      }
+      box.appendChild(fl);
+    }
     if (!v.isCur) box.appendChild(add(el("div", "past"), "прошлая задача ·", btn("lnk", "к текущей", function () { location.hash = ""; })));
     var c = v.counts, total = c.todo + c.work + c.review + c.done;
     if (total) {
@@ -765,7 +794,7 @@ pre {
       var busy = roles.length || w.doing.length || w.fixing.length || w.reviewing.length;
       var asks = v.asking[a.name] || [];
       if (a.state === "gone" && !busy && !asks.length) { hidden.push(a.name); return; }
-      var c = el("div", "achip " + colorCls(a.name) + " s-" + a.state + (a.drop ? " drop" : "") + (asks.length ? " asking" : ""));
+      var c = el("div", "achip " + colorCls(a.name) + " s-" + a.state + (isWorking(a) ? " w-work" : "") + (a.drop ? " drop" : "") + (asks.length ? " asking" : ""));
       c.appendChild(add(el("span", "avw"), el("span", "av", initials(a.name)), el("span", "sdot")));
       var l1 = add(el("span", "l1"), el("span", "nm", a.name));
       if (a.kp) { // the key prefix: the human finds the agent's window by "name.kp" (DESIGN §9.2)
@@ -776,14 +805,24 @@ pre {
       roles.forEach(function (r) { l1.appendChild(el("span", "role", r)); });
       if (a.stopped) l1.appendChild(el("span", "role stop", "stop"));
       if (asks.length) { var ra = el("span", "role ask", "ждёт вашего ответа"); ra.title = "вопрос " + asks.join(", "); l1.appendChild(ra); }
-      var l2 = add(el("span", "l2"), STATE_RU[a.state] || a.state);
+      var l2 = el("span", "l2");
+      // the caption of the mark is shown only if it adds to the list of work below («делает I015» says it)
+      var dup = !!(a.mark && a.mark.item && w.doing.concat(w.fixing, w.reviewing).indexOf(a.mark.item) >= 0);
+      if (a.halt) l2.appendChild(document.createTextNode("остановлен"));
+      else if (a.state === "waiting" && !a.mark) l2.appendChild(document.createTextNode("ждёт"));
+      else if (isWorking(a)) {
+        l2.appendChild(el("span", "wk", "работает"));
+        if (a.mark && a.mark.note && !dup) add(l2, " · ", el("span", "wk", a.mark.note));
+        if (a.state === "waiting" && a.mark && a.mark.since) add(l2, " · ", live("dur", a.mark.since));
+        else if (offline(a)) add(l2, " · ", offline(a));
+      } else l2.appendChild(document.createTextNode(STATE_RU[a.state] || a.state));
       function part(label, ids, cls) { if (ids.length) add(l2, " · ", el("span", cls, label + " " + (v.pfx ? v.pfx + ": " : "") + ids.join(", "))); }
       part("делает", w.doing, "doing");
       part("правки", w.fixing, "fixing");
       part("проверяет", w.reviewing, "revw");
       if (a.model) add(l2, " · ", el("span", "faint", a.model));
       c.appendChild(add(el("span", "ab"), l1, l2));
-      c.title = a.name + " — " + (STATE_RU[a.state] || a.state) + "\n" + (a.harness || "?") + " · " + (a.model || "?") +
+      c.title = a.name + " — " + workText(a) + "\n" + (a.harness || "?") + " · " + (a.model || "?") +
         (a.seen > 0 ? "\nпоследний вызов brg: " + hm(a.seen) : "") + (a.note ? "\n" + a.note : "");
       strip.appendChild(c);
       if (a.drop) {
@@ -1156,7 +1195,9 @@ pre {
     var agents = ((d && d.agents) || []).map(function (a) {
       return { name: a.name, harness: hv(a, "Harness"), model: hv(a, "Model"), state: a.state, seen: a.seen || 0,
         note: a.note || "", drop: !!a.drop, stopped: !!a.stopped, joined: num(hv(a, "Joined-Epoch")),
-        kp: typeof a.kp === "string" ? a.kp : "" };
+        kp: typeof a.kp === "string" ? a.kp : "",
+        halt: (a.state === "waiting" || a.state === "working") && (!!a.stopped || !!meta.stop), // the human's stop ended its turn
+        mark: a.mark && typeof a.mark === "object" ? { note: typeof a.mark.note === "string" ? a.mark.note : "", since: num(a.mark.since), via: a.mark.via || "", item: a.mark.item || "" } : null };
     }).sort(function (a, b) { return (a.state === "gone") - (b.state === "gone") || natcmp(a.name, b.name); });
     setColors(agents);
     var cs = S.csig;
@@ -1168,7 +1209,6 @@ pre {
 
     sec("head", { project: meta.project, tasks: tasks.map(function (x) { return [x.id, x.title, x.status]; }), curId: curId, sel: S.sel }, renderHead);
     sec("fresh", { hasData: !!d, stale: stale, time: meta.time || 0, version: meta.version || "", interval: interval }, renderFresh);
-    sec("banners", { hasData: !!d, err: S.err, stale: stale, time: meta.time || 0, stop: !!meta.stop, stopped: meta.stopped || [] }, renderBanners);
 
     // open questions to the human (DESIGN §9.2): "asks" of the snapshot; an older brg has none
     var cth = cur && cur.task ? cur.task.h : null, cActive = !!cth && cth.Status === "active";
@@ -1182,10 +1222,30 @@ pre {
     document.title = (asks.length ? "(" + asks.length + ") " : "") + (meta.project ? meta.project + " — " : "") + "brigada";
     sec("asks", { asks: asks, kp: kps, defChan: cActive ? curId : "lobby", vid: tid, curId: curId, cs: cs }, renderAsks);
 
+    // "the brigade idles": a live wait, nobody working, no open questions or runs, the task active.
+    // How long: the longer of what this page has seen and the time since the task's last message.
+    var idleFrom = 0, anyFree = false, anyWork = false;
+    var cRuns = (cur && cur.runs || []).filter(Boolean).map(runOf);
+    agents.forEach(function (a) { if (isWorking(a)) anyWork = true; else if (a.state === "waiting") anyFree = true; });
+    if (d && cActive && !stale && !meta.stop && anyFree && !anyWork && !asks.length && !cRuns.some(function (r) { return !RUN_FINAL[r.status]; })) {
+      if (!S.idleSince) S.idleSince = now();
+      var lastMsg = 0;
+      (cur.messages || []).forEach(function (m) { lastMsg = Math.max(lastMsg, num(hv(m, "Epoch"))); });
+      idleFrom = lastMsg ? Math.min(S.idleSince, lastMsg) : S.idleSince;
+      if (now() - idleFrom <= 120) idleFrom = 0;
+    } else S.idleSince = 0;
+    sec("banners", { hasData: !!d, err: S.err, stale: stale, time: meta.time || 0, stop: !!meta.stop, stopped: meta.stopped || [], idle: idleFrom }, renderBanners);
+
     var counts = { todo: 0, work: 0, review: 0, done: 0, cancelled: 0, other: 0 };
     items.forEach(function (i) { counts[i.st.col]++; });
+    // every item final, the task live: what the lead does now («подзадачи готовы · lead X …», DESIGN §9.1)
+    var fin = null;
+    if (isLive && items.length && items.every(function (i) { return i.st.col === "done" || i.st.col === "cancelled"; })) {
+      var ln = th.Lead || "", la = agents.filter(function (a) { return a.name === ln; })[0];
+      fin = { lead: ln, state: la ? la.state : "", mark: la ? la.mark : null, off: la ? offline(la) : "" };
+    }
     sec("task", { th: th, vid: tid, isCur: v ? v.isCur : true, missing: v ? v.missing || "" : "", hasData: !!d,
-      counts: counts, closed: closed, cs: cs }, renderTask);
+      counts: counts, closed: closed, fin: fin, cs: cs }, renderTask);
 
     // the brigade now: roles and work come from the current task while it is active
     var cItems = !cActive ? [] : v && v.isCur ? items : (cur.items || []).filter(Boolean).map(itemOf);

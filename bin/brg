@@ -17,7 +17,7 @@ _brg_crlf=x
 case ${#_brg_crlf} in 1) ;; *) printf '%s\n' "brg: ОШИБКА: у файла $0 окончания строк CRLF (Windows) — bash его не выполнит." "Причина — git с core.autocrlf=true. Это .brigada/bin/brg — переустанови: bash <brigada>/bin/brg init <проект>. Это сам репозиторий brigada — удали bin/brg и восстанови: git checkout -- bin/brg (по .gitattributes он запишется с LF) или скачай brigada заново. Проверка: bash <brigada>/bin/brg doctor <проект>." >&2; exit 2 ;; esac #
 unset _brg_crlf
 
-BRG_VERSION=0.5.2
+BRG_VERSION=0.6.0
 # the caller's locale, restored for commands started by `brg run`
 _brg_lc_set=${LC_ALL+1}
 _brg_lc=${LC_ALL-}
@@ -832,17 +832,175 @@ wait_info() {
   return 0
 }
 
-# agent_state NAME → ST (waiting|working|asleep|gone), ST_SEEN (epoch), ST_LEFT
+# ── busy mark (DESIGN §5.4, §5.2): "I am working" ───────────────────────────
+# A participant only coordinates, its subagent works — and while the participant
+# sits in wait, nothing else shows that work goes on. run/busy/<base name> says so:
+# headers Task, Since (epoch), Note (the caption, ≤ 2 words), Item (I00N or empty),
+# Via (wait|claim|review|busy). The mark is valid only for the active task named in
+# its Task; any other one does not exist for anybody (so close/cancel only tidy up,
+# and races between them and wait are harmless). One reader, busy_read, serves all.
+# "free" (shown as «ждёт») = a live wait and no valid mark.
+busy_task_v() { # VAR — id of the active task ("" if none); ACT_* are not touched
+  local _bt_r= _bt_i=
+  [ -f "$ROOT/tasks/active" ] && { IFS= read -r _bt_r <"$ROOT/tasks/active"; } 2>/dev/null
+  case $_bt_r in T[0-9][0-9][0-9]*) ;; *) _bt_r= ;; esac
+  case $_bt_r in */* | *..* | *[!A-Za-z0-9-]*) _bt_r= ;; esac
+  [ -n "$_bt_r" ] && [ -f "$ROOT/tasks/$_bt_r/task" ] && _bt_i=${_bt_r%%-*}
+  eval "$1=\$_bt_i"
+}
+# busy_read NAME [TASK] → BZ_ON (1 = a valid mark), BZ_NOTE, BZ_SINCE, BZ_ITEM, BZ_VIA;
+# TASK — the active task if the caller knows it ("" = none), else it is looked up
+busy_read() {
+  local line t= cur f=$RUN/busy/$1
+  BZ_ON= BZ_NOTE= BZ_SINCE= BZ_ITEM= BZ_VIA=
+  [ -f "$f" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+      '') break ;;
+      Task:*) t=${line#Task:} t=${t# } ;;
+      Since:*) BZ_SINCE=${line#Since:} BZ_SINCE=${BZ_SINCE# } ;;
+      Note:*) BZ_NOTE=${line#Note:} BZ_NOTE=${BZ_NOTE# } ;;
+      Item:*) BZ_ITEM=${line#Item:} BZ_ITEM=${BZ_ITEM# } ;;
+      Via:*) BZ_VIA=${line#Via:} BZ_VIA=${BZ_VIA# } ;;
+    esac
+  done <"$f"
+  if [ -n "${2+x}" ]; then cur=$2; else busy_task_v cur; fi
+  if [ -z "$t" ] || [ "$t" != "$cur" ] || ! is_uint "$BZ_SINCE"; then
+    BZ_NOTE= BZ_SINCE= BZ_ITEM= BZ_VIA=
+    return 1
+  fi
+  BZ_ON=1
+}
+# busy_text_v VAR RAW — the caption of a mark: cut, not refused (DESIGN §4.2). Control
+# characters and " ' \ $ ` % (cmd.exe expands %…% even inside quotes; the caption goes
+# into NEXT) become spaces, spaces collapse, the first 2 words, ≤ 48 bytes at a UTF-8
+# boundary; BZ_WARN says if anything was changed.
+busy_text_v() {
+  local _bx_v=$1 _bx_s=$2 _bx_o _bx_r
+  BZ_WARN=
+  set -f
+  set -- $_bx_s
+  set +f
+  _bx_o="$*" # the caption as given, spaces collapsed
+  _bx_s=${_bx_s//[[:cntrl:]]/ }
+  _bx_s=${_bx_s//[\"\'\\\$\`%]/ }
+  set -f
+  set -- $_bx_s
+  set +f
+  _bx_r=${1-}
+  [ $# -lt 2 ] || _bx_r="$1 $2"
+  utf8_cut_v _bx_r "$_bx_r" 48
+  _bx_r=${_bx_r%% }
+  if [ "$_bx_o" = "$_bx_r" ]; then
+    :
+  elif [ -z "$_bx_r" ]; then
+    BZ_WARN="Внимание: в подписи остались только недопустимые символы (кавычки, обратная коса, \$, обратный апостроф, %) — пометка без подписи."
+  else
+    BZ_WARN="Внимание: подпись сокращена до «$_bx_r» — не больше 2 слов и 48 байт, без кавычек, обратной косой, \$, обратного апострофа и %."
+  fi
+  eval "$_bx_v=\$_bx_r"
+}
+# busy_set VIA NOTE [ITEM] — AGENT's mark for the active task; 1 if there is none
+# (no mark then). The same caption keeps Since (and Item) of a still valid mark.
+busy_set() {
+  local t since item=${3-} f=$RUN/busy/$AGENT
+  busy_task_v t
+  [ -n "$t" ] || return 1
+  [ -n "$NOW" ] || get_now
+  since=$NOW
+  if busy_read "$AGENT" "$t" && [ "$BZ_NOTE" = "$2" ]; then
+    since=$BZ_SINCE
+    [ -n "$item" ] || item=$BZ_ITEM
+  fi
+  mkdir -p "$RUN/busy" 2>/dev/null
+  printf 'Task: %s\nSince: %s\nNote: %s\nItem: %s\nVia: %s\n' "$t" "$since" "$2" "$item" "$1" >"$RUN/busy/.tmp.$AGENT.$$" 2>/dev/null &&
+    mv_retry "$RUN/busy/.tmp.$AGENT.$$" "$f"
+}
+busy_clear() { rm -f "$RUN/busy/${1:-$AGENT}" 2>/dev/null; } # [NAME]
+# busy_drop_item NAME ITEM — NAME's valid mark goes if it is for ITEM (a mark with an
+# empty Item is never dropped by the item commands: DESIGN §5.4)
+busy_drop_item() {
+  if busy_read "$1" && [ "$BZ_ITEM" = "$2" ]; then busy_clear "$1"; fi
+  return 0
+}
+busy_clear_all() { rm -f "$RUN"/busy/* 2>/dev/null; return 0; } # tidying: a task is over
+# busy_drop_reviewers ITEM LIST — the marks for ITEM of the reviewers in LIST (a ","-list,
+# the Reviewing: header as it was): the round of review is over, they have nothing to review
+busy_drop_reviewers() {
+  local _br_rest=$2, _br_x
+  _br_rest=$_br_rest,
+  while [ -n "$_br_rest" ]; do
+    _br_x=${_br_rest%%,*}
+    _br_rest=${_br_rest#*,}
+    [ -z "$_br_x" ] || busy_drop_item "$_br_x" "$1"
+  done
+  return 0
+}
+# busy_item_ok CAPTION — 0 unless CAPTION names an item ("I002", "проверка I002") that is
+# not the caller's: not claimed by AGENT in the active task and AGENT is not in its
+# Reviewing: — a stale NEXT executed after the task changed must not mark the new one
+busy_item_ok() {
+  local _bi_id
+  case $1 in
+    I[0-9]*) _bi_id=${1#I} ;;
+    "проверка I"[0-9]*) _bi_id=${1#"проверка I"} ;;
+    *) return 0 ;;
+  esac
+  case $_bi_id in *[!0-9]*) return 0 ;; esac
+  active_task || return 0 # no task: busy_set says so
+  item_read "$ACT_DIR/items/I$(printf '%03d' "$((10#$_bi_id))")" || return 1
+  [ "$IT_STATUS" = claimed ] && [ "$IT_ASSIGNEE" = "$AGENT" ] && return 0
+  case ",$IT_REVIEWING," in *",$AGENT,"*) return 0 ;; esac
+  return 1
+}
+# busy_empty_note — after an item command by AGENT: a mark with no item stays however
+# the item went (DESIGN §5.4) — say so, the subagent may be long done
+busy_empty_note() {
+  if busy_read "$AGENT" && [ -z "$BZ_ITEM" ]; then
+    echo "Ты отмечен «работает${BZ_NOTE:+: $BZ_NOTE}» — если подагент закончил, следующий wait без --busy."
+  fi
+  return 0
+}
+
+# next_wait [TIMEOUT] [plain] — the wait command of every NEXT line (DESIGN §5.4):
+# NEXT = the current state of the agent's mark, so that a wait of a participant whose
+# subagent works carries --busy again (a plain wait would say "free"). An empty caption
+# gives a bare --busy. Before need_agent (AGENT empty) the name comes from AS_HINT.
+next_wait() {
+  local _nw_n _nw_b= _nw_r
+  if [ -n "$AGENT" ]; then
+    _nw_n=$ASN
+    [ -n "$AS_NOKEY" ] || _nw_b=$AGENT
+  else
+    _nw_n=$AS_HINT
+    _nw_b=${AS_HINT%%.*}
+    valid_name "$_nw_b" && [ -f "$ROOT/agents/$_nw_b" ] || _nw_b=
+  fi
+  _nw_r="$BRG wait --as $_nw_n"
+  if [ -n "$_nw_b" ] && [ "${2-}" != plain ] && busy_read "$_nw_b"; then
+    if [ -n "$BZ_NOTE" ]; then _nw_r="$_nw_r --busy \"$BZ_NOTE\""; else _nw_r="$_nw_r --busy"; fi
+  fi
+  [ -z "${1-}" ] || _nw_r="$_nw_r --timeout $1"
+  printf '%s' "$_nw_r"
+}
+
+# agent_state NAME → ST (waiting|working|asleep|gone), ST_SEEN (epoch), ST_LEFT, and the
+# valid busy mark: ST_BUSY (1), ST_BUSY_NOTE, ST_BUSY_SINCE, ST_BUSY_ITEM, ST_BUSY_VIA.
+# ST itself does not depend on the mark (many places only ask waiting|working).
 agent_state() {
   local s= age
   profile_read "$ROOT/agents/$1"
   ST_LEFT=$P_LEFT
+  ST_BUSY= ST_BUSY_NOTE= ST_BUSY_SINCE= ST_BUSY_ITEM= ST_BUSY_VIA=
   [ -f "$RUN/seen/$1" ] && IFS= read -r s <"$RUN/seen/$1"
   is_uint "$s" || s=0
   ST_SEEN=$s
   if [ -n "$P_LEFT" ]; then
     ST=gone
     return
+  fi
+  if busy_read "$1"; then
+    ST_BUSY=1 ST_BUSY_NOTE=$BZ_NOTE ST_BUSY_SINCE=$BZ_SINCE ST_BUSY_ITEM=$BZ_ITEM ST_BUSY_VIA=$BZ_VIA
   fi
   wait_info "$1"
   if [ -n "$WI_ALIVE" ]; then
@@ -852,11 +1010,44 @@ agent_state() {
   age=$((NOW - s))
   if [ "$age" -gt "$GONE_AFTER" ]; then
     ST=gone
+    ST_BUSY= ST_BUSY_NOTE= ST_BUSY_SINCE= ST_BUSY_ITEM= ST_BUSY_VIA=
   elif [ "$age" -gt "$ASLEEP_AFTER" ]; then
     ST=asleep
   else
     ST=working
   fi
+}
+
+# state_v VAR [NAME] — right after agent_state: the state for people (who, status, join; the
+# board has its own words). «ждёт» = free (a live wait, no mark) — the human's decision
+# (DESIGN §5.2); «работает[: подпись][, N мин]» — a mark (N мин — how long) or a recent
+# brg call without a wait; asleep, gone as they are; waiting/working under the human's stop (general or NAME's) — «остановлен».
+state_v() {
+  local _sv_r _sv_d
+  case $ST in
+    waiting | working)
+      # the human's stop ended the agent's turn (DESIGN §9): it is not at work
+      if [ -e "$RUN/stopped" ] || { [ -n "${2:-}" ] && [ -e "$RUN/stopped.$2" ]; }; then
+        eval "$1=остановлен"
+        return 0
+      fi
+      ;;
+  esac
+  case $ST in
+    waiting)
+      if [ -n "$ST_BUSY" ]; then
+        _sv_d=$((NOW - ST_BUSY_SINCE))
+        [ "$_sv_d" -ge 0 ] || _sv_d=0
+        dur_v _sv_d "$_sv_d"
+        _sv_r="работает${ST_BUSY_NOTE:+: $ST_BUSY_NOTE}, $_sv_d"
+      else
+        _sv_r="ждёт"
+      fi
+      ;;
+    working) _sv_r="работает${ST_BUSY_NOTE:+: $ST_BUSY_NOTE}" ;;
+    *) _sv_r=$ST ;;
+  esac
+  eval "$1=\$_sv_r"
 }
 
 # wait_last_mark [NAME] — run/wait/<name>.last := now: the last moment the agent
@@ -889,10 +1080,12 @@ idle_calc() {
 
 # idle_note_v VAR NAME SEP — right after agent_state NAME: for an agent without a live
 # wait (working/asleep) once that lasts longer than its wait timeout + 60 s:
-# "<SEP>без wait 5 мин"; plus "<SEP>возможно выпал" if neither a wait nor a brg call
+# "<SEP>не на связи 5 мин"; plus "<SEP>возможно выпал" if neither a wait nor a brg call
 # for longer than max(wait timeout + 60 s, dropout_after) — an agent quietly writing
 # code for a few minutes is not flagged (the model may have ended its turn: DESIGN
-# §5.3 — the human tells it "продолжай"); not for an agent the human stopped. ""
+# §5.3 — the human tells it "продолжай"); not for an agent the human stopped, nor for
+# one whose mark came from `brg busy` (its subagent blocks it: DESIGN §5.4) — a mark
+# from wait/claim/review proves nothing: the participant must sit in wait. ""
 # otherwise. The states themselves (asleep/gone) do not change.
 idle_note_v() {
   local _id_r= _id_x
@@ -906,24 +1099,26 @@ idle_note_v() {
   idle_calc "$2"
   if [ "$ID_D" -gt "$ID_T" ]; then
     dur_v _id_x "$ID_D"
-    _id_r="$3без wait $_id_x"
-    if [ "$ID_D" -gt "$ID_P" ] && [ $((NOW - ST_SEEN)) -gt "$ID_P" ] && [ ! -e "$RUN/stopped" ] && [ ! -e "$RUN/stopped.$2" ]; then
+    _id_r="$3не на связи $_id_x"
+    if [ "$ID_D" -gt "$ID_P" ] && [ $((NOW - ST_SEEN)) -gt "$ID_P" ] && [ ! -e "$RUN/stopped" ] && [ ! -e "$RUN/stopped.$2" ] &&
+      [ "$ST_BUSY_VIA" != busy ]; then
       _id_r="$_id_r${3}возможно выпал"
     fi
   fi
   eval "$1=\$_id_r"
 }
 
-# online_v VAR EXCLUDE — "name (harness, model, state[, без wait …]), …" of agents not gone
+# online_v VAR EXCLUDE — "name (harness, model, state[, не на связи …]), …" of agents not gone
 online_v() {
-  local _on_n _on_s= _on_i
+  local _on_n _on_s= _on_i _on_t
   list_agents
   for _on_n in $AGENT_NAMES; do
     [ "$_on_n" = "$2" ] && continue
     agent_state "$_on_n"
     [ "$ST" = gone ] && continue
     idle_note_v _on_i "$_on_n" ", "
-    _on_s="$_on_s${_on_s:+, }$_on_n ($P_HARNESS, $P_MODEL, $ST$_on_i)"
+    state_v _on_t "$_on_n"
+    _on_s="$_on_s${_on_s:+, }$_on_n ($P_HARNESS, $P_MODEL, $_on_t$_on_i)"
   done
   eval "$1=\$_on_s"
 }
@@ -1676,7 +1871,8 @@ usage_line_v() { # VAR CMD
     join) _ul_u="$BRG join --harness <claude|codex|opencode|…> --model <модель>  |  вернуться под старым именем (ключ будет новый): $BRG join --as <имя> --harness <тот же> [--model <модель>]" ;;
     leave) _ul_u="$BRG leave --as <имя>" ;;
     send) _ul_u="$BRG send --as <имя> [--to all|<имя>[,<имя>]|human] [--re N] [--ask] [--reply-by 5m|90s|1h] [--channel lobby|T00N] [--file F] <<'BRG_EOF' … BRG_EOF" ;;
-    wait) _ul_u="$BRG wait --as <имя> [--timeout S]" ;;
+    wait) _ul_u="$BRG wait --as <имя> [--timeout S] [--busy [\"подпись\"]]" ;;
+    busy) _ul_u="$BRG busy --as <имя> [\"подпись\"]  |  $BRG busy --as <имя> --off" ;;
     read) _ul_u="$BRG read --as <имя> [--channel lobby|T00N] [--since N] [--all]" ;;
     who) _ul_u="$BRG who" ;;
     tail) _ul_u="$BRG tail [-f] [-n N] [канал]" ;;
@@ -1703,9 +1899,15 @@ usage_print() {
     join) echo "Подключиться к бригаде: выдаёт полное имя <харнесс>-<n>.<ключ> (например, claude-1.k7f3q9) — его целиком передавай в --as каждой команды; кто онлайн, активную задачу, таймаут wait и NEXT. --as — вернуться под старым именем, если потерян ключ (тот же харнесс; курсоры сохраняются; ключ новый, прежний перестаёт работать); разрешено, только когда прежняя сессия «выпала» — ни wait, ни вызовов brg дольше max(таймаут wait + 60 с, dropout_after) — или asleep/gone, или после leave." ;;
     leave) echo "Отключиться (тихое системное сообщение в lobby). Живой wait агента завершится на ближайшем тике." ;;
     send) echo "Отправить сообщение (тело — stdin или --file; CRLF→LF; лимит msg_max_bytes). По умолчанию --to all, канал — активная задача (нет задачи — lobby). --reply-by: по сроку твой wait вернёт сводку, кто ответил. --ask (с --to human): вопрос человеку — открыт на доске, в who и в терминале brg board, пока его автор (переслав ответ человека) или человек не ответит с --re на него (задай его и текстом в своём чате; ответ получил — перешли суть бригаде с --re N; уточнить — новым --ask)." ;;
-    wait) echo "Ждать сообщений (последнее действие каждого шага). Слушает lobby и активную задачу. Всегда код 0, последняя строка — NEXT (кроме STOP/SUPERSEDED)." ;;
+    wait)
+      echo "Ждать сообщений (последнее действие каждого шага). Слушает lobby и активную задачу. Всегда код 0, последняя строка — NEXT (кроме STOP/SUPERSEDED)."
+      echo "wait без --busy значит «я свободен» (в списках — «ждёт»). --busy [\"подпись\"] — «мой подагент работает»: в who, status и на доске ты «работает: подпись» (подпись — до 2 слов, лишнее и кавычки, \$, \`, %, \\ обрезаются с предупреждением; без подписи — просто «работает»). Пометка действует в активной задаче; NEXT повторяет --busy, пока она стоит, поэтому копируй NEXT дословно. item claim и item review --start ставят её сами. Подагент закончил — следующий wait без --busy."
+      ;;
+    busy)
+      echo "Пометка «работает» без ожидания: для харнесса, где вызов подагента блокирует участника (он не может сидеть в wait --busy), и для работы вне подзадач. busy --off — снять. Пометка стоит, пока ты не вызовешь wait без --busy, busy --off, leave или join; подзадача, по которой она поставлена (claim, review --start), снимает её, когда уходит от тебя: done, release, cancel, reassign, твой вердикт. Подпись — до 2 слов (как у wait --busy). Это изменяющая команда: имя с ключом."
+      ;;
     read) echo "Показать сообщения повторно: по умолчанию — после подтверждённых во всех слушаемых каналах (включая выданное последним wait). Курсор не двигает. --since N — в одном канале (по умолчанию — задача). --all — включая чужие личные." ;;
-    who) echo "Кто подключён: имя · харнесс · модель · состояние · когда был активен; активная задача. «без wait N мин» — wait не идёт дольше таймаута wait + 60 с; «возможно выпал» — ни wait, ни вызовов brg дольше dropout_after (по умолчанию 5 мин): модель могла завершить ход — человеку: напиши агенту в его чат «продолжай». «ждут ответа человека» — открытые вопросы агентов (send --ask): ответь в чате агента или say --to <имя> --re N." ;;
+    who) echo "Кто подключён: имя · харнесс · модель · состояние · когда был активен; активная задача. Состояние: «ждёт» — свободен (идёт его wait, пометки «работает» нет); «работает[: подпись][, N мин]» — его подагент работает (пометка, wait --busy) или он недавно вызывал brg; asleep, gone. «не на связи N мин» — wait не идёт дольше таймаута wait + 60 с; «возможно выпал» — ни wait, ни вызовов brg дольше dropout_after (по умолчанию 5 мин): модель могла завершить ход — человеку: напиши агенту в его чат «продолжай». «ждут ответа человека» — открытые вопросы агентов (send --ask): ответь в чате агента или say --to <имя> --re N." ;;
     tail) echo "Переписка в читаемом виде: без канала — lobby и активная задача (следит за сменой задачи); -f — следить (Ctrl-C — выход)." ;;
     say) echo "Сообщение от human (по умолчанию всем, в канал активной задачи); снимает общий стоп и стоп названных агентов. --re N — ответ на сообщение #N (на вопрос агента: закрывает его на доске)." ;;
     status) echo "Кто я, задача и моя роль, непрочитанное (без сдвига курсора), мои дедлайны, жив ли мой wait, NEXT. С именем без ключа — только просмотр (не подтверждает, что ты этот агент)." ;;
@@ -1750,7 +1952,9 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
   <имя> — полное имя из своего join, с ключом (claude-1.k7f3q9); без ключа команды, меняющие
   состояние, отказывают; команды чтения (read, status, who, task/item/run show|list) — принимают
   join --harness <h> --model <m>     подключиться, получить имя (--as <имя> — вернуться под старым)
-  wait --as <имя> [--timeout S]      ждать сообщений — последнее действие каждого шага
+  wait --as <имя> [--timeout S] [--busy ["подпись"]]   ждать сообщений — последнее действие каждого шага;
+                                     --busy — мой подагент работает (иначе wait = «я свободен»)
+  busy --as <имя> ["подпись"] · busy --as <имя> --off   пометка «работает» без wait (подагент блокирует тебя)
   send --as <имя> [--to all|<имя>[,<имя>]|human] [--re N] [--ask] [--reply-by 5m] [--channel C] [--file F]
                                      тело — stdin (heredoc) или --file; канал — задача (или lobby);
                                      --ask с --to human — вопрос человеку (открыт, пока нет ответа --re)
@@ -2264,6 +2468,7 @@ cmd_join() {
     die "не удалось записать $ROOT/agents/$AGENT"
   fi
   lock_release roster
+  busy_clear # a new session: no subagent of the old one is known to work
   touch_seen
   wait_last_mark
   # Cursors: a new agent starts from the current end of lobby and of the active
@@ -2309,11 +2514,11 @@ cmd_join() {
   fi
   echo "Правила совместной работы: $RROOT/PROTOCOL.md — прочитай один раз сейчас."
   [ -e "$RUN/stopped.$AGENT" ] && echo "ВНИМАНИЕ: человек остановил $AGENT (stop) — wait вернёт STOP. Снять может только человек: $BRG resume $AGENT"
-  echo "Ожидание: $BRG wait --as $ASN — возвращается при сообщениях или через $T с."
+  echo "Ожидание: $(next_wait) — возвращается при сообщениях или через $T с."
   echo "Таймаут инструмента: $hint"
   win_note
   echo "Правило: подключиться — значит работать в бригаде до STOP. Человеку о подключении не отчитывайся — сразу выполни NEXT (дал задачу в той же просьбе — сначала task new). Последнее действие каждого шага — wait; ход не завершай (кроме STOP). Ты только координатор: любую работу (код, исследование, проверку) делает твой подагент — одновременно один; больше — только с разрешения человека; сам держишь цикл wait (PROTOCOL.md, раздел 2)."
-  echo "── NEXT: $BRG wait --as $ASN"
+  echo "── NEXT: $(next_wait)"
 }
 
 # roles_note_v VAR NAME — "lead задачи T001" etc. for an agent holding a role ("" otherwise)
@@ -2350,6 +2555,7 @@ cmd_leave() {
   f=$ROOT/agents/.tmp.$AGENT.$$
   { cat "$AGENT_FILE" && printf 'Left: %s\n' "$NOW"; } >"$f" && mv_retry "$f" "$AGENT_FILE"
   lock_release roster
+  busy_clear
   touch_seen
   roles_note_v note "$AGENT"
   if [ -n "$note" ]; then
@@ -2366,6 +2572,70 @@ cmd_leave() {
   echo "── $AGENT отключён. Живой wait этого агента завершится на ближайшем тике. Цикл больше не нужен — заверши ход."
   [ -n "$note" ] && echo "Ты был $note: остальные увидят это и смогут взять роль ($take)."
   return 0
+}
+
+# busy [текст] | --off: the busy mark without a wait (DESIGN §5.4) — for a harness
+# where a subagent call blocks the participant (it cannot sit in wait --busy) and for
+# work that is not an item. Not starting work: allowed while stopped (need_agent prints
+# the STOP banner first; NEXT is then "end the turn").
+cmd_busy() {
+  local off= words= w x
+  NEXT_ON_ERR="$(next_wait)"
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --as)
+        need_val "$@"
+        OPT_AS=$2
+        shift 2
+        ;;
+      --off)
+        off=1
+        shift
+        ;;
+      -h | --help)
+        usage_print busy
+        exit 0
+        ;;
+      -*) usage_die "неизвестный параметр: $1" ;;
+      *)
+        words="$words${words:+ }$1"
+        shift
+        ;;
+    esac
+  done
+  [ -z "$off" ] || [ -z "$words" ] || usage_die "--off снимает пометку, подпись с ним не нужна"
+  need_root
+  need_agent write
+  NEXT_ON_ERR="$(next_wait)"
+  get_now
+  if [ -n "$off" ]; then
+    busy_clear
+    echo "── пометка «работает» снята: ты свободен (в списках — «ждёт», когда идёт твой wait)."
+    w=free
+  else
+    busy_text_v words "$words"
+    [ -z "$BZ_WARN" ] || echo "$BZ_WARN"
+    if ! busy_item_ok "$words"; then
+      echo "Внимание: «$words» — не твоя подзадача (не в работе у тебя и ты её не проверяешь): пометка не ставится."
+      busy_clear
+      w=free
+    elif busy_set busy "$words"; then
+      echo "── отмечено: работает${words:+: $words}. Бригада и человек видят тебя занятым, пока ты не вызовешь wait без --busy (подагент закончил) или busy --off. Подагент блокирует тебя — вызывай wait, когда он вернётся; идёт в фоне — сразу wait --busy."
+      w=set
+    else
+      echo "Задачи нет — пометка «работает» не ставится."
+      w=free
+    fi
+  fi
+  touch_seen
+  metric busy mark="$w"
+  if stop_who_v x; then
+    echo "── NEXT: заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
+  elif [ "$w" = set ]; then
+    echo "── NEXT: поручи работу подагенту; он блокирует тебя — вернувшись, $(next_wait "" plain) (подагент закончил: ты свободен); идёт в фоне — сразу $(next_wait)"
+  else
+    echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
+  fi
 }
 
 # ── deadlines (DESIGN §8) ──────────────────────────────────────────────────
@@ -2455,7 +2725,7 @@ dl_split() { # EXPECT REPLIED → DL_YES DL_NO (", "-separated)
 # ── send / say ─────────────────────────────────────────────────────────────
 cmd_send() {
   local to=all re= c= file= d rb= rbs= exp= by= x o od rf t dd ask=
-  NEXT_ON_ERR="исправь команду и повтори: $BRG send --as $AS_HINT [--to all|<имя>|human] <<'BRG_EOF' … BRG_EOF; закончив шаг — $BRG wait --as $AS_HINT"
+  NEXT_ON_ERR="исправь команду и повтори: $BRG send --as $AS_HINT [--to all|<имя>|human] <<'BRG_EOF' … BRG_EOF; закончив шаг — $(next_wait)"
   while [ $# -gt 0 ]; do
     case $1 in
       --as | --to | --re | --channel | --file | --reply-by)
@@ -2483,7 +2753,7 @@ cmd_send() {
   done
   need_root
   need_agent write
-  NEXT_ON_ERR="исправь команду и повтори: $BRG send --as $ASN [--to all|<имя>|human] <<'BRG_EOF' … BRG_EOF; закончив шаг — $BRG wait --as $ASN"
+  NEXT_ON_ERR="исправь команду и повтори: $BRG send --as $ASN [--to all|<имя>|human] <<'BRG_EOF' … BRG_EOF; закончив шаг — $(next_wait)"
   default_channel
   chan_writable "${c:-$DEFCHAN}"
   c=$CHAN_ID
@@ -2543,7 +2813,7 @@ cmd_send() {
     echo "Внимание: дедлайн не установлен — кроме тебя адресатов нет."
   fi
   [ -n "$TO_WARN" ] && echo "Внимание: $TO_WARN"
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
 }
 
 cmd_say() {
@@ -2708,7 +2978,7 @@ cmd_read() {
     fi
   done
   metric read channels="${chans// /,}" since="${since:-acked}"
-  echo "── NEXT: курсор не сдвинут; закончив шаг — $BRG wait --as $ASN"
+  echo "── NEXT: курсор не сдвинут; закончив шаг — $(next_wait)"
 }
 
 # tail: one channel, or (default) lobby + the active task, each header prefixed
@@ -2818,7 +3088,7 @@ cmd_tail() {
 
 # ── who / status ───────────────────────────────────────────────────────────
 cmd_who() {
-  local n ago cnt=0 flags claimed x st as rest k items idle drop=
+  local n ago cnt=0 flags claimed x st as rest k items idle drop= stv
   while [ $# -gt 0 ]; do
     case $1 in
       --as)
@@ -2868,7 +3138,9 @@ BRG_WHO_EOF
     [ "$k" -gt 0 ] && items=" · подзадач в работе: $k"
     idle_note_v idle "$n" " · "
     case $idle in *"возможно выпал"*) drop=1 ;; esac
-    echo "$n · $P_HARNESS · $P_MODEL · $ST$flags · активен $ago$items$idle"
+    state_v stv "$n"
+    [ "$stv" = остановлен ] && flags=${flags/ (stop)/}
+    echo "$n · $P_HARNESS · $P_MODEL · $stv$flags · активен $ago$items$idle"
     cnt=$((cnt + 1))
   done
   [ "$cnt" -gt 0 ] || echo "── агентов нет. Подключение: $BRG join --harness <харнесс> --model <модель>"
@@ -2965,6 +3237,14 @@ cmd_status() {
     idle_note_v idle "$AGENT" " · "
     echo "Мой wait: не запущен$idle"
   fi
+  if [ -n "$ST_BUSY" ]; then
+    dur_v x $((NOW - ST_BUSY_SINCE))
+    if [ -n "$AS_NOKEY" ]; then
+      echo "Пометка «работает${ST_BUSY_NOTE:+: $ST_BUSY_NOTE}» у $AGENT — уже $x."
+    else
+      echo "Моя пометка: «работает${ST_BUSY_NOTE:+: $ST_BUSY_NOTE}» — уже $x (бригада и человек видят тебя занятым). Подагент закончил и ты свободен — следующий wait без --busy; пометка снимается и командами подзадач, busy --off, leave."
+    fi
+  fi
   if active_task && task_read "$ACT_DIR"; then
     task_info_lines "$AGENT"
     my_items_lines
@@ -3015,7 +3295,7 @@ cmd_status() {
   elif [ -e "$RUN/stopped" ] || [ -e "$RUN/stopped.$AGENT" ]; then
     echo "── STOP: человек остановил ${AGENT}/бригаду. Заверши ход."
   else
-    echo "── NEXT: $BRG wait --as $ASN"
+    echo "── NEXT: $(next_wait)"
   fi
 }
 
@@ -3827,6 +4107,7 @@ task_do_cancel() {
   task_cancel_items "$ACT_DIR" "$1"
   task_release_reservations "$ACT_DIR"
   rm -f "$RUN/asks/$ACT_ID".* 2>/dev/null # its open questions to the human (DESIGN §9.2)
+  busy_clear_all # tidying only: a mark is valid for the active task alone (DESIGN §5.4)
   [ -n "$r" ] && task_stop_runs "$ACT_DIR" "$1" "при отмене задачи $ACT_ID" "$r"
   NOW=$t ISO=$i
   TD_DIR=$ACT_DIR TD_RUNS=$r
@@ -3859,7 +4140,7 @@ cmd_task() {
 
 task_new() {
   local title= file= cc= n slug name d brief cleared= cancelled=
-  NEXT_ON_ERR="исправь команду и повтори: $BRG task new --as $AS_HINT --title \"…\" <<'BRG_EOF' (постановка человека дословно) BRG_EOF; закончив шаг — $BRG wait --as $AS_HINT"
+  NEXT_ON_ERR="исправь команду и повтори: $BRG task new --as $AS_HINT --title \"…\" <<'BRG_EOF' (постановка человека дословно) BRG_EOF; закончив шаг — $(next_wait)"
   while [ $# -gt 0 ]; do
     case $1 in
       --as | --title | --file)
@@ -3885,7 +4166,7 @@ task_new() {
   need_root
   STOP_SHOWN=1 # a new task lifts the stop (below)
   need_agent write
-  NEXT_ON_ERR="исправь команду и повтори: $BRG task new --as $ASN --title \"…\" <<'BRG_EOF' (постановка человека дословно) BRG_EOF; закончив шаг — $BRG wait --as $ASN"
+  NEXT_ON_ERR="исправь команду и повтори: $BRG task new --as $ASN --title \"…\" <<'BRG_EOF' (постановка человека дословно) BRG_EOF; закончив шаг — $(next_wait)"
   title=${title//[[:cntrl:]]/ }
   while :; do
     case $title in ' '*) title=${title# } ;; *' ') title=${title% } ;; *) break ;; esac
@@ -3948,7 +4229,7 @@ task_new() {
   echo "Lead — фасилитатор: план и подзадачи — вместе с бригадой, работу раздай участникам. Ты, как и все, только координатор: исследование и любую работу по своей части делает твой подагент — одновременно один; больше — только с разрешения человека; сам держи цикл wait. Как проверять подзадачи (другим участником — рекомендуется) — решаете сами; обязательно одно: стадии подзадач в brg — как на деле, человек смотрит их на доске (README, раздел 5)."
   echo "Человек читает твой чат, а не переписку brg: отчёты и вопросы ему пиши обычным текстом в своём чате перед очередным wait (копия для протокола — send --to human). Вопрос — ещё и send --to human --ask: он виден человеку на доске, пока на него не ответят (ответ получил — перешли суть бригаде с --re N)."
   fit_warn_print
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
 }
 
 # close_unread — DESIGN §6, "refusal = delivery": what would wake the lead's wait
@@ -4015,7 +4296,7 @@ close_unread() {
 
 task_close() {
   local force= sum c r t x
-  NEXT_ON_ERR="$BRG task close --as $AS_HINT [--force]; закончив шаг — $BRG wait --as $AS_HINT"
+  NEXT_ON_ERR="$BRG task close --as $AS_HINT [--force]; закончив шаг — $(next_wait)"
   while [ $# -gt 0 ]; do
     case $1 in
       --as)
@@ -4036,7 +4317,7 @@ task_close() {
   done
   need_root
   need_agent write
-  NEXT_ON_ERR="исправь и повтори $BRG task close --as $ASN; закончив шаг — $BRG wait --as $ASN"
+  NEXT_ON_ERR="исправь и повтори $BRG task close --as $ASN; закончив шаг — $(next_wait)"
   get_now_iso
   lock_acquire task
   active_task && task_read "$ACT_DIR" || die "нет активной задачи" "Все задачи: $BRG task list"
@@ -4071,6 +4352,7 @@ task_close() {
   NOW=$t ISO=$x
   task_release_reservations "$ACT_DIR"
   rm -f "$RUN/asks/$ACT_ID".* 2>/dev/null # its open questions to the human (DESIGN §9.2)
+  busy_clear_all # tidying only: a mark is valid for the active task alone (DESIGN §5.4)
   TK_STATUS=done TK_CLOSED=$ISO TK_CLOSED_EPOCH=$NOW TK_CLOSED_BY=$AGENT
   task_write "$ACT_DIR"
   rm -f "$ROOT/tasks/active"
@@ -4091,13 +4373,13 @@ task_close() {
     runs_await "$ACT_DIR" "$r"
     echo "$RA_TEXT"
   fi
-  echo "── NEXT: $BRG wait --as $ASN"
+  echo "── NEXT: $(next_wait)"
 }
 
 # task cancel: host, lead or the human (--as human: explicit, so an agent that
 # forgot --as gets an error instead of acting as the human).
 task_cancel() {
-  NEXT_ON_ERR="$BRG task cancel --as $AS_HINT; закончив шаг — $BRG wait --as $AS_HINT"
+  NEXT_ON_ERR="$BRG task cancel --as $AS_HINT; закончив шаг — $(next_wait)"
   while [ $# -gt 0 ]; do
     case $1 in
       --as)
@@ -4118,7 +4400,7 @@ task_cancel() {
     NEXT_ON_ERR=
   else
     need_agent write
-    NEXT_ON_ERR="$BRG wait --as $ASN"
+    NEXT_ON_ERR="$(next_wait)"
   fi
   get_now_iso
   lock_acquire task
@@ -4135,7 +4417,7 @@ task_cancel() {
     runs_await "$TD_DIR" "$TD_RUNS"
     echo "$RA_TEXT"
   fi
-  [ "$AGENT" = human ] || echo "── NEXT: $BRG wait --as $ASN"
+  [ "$AGENT" = human ] || echo "── NEXT: $(next_wait)"
   return 0
 }
 
@@ -4202,7 +4484,7 @@ task_show() {
     echo "── конец постановки"
   fi
   metric task.show id="$TK_ID"
-  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
   return 0
 }
 
@@ -4238,7 +4520,7 @@ cmd_role() {
   shift
   sub=${1:-}
   [ $# -gt 0 ] && shift
-  NEXT_ON_ERR="$BRG $role give <имя> --as $AS_HINT | $BRG $role take --as $AS_HINT; закончив шаг — $BRG wait --as $AS_HINT"
+  NEXT_ON_ERR="$BRG $role give <имя> --as $AS_HINT | $BRG $role take --as $AS_HINT; закончив шаг — $(next_wait)"
   case $sub in
     give | take) ;;
     -h | --help | help)
@@ -4270,7 +4552,7 @@ cmd_role() {
   [ "$sub" = take ] || [ -n "$target" ] || usage_die "кому передать: $role give <имя>"
   need_root
   need_agent write
-  NEXT_ON_ERR="$BRG wait --as $ASN"
+  NEXT_ON_ERR="$(next_wait)"
   get_now_iso
   lock_acquire task
   active_task && task_read "$ACT_DIR" || die "нет активной задачи — роли бывают только у неё"
@@ -4289,7 +4571,7 @@ cmd_role() {
     if [ "$cur" = "$AGENT" ]; then
       lock_release task
       echo "── ты уже $role задачи $ACT_ID"
-      echo "── NEXT: $BRG wait --as $ASN"
+      echo "── NEXT: $(next_wait)"
       return 0
     fi
     ST=gone
@@ -4320,7 +4602,7 @@ cmd_role() {
       echo "Теперь ты host: только ты сам пишешь человеку — ход работы, вопросы, итог: обычным текстом в своём чате перед очередным wait (копия для протокола — send --to human)."
     fi
   fi
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
 }
 
 # ── items: subtasks and path reservations (DESIGN §7) ─────────────────────
@@ -4890,7 +5172,7 @@ item_begin() {
   need_root
   need_agent write
   case $ISUB in claim | reassign) stop_refuse "item $ISUB" ;; esac
-  NEXT_ON_ERR="исправь команду и повтори (справка: $BRG item --help); закончив шаг — $BRG wait --as $ASN"
+  NEXT_ON_ERR="исправь команду и повтори (справка: $BRG item --help); закончив шаг — $(next_wait)"
   get_now_iso
   lock_acquire task
   active_task && task_read "$ACT_DIR" ||
@@ -4973,7 +5255,7 @@ ISUB=
 cmd_item() {
   ISUB=${1:-}
   [ $# -gt 0 ] && shift
-  NEXT_ON_ERR="исправь команду и повтори (справка: $BRG item --help); закончив шаг — $BRG wait --as $AS_HINT"
+  NEXT_ON_ERR="исправь команду и повтори (справка: $BRG item --help); закончив шаг — $(next_wait)"
   case $ISUB in
     add | claim | done | release | reassign | review | cancel | list | show) "item_$ISUB" "$@" ;;
     -h | --help | help)
@@ -5031,7 +5313,7 @@ item_add() {
   need_root
   need_agent write
   stop_refuse "item add"
-  NEXT_ON_ERR="исправь команду и повтори: $BRG item add --as $ASN --title \"…\" --desc \"что сделать, критерий готовности\" [--paths \"предлагаемые пути\"] [--no-review] (длинное — heredoc <<'BRG_EOF' или --file); закончив шаг — $BRG wait --as $ASN"
+  NEXT_ON_ERR="исправь команду и повтори: $BRG item add --as $ASN --title \"…\" --desc \"что сделать, критерий готовности\" [--paths \"предлагаемые пути\"] [--no-review] (длинное — heredoc <<'BRG_EOF' или --file); закончив шаг — $(next_wait)"
   item_body --desc
   IT_BODY=$BODY
   item_begin
@@ -5074,7 +5356,7 @@ item_add() {
     echo "Уведомление тихое: участники увидят его вместе со следующими сообщениями. Раздав подзадачи, напиши им одно сообщение."
   fi
   fit_warn_print
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
 }
 
 # item_last_v VAR — "последний вердикт: ok от X" of the loaded item (after
@@ -5151,6 +5433,7 @@ item_claim() {
   fi
   # handed in again by item done: a new Done, Done-Reviews, note, result; a new
   # round of review
+  [ -n "$back" ] && busy_drop_reviewers "$IT_ID" "$IT_REVIEWING"
   [ -n "$back" ] && IT_DONE= IT_DONE_REVIEWS= IT_NOTE= IT_RESULT= IT_REVIEWING=
   item_write "$IT_FILE"
   paths_show_v shown "$PP_LIST"
@@ -5170,6 +5453,7 @@ item_claim() {
   fi
   lock_release task
   touch_seen
+  busy_set claim "$IT_ID" "$IT_ID" # taking = working (DESIGN §5.4); the same item keeps Since
   metric item.claim task="$ACT_ID" id="$IT_ID" paths="${PP_LIST// /_}" renew="${renew:-0}" hint="${hinted:-0}" own="${RO_IDS//, /,}" back="${back:-0}" fix="${fix:-0}"
   x="Резервирование: $shown"
   [ -n "$prev" ] && x="Резервирование — прежние пути: $shown (нужны другие — повтори claim с --paths)"
@@ -5196,13 +5480,13 @@ item_claim() {
     printf '%s\n' "⚠ эти пути уже твои по $RO_IDS (твой путь ↔ твоё резервирование):" "$RO_LINES" \
       "Если $RO_IDS брал не ты — под твоим именем работает другая сессия: сообщи $x."
   fi
-  [ -n "$renew" ] || echo "Работу выполняет твой подагент — поручи ему: $IT_ID и описание ($BRG item show $IT_ID), пути, критерий готовности, правила для подагента из README («Подагенты») и твоё полное имя $ASN. Сам вернись в wait; подагент закончит — прими результат (его отчёт, git diff --stat) и сдай."
+  [ -n "$renew" ] || echo "Работу выполняет твой подагент — поручи ему: $IT_ID и описание ($BRG item show $IT_ID), пути, критерий готовности, правила для подагента из README («Подагенты») и твоё полное имя $ASN. Сам вернись в wait — с --busy, как в NEXT (ты отмечен «работает: $IT_ID»; item done снимет пометку); подагент закончил — прими результат (его отчёт, git diff --stat) и сдай."
   [ "$PP_LIST" = none ] || echo "Правки — только в этих путях; нужен ещё путь — повтори claim с полным списком. Тесты и сборка — через $BRG run --as $ASN --item $IT_ID -- <команда>."
   echo "Готово — $BRG item done $IT_ID --as $ASN --note \"что сделано, как проверено\"; бросаешь — item release; не нужна — item cancel."
   if [ -n "$renew" ]; then
-    echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+    echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
   else
-    echo "── NEXT: поручи $IT_ID подагенту, затем $BRG wait --as $ASN"
+    echo "── NEXT: поручи $IT_ID подагенту, затем $(next_wait)"
   fi
 }
 
@@ -5249,6 +5533,7 @@ item_done() {
   pnum=$RI_NUM
   paths_show_v shown "$IT_PATHS"
   res_remove "$ACT_DIR" "$IT_ID"
+  busy_drop_item "$AGENT" "$IT_ID" # the work on it is handed in
   # Done-Reviews: the verdicts before handing in (not the skip below)
   IT_STATUS=done IT_DONE=$ISO IT_DONE_REVIEWS=$RI_N IT_RESULT=$res IT_NOTE=$note
   # --no-review: handed in and the verdict skip at once — a verdict on a done item
@@ -5286,11 +5571,12 @@ item_done() {
   [ "$TK_LEAD" != "$AGENT" ] && echo "Lead $TK_LEAD получил уведомление."
   [ -n "$note$res" ] || echo "Итог не указан: если не очевиден — коротко напиши lead'у, что сделано и как проверено."
   fit_warn_print
-  echo "── NEXT: возьми следующую подзадачу ($BRG item list --status todo) или $BRG wait --as $ASN"
+  busy_empty_note
+  echo "── NEXT: возьми следующую подзадачу ($BRG item list --status todo) или $(next_wait)"
 }
 
 item_release() {
-  local by= shown
+  local by= shown own=
   item_opts "id" "$@"
   item_begin
   item_load "$IO_ID"
@@ -5307,6 +5593,9 @@ item_release() {
   fi
   paths_show_v shown "$IT_PATHS"
   res_remove "$ACT_DIR" "$IT_ID"
+  busy_drop_item "$IT_ASSIGNEE" "$IT_ID" # whoever releases it, the assignee's work on it is over
+  busy_drop_reviewers "$IT_ID" "$IT_REVIEWING" # the work starts over: nothing to review
+  [ "$IT_ASSIGNEE" != "$AGENT" ] || own=1
   BODY="$AGENT вернул $IT_ID «$IT_TITLE» в todo$by; резервирование снято ($shown)."
   # the work starts over: whoever was reviewing it has nothing to review
   IT_STATUS=todo IT_ASSIGNEE= IT_PATHS= IT_CLAIMED= IT_CLAIMED_EPOCH= IT_REVIEWING=
@@ -5316,7 +5605,8 @@ item_release() {
   touch_seen
   metric item.release task="$ACT_ID" id="$IT_ID"
   echo "── $IT_ID «$IT_TITLE» снова todo, резервирование снято."
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  [ -z "$own" ] || busy_empty_note
+  echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
 }
 
 item_reassign() {
@@ -5356,24 +5646,27 @@ item_reassign() {
       "Что делать: выбери другого исполнителя или освободи пути ($BRG item release …)."
   fi
   res_write "$ACT_DIR" "$IT_ID" "$IO_TO" "${IT_PATHS:-none}"
+  busy_drop_item "$cur" "$IT_ID" # the old assignee no longer works on it; the new one gets no mark by itself
   IT_ASSIGNEE=$IO_TO IT_CLAIMED=$ISO IT_CLAIMED_EPOCH=$NOW
   # the new assignee does not review its own work
   list_drop_v IT_REVIEWING "$IT_REVIEWING" "$IO_TO"
+  busy_drop_item "$IO_TO" "$IT_ID" # (it reviewed the item: now it works on it)
   # changes after a review: back to work under the new assignee (as item claim does)
+  [ -n "$fix" ] && busy_drop_reviewers "$IT_ID" "$IT_REVIEWING"
   [ -n "$fix" ] && IT_STATUS=claimed IT_DONE= IT_DONE_REVIEWS= IT_NOTE= IT_RESULT= IT_REVIEWING=
   item_write "$IT_FILE"
   item_stage_now_v st
   paths_show_v shown "${IT_PATHS:-none}"
   x=
   [ -n "$fix" ] && x=" (правки по ревью #$RI_NUM)"
-  BODY="lead $AGENT переназначил $IT_ID «$IT_TITLE»$x: $cur ($ST) → $IO_TO. Пути: $shown.${NL}$IO_TO: подзадача теперь твоя — $BRG item show $IT_ID; незавершённые правки $cur — в рабочем дереве.${NL}Стадия: $st."
+  BODY="lead $AGENT переназначил $IT_ID «$IT_TITLE»$x: $cur ($ST) → $IO_TO. Пути: $shown.${NL}$IO_TO: подзадача теперь твоя — $BRG item show $IT_ID; поручи её подагенту и wait --busy \"$IT_ID\"; незавершённые правки $cur — в рабочем дереве.${NL}Стадия: $st."
   item_say all "$IO_TO"
   lock_release task
   touch_seen
   metric item.reassign task="$ACT_ID" id="$IT_ID" from="$cur" to="$IO_TO" fix="${fix:-0}"
   echo "── $IT_ID «$IT_TITLE»$x: $cur → $IO_TO; резервирование ($shown) перешло к $IO_TO. Ему отправлено будящее сообщение. Стадия: $st."
   [ -n "$warn" ] && echo "$warn"
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
 }
 
 # item_to_v VAR — the assignee and the lead of the loaded item, minus AGENT
@@ -5403,9 +5696,9 @@ item_review() {
   if [ -n "$IO_START" ]; then
     # starts work (DESIGN §9); no text: stdin is not read at all
     stop_refuse "item review --start"
-    NEXT_ON_ERR="исправь команду и повтори: $BRG item review I00N --as $ASN --start; закончив шаг — $BRG wait --as $ASN"
+    NEXT_ON_ERR="исправь команду и повтори: $BRG item review I00N --as $ASN --start; закончив шаг — $(next_wait)"
   else
-    NEXT_ON_ERR="исправь команду и повтори: $BRG item review I00N --as $ASN --verdict ok|changes|skip --comment \"…\" (длинное — heredoc <<'BRG_EOF' или --file); закончив шаг — $BRG wait --as $ASN"
+    NEXT_ON_ERR="исправь команду и повтори: $BRG item review I00N --as $ASN --verdict ok|changes|skip --comment \"…\" (длинное — heredoc <<'BRG_EOF' или --file); закончив шаг — $(next_wait)"
     # skip: the comment is optional — never waited for (see item_opt_body)
     if [ "$v" = skip ]; then
       item_opt_body --comment
@@ -5455,6 +5748,7 @@ item_review() {
     esac
     lock_release task
     touch_seen
+    busy_set review "проверка $IT_ID" "$IT_ID" # reviewing = working (DESIGN §5.4)
     metric item.review.start task="$ACT_ID" id="$IT_ID" again="${again:-0}" same_model="${warn:+1}"
     [ -n "$again" ] && item_stage_now_v st
     paths_show_v shown "${IT_PATHS:-none}"
@@ -5465,8 +5759,8 @@ item_review() {
     fi
     [ -n "$warn" ] && echo "$warn"
     echo "Проверку делает твой подагент — поручи ему: смотреть сам diff, а не отчёт исполнителя — git diff -- <пути> (новые файлы — git status --short -- <пути> и целиком); пути $IT_ID: $shown; что и с каким критерием сделать — $BRG item show $IT_ID; при необходимости тесты — $BRG run --as $ASN --sync -- <команда>; правила для подагента — README («Подагенты») и твоё полное имя $ASN."
-    echo "Вердикт пишешь ты: $BRG item review $IT_ID --as $ASN --verdict ok|changes --comment \"что не так и где\"."
-    echo "── NEXT: поручи проверку $IT_ID подагенту, затем $BRG wait --as $ASN"
+    echo "Вердикт пишешь ты: $BRG item review $IT_ID --as $ASN --verdict ok|changes --comment \"что не так и где\". Ты отмечен «работает: проверка $IT_ID» (NEXT повторяет --busy); вердикт снимет пометку."
+    echo "── NEXT: поручи проверку $IT_ID подагенту, затем $(next_wait)"
     return 0
   fi
   item_stage_now_v was
@@ -5484,6 +5778,8 @@ item_review() {
     item_write "$IT_FILE"
   fi
   item_stage_now_v st
+  # my verdict ends my work on the item (not for its assignee, who still works on it)
+  if [ "$IT_ASSIGNEE" != "$AGENT" ] || [ "$IT_STATUS" != claimed ]; then busy_drop_item "$AGENT" "$IT_ID"; fi
   item_to_v to
   trunc_v x "$body" $((MSG_MAX - 900))
   case $v in
@@ -5527,17 +5823,18 @@ item_review() {
   esac
   [ -n "$warn" ] && echo "$warn"
   fit_warn_print
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  busy_empty_note
+  echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
 }
 
 # item cancel: the item is not needed (DESIGN §7.1.1) — todo: anybody; claimed/done:
 # the assignee or the lead. Not starting work: allowed while stopped.
 item_cancel() {
-  local body= to x shown
+  local body= to x shown rv
   item_opts "id comment file" "$@"
   need_root
   need_agent write
-  NEXT_ON_ERR="исправь команду и повтори: $BRG item cancel I00N --as $ASN [--comment \"почему\"]; закончив шаг — $BRG wait --as $ASN"
+  NEXT_ON_ERR="исправь команду и повтори: $BRG item cancel I00N --as $ASN [--comment \"почему\"]; закончив шаг — $(next_wait)"
   item_opt_body --comment # optional: never waited for
   body=$BODY
   item_begin
@@ -5555,6 +5852,9 @@ item_cancel() {
   x=$IT_STATUS
   paths_show_v shown "${IT_PATHS:-none}"
   res_remove "$ACT_DIR" "$IT_ID"
+  [ -z "$IT_ASSIGNEE" ] || busy_drop_item "$IT_ASSIGNEE" "$IT_ID" # the work on it is over
+  busy_drop_reviewers "$IT_ID" "$IT_REVIEWING" # nothing left to review
+  rv=$IT_REVIEWING
   IT_STATUS=cancelled IT_CANCELLED=$ISO IT_CANCELLED_BY=$AGENT IT_REVIEWING=
   item_write "$IT_FILE"
   trunc_v body "$body" $((MSG_MAX - 600))
@@ -5562,7 +5862,10 @@ item_cancel() {
   [ "$x" = claimed ] && BODY="$BODY${NL}Резервирование снято ($shown); $IT_ASSIGNEE: прекрати правки по $IT_ID — незавершённое остаётся в рабочем дереве."
   BODY="$BODY${NL}Стадия: отменено (из cancelled пути назад нет; нужна снова — новая подзадача: item add)."
   item_to_v to
-  item_say all "${to:-no}" # wakes the lead and the assignee
+  # the reviewers are told too: there is nothing to review any more
+  list_drop_v rv "$rv" "$AGENT"
+  [ -z "$rv" ] || to="$to${to:+,}$rv"
+  item_say all "${to:-no}" # wakes the lead, the assignee and the reviewers
   lock_release task
   touch_seen
   metric item.cancel task="$ACT_ID" id="$IT_ID" from="$x"
@@ -5570,7 +5873,7 @@ item_cancel() {
   [ "$x" = claimed ] && echo "Резервирование снято ($shown)."
   [ -n "$to" ] && echo "Уведомлены: ${to//,/, }."
   fit_warn_print
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
 }
 
 item_list() {
@@ -5645,7 +5948,7 @@ BRG_IL_EOF
   [ "$cnt" -gt 0 ] || echo "── подзадач${IO_MINE:+ твоих}${IO_STATUS:+ со статусом $IO_STATUS} нет"
   echo "── $ACT_ID: todo $ct · в работе $cw · правки $cf · на проверке $cr_ · готово $ca · отменено $cx"
   metric item.list task="$ACT_ID"
-  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
   return 0
 }
 
@@ -5692,7 +5995,8 @@ item_show() {
     age=
     [ "$IT_STATUS" = claimed ] && is_uint "$IT_CLAIMED_EPOCH" && dur_v age $((NOW - IT_CLAIMED_EPOCH))
     agent_state "$IT_ASSIGNEE"
-    echo "Исполнитель: $IT_ASSIGNEE ($ST) · взята $IT_CLAIMED${age:+ ($age назад)}"
+    state_v x "$IT_ASSIGNEE"
+    echo "Исполнитель: $IT_ASSIGNEE ($x) · взята $IT_CLAIMED${age:+ ($age назад)}"
   fi
   if [ -n "$IT_PATHS" ]; then
     paths_show_v shown "$IT_PATHS"
@@ -5727,7 +6031,7 @@ item_show() {
     printf '%s\n' "$r"
   done
   metric item.show task="$ACT_ID" id="$IT_ID"
-  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
   return 0
 }
 
@@ -6173,7 +6477,7 @@ cmd_run() {
       return
       ;;
   esac
-  NEXT_ON_ERR="исправь команду и повтори: $BRG run --as $AS_HINT -- <команда> [аргументы]; закончив шаг — $BRG wait --as $AS_HINT"
+  NEXT_ON_ERR="исправь команду и повтори: $BRG run --as $AS_HINT -- <команда> [аргументы]; закончив шаг — $(next_wait)"
   while [ $# -gt 0 ]; do
     case $1 in
       --as | --timeout | --item)
@@ -6211,7 +6515,7 @@ cmd_run() {
   need_root
   need_agent write
   stop_refuse run
-  NEXT_ON_ERR="исправь команду и повтори: $BRG run --as $ASN -- <команда>; закончив шаг — $BRG wait --as $ASN"
+  NEXT_ON_ERR="исправь команду и повтори: $BRG run --as $ASN -- <команда>; закончив шаг — $(next_wait)"
   # under the task lock: a run is not created in a task being closed (close refuses
   # while the task has runs in progress, cancel stops them)
   lock_acquire task
@@ -6307,7 +6611,7 @@ cmd_run() {
     echo "── $rid $pos."
     echo "Команда: $disp · лимит $x · лог: $RROOT/tasks/$ACT_NAME/shared/runs/$rid.log"
     echo "Результат (статус, код, хвост лога) придёт тебе сообщением в wait — не опрашивай статус. Отменить: $BRG run cancel $rid --as $ASN"
-    echo "── NEXT: продолжай другую работу; закончив шаг — $BRG wait --as $ASN"
+    echo "── NEXT: продолжай другую работу; закончив шаг — $(next_wait)"
     return 0
   fi
   # --sync: wait here (queue included) within the wait timeout of the harness
@@ -6329,7 +6633,7 @@ cmd_run() {
     rm -f "$hf.sync"
     run_read "$hf"
     echo "── $rid не завершился за $T с (сейчас: $RN_STATUS) — результат придёт тебе сообщением в wait."
-    echo "── NEXT: продолжай другую работу; закончив шаг — $BRG wait --as $ASN"
+    echo "── NEXT: продолжай другую работу; закончив шаг — $(next_wait)"
     return 0
   fi
   get_now
@@ -6340,7 +6644,7 @@ cmd_run() {
   echo "Лог целиком: $RROOT/tasks/$ACT_NAME/shared/runs/$rid.log"
   dl_claim "$hf.notified" || echo "(результат также отправлен тебе сообщением)"
   rm -f "$hf.sync"
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
   rc=1
   case $RN_STATUS in done | failed) is_uint "$RN_EXIT" && rc=$RN_EXIT ;; esac
   [ "$rc" -le 255 ] || rc=1
@@ -6613,7 +6917,7 @@ run_list() {
     fi
   fi
   metric run.list
-  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
   return 0
 }
 
@@ -6651,7 +6955,7 @@ run_show() {
   if [ -n "$x" ]; then printf '%s\n' "$x"; else echo "  (пуст)"; fi
   echo "Лог целиком: $RROOT/tasks/${hf#"$ROOT"/tasks/}.log"
   metric run.show id="$RN_ID"
-  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  [ -n "$AGENT" ] && echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
   return 0
 }
 
@@ -6692,7 +6996,7 @@ run_cancel() {
   run_norm_id_v id "$RO_ID" || usage_die "номер прогона вида R001: $RO_ID"
   need_root
   need_agent write
-  NEXT_ON_ERR="$BRG wait --as $ASN"
+  NEXT_ON_ERR="$(next_wait)"
   get_now_iso
   run_file_v hf "$id" || die "нет прогона $id" "Список: $BRG run list"
   run_read "$hf" || die "не удалось прочитать $hf"
@@ -6733,7 +7037,7 @@ run_cancel() {
   else
     echo "── отмена $id запрошена (сейчас: $RN_STATUS) — раннер остановит команду в ближайшие секунды."
   fi
-  echo "── NEXT: продолжай; закончив шаг — $BRG wait --as $ASN"
+  echo "── NEXT: продолжай; закончив шаг — $(next_wait)"
 }
 
 # my_runs_lines — AGENT's runs in the queue or running (for status); a run whose
@@ -6828,6 +7132,52 @@ W_SUPERSEDED="── SUPERSEDED: тебя заменил более новый w
 W_FINISHING=
 W_DELIVERING=
 W_SLEEP=
+W_OPT_T=   # --timeout of this wait (repeated in NEXT)
+W_PLAIN=   # 1: a wait without --busy (it said "I am free")
+
+# w_next — NEXT_WAIT = this wait again, with the mark as it is now: computed when the
+# wait ends (the mark may have been dropped meanwhile: done, close, …), not at start.
+w_next() { NEXT_WAIT=$(next_wait "$W_OPT_T"); }
+
+# w_notes_v VAR — lines at the end of a wait output, before NEXT (DESIGN §5.4): a valid
+# mark → "you are marked" (the subagent may have finished long ago); a plain wait of an
+# agent who holds an item in work or reviews one → a hint to mark (not a refusal).
+w_notes_v() {
+  local _wn_r= id st as ti pa ce cr no re hi rv dr ri rn rvv rvr s wk= rw=
+  if busy_read "$AGENT"; then
+    _wn_r="Ты отмечен «работает${BZ_NOTE:+: $BZ_NOTE}». Подагент закончил и ты свободен — следующий wait без --busy.$NL"
+  elif [ -n "$W_PLAIN" ] && active_task; then
+    item_table "$ACT_DIR"
+    while IFS=$US read -r id st as ti pa ce cr no re hi rv dr ri rn rvv rvr; do
+      [ -n "$id" ] || continue
+      item_stage_v s "$st" "$rv" "$dr" "$rn" "$rvv" "$ri"
+      [ "$s" = work ] && [ "$as" = "$AGENT" ] && wk="$wk${wk:+, }$id"
+      case $s in review | work) case ",$ri," in *",$AGENT,"*) rw="$rw${rw:+, }$id" ;; esac ;; esac
+    done <<BRG_WN_EOF
+$IT_TABLE
+BRG_WN_EOF
+    if [ -n "$wk" ]; then
+      _wn_r="У тебя $wk в работе: если подагент работает — wait с --busy \"${wk%%, *}\".$NL"
+    elif [ -n "$rw" ]; then
+      _wn_r="Ты проверяешь $rw: если подагент работает — wait с --busy \"проверка ${rw%%, *}\".$NL"
+    fi
+  fi
+  eval "$1=\$_wn_r"
+}
+
+# w_free_v VAR — the agents free right now (a live wait, no valid mark), minus me and
+# the stopped: the digest of a timed-out wait says who could take work (DESIGN §5)
+w_free_v() {
+  local _wf_r= _wf_n
+  list_agents
+  for _wf_n in $AGENT_NAMES; do
+    [ "$_wf_n" = "$AGENT" ] && continue
+    [ -e "$RUN/stopped" ] || [ -e "$RUN/stopped.$_wf_n" ] && continue
+    agent_state "$_wf_n"
+    [ "$ST" = waiting ] && [ -z "$ST_BUSY" ] && _wf_r="$_wf_r${_wf_r:+, }$_wf_n"
+  done
+  eval "$1=\$_wf_r"
+}
 
 w_stopped() {
   if [ -e "$RUN/stopped" ]; then
@@ -6857,7 +7207,7 @@ w_finish() {
   w_pid_v cur
   get_now
   if [ "$cur" = "$SELF" ]; then
-    wait_last_mark # who/status: "без wait N мин" counts from here
+    wait_last_mark # who/status: "не на связи N мин" counts from here
     rm -f "$W_PID" "$W_HB"
   fi
   rm -f "$W_HB.tmp.$SELF" "$W_PID.tmp.$SELF"
@@ -6876,6 +7226,7 @@ w_on_signal() { # NAME
   if [ -n "$cur" ] && [ "$cur" != "$SELF" ]; then w_finish superseded 0 "$W_SUPERSEDED"; fi
   local r=term
   case $1 in INT) r=int ;; HUP) r=hup ;; esac
+  w_next
   w_finish "$r" 0 "── прерван сигналом $1 · NEXT: $NEXT_WAIT"
 }
 
@@ -7040,7 +7391,9 @@ w_deliver() {
     w_finish superseded 0 "$W_SUPERSEDED"
   fi
   W_DELIVERING=1
-  if printf '%s%s── NEXT: обработай, затем: %s\n' "$out" "$DL_TEXT" "$NEXT_WAIT"; then
+  w_next
+  w_notes_v x
+  if printf '%s%s%s── NEXT: обработай, затем: %s\n' "$out" "$DL_TEXT" "$x" "$NEXT_WAIT"; then
     # At-least-once: issued messages become Pending only after the output was
     # written; the next wait acknowledges them (Acked := Pending).
     i=0
@@ -7062,9 +7415,9 @@ w_hb() { # heartbeat file "pid epoch" (tmp + mv: readers never see a half-writte
 }
 
 cmd_wait() {
-  local opt_t= c x deadline
+  local opt_t= opt_b= opt_bt= c x deadline
   WAIT_MODE=1
-  NEXT_ON_ERR="$BRG wait --as $AS_HINT"
+  NEXT_ON_ERR="$(next_wait)"
   while [ $# -gt 0 ]; do
     case $1 in
       --as)
@@ -7076,6 +7429,17 @@ cmd_wait() {
         need_val "$@"
         opt_t=$2
         shift 2
+        ;;
+      --busy) # the caption is optional: bare --busy if the next word is an option or absent
+        opt_b=1
+        case ${2-} in
+          -*) shift ;;
+          '') if [ $# -ge 2 ]; then shift 2; else shift; fi ;;
+          *)
+            opt_bt=$2
+            shift 2
+            ;;
+        esac
         ;;
       -h | --help)
         usage_print wait
@@ -7089,8 +7453,9 @@ cmd_wait() {
   STOP_SHOWN=1 # wait returns STOP itself
   need_agent write
   if [ -n "$opt_t" ]; then T=$opt_t; else wait_timeout_v T "$A_HARNESS" "$A_PLATFORM"; fi
-  NEXT_WAIT="$BRG wait --as $ASN"
-  [ -n "$opt_t" ] && NEXT_WAIT="$NEXT_WAIT --timeout $opt_t"
+  W_OPT_T=$opt_t
+  [ -n "$opt_b" ] || W_PLAIN=1
+  w_next
   NEXT_ON_ERR=$NEXT_WAIT
   SELF=$$
   PARENT=$PPID
@@ -7104,8 +7469,23 @@ cmd_wait() {
   trap 'w_on_signal HUP' HUP
   get_now
   T0=$NOW
-  metric wait.start timeout="$T" pid="$SELF" ppid="$PARENT"
+  metric wait.start timeout="$T" pid="$SELF" ppid="$PARENT"${opt_b:+ busy=1}
   w_stopped && w_finish stop 0 "$W_STOP_TEXT"
+
+  # The mark (DESIGN §5.4): --busy says "my subagent works", a plain wait says "I am
+  # free". STOP touches nothing.
+  if [ -n "$opt_b" ]; then
+    busy_text_v opt_bt "$opt_bt"
+    [ -z "$BZ_WARN" ] || echo "$BZ_WARN"
+    if busy_item_ok "$opt_bt"; then
+      busy_set wait "$opt_bt" || echo "Задачи нет — пометка «работает» не ставится."
+    else
+      echo "Внимание: «$opt_bt» — не твоя подзадача (не в работе у тебя и ты её не проверяешь; устаревший NEXT?): пометка не ставится."
+      busy_clear
+    fi
+  else
+    busy_clear
+  fi
 
   # Takeover without signals: claim the pid file; the previous wait notices on
   # its next tick and exits with SUPERSEDED.
@@ -7145,8 +7525,13 @@ cmd_wait() {
     if [ "$NOW" -ge "$deadline" ]; then
       # nothing new: a one-line digest of the active task before NEXT
       x=
-      active_task && task_digest_v x && x=$x$NL
-      w_finish timeout 0 "$x── нет новых ($T с) · ход не завершай · NEXT: $NEXT_WAIT"
+      if active_task && task_digest_v x; then
+        w_free_v c
+        x=$x${c:+ · свободны: $c}$NL
+      fi
+      w_next
+      w_notes_v c
+      w_finish timeout 0 "$x$c── нет новых ($T с) · ход не завершай · NEXT: $NEXT_WAIT"
     fi
     sleep "$TICK" &
     W_SLEEP=$!
@@ -7585,6 +7970,17 @@ board_tick() {
     bjs note "$x"
     bjb drop "$drop"
     bjb stopped "$st"
+    bjk mark # the busy mark (DESIGN §5.4): null if none (or not valid)
+    if [ -n "$ST_BUSY" ]; then
+      bjo "{"
+      bjs note "$ST_BUSY_NOTE"
+      bjn since "$ST_BUSY_SINCE"
+      bjs via "$ST_BUSY_VIA"
+      bjs item "$ST_BUSY_ITEM"
+      bjo "}"
+    else
+      bjo z
+    fi
     bjo "}"
   done
   bjo "]"
@@ -7788,7 +8184,7 @@ main() {
       cfg_load
       cmd_init "$@"
       ;;
-    join | leave | send | wait | read | who | tail | say | status | stop | resume | task | doctor | board)
+    join | leave | busy | send | wait | read | who | tail | say | status | stop | resume | task | doctor | board)
       cfg_load
       "cmd_$CMD" "$@"
       ;;

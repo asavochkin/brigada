@@ -251,7 +251,7 @@ test_claim_own_overlap_warns() {
   assert_contains "$out" "⚠ эти пути уже твои по I001 (твой путь ↔ твоё резервирование):
   SRC/auth/login.js ↔ src/auth — I001 «Пункт 1»
 Если I001 брал не ты — под твоим именем работает другая сессия: сообщи lead'у (bash $BRG send --as $Bn --to ${A%%.*}) и человеку (в своём чате)."
-  assert_contains "$(printf '%s\n' "$out" | tail -n 1)" "── NEXT: поручи I003 подагенту, затем bash $BRG wait --as $Bn"
+  assert_contains "$(printf '%s\n' "$out" | tail -n 1)" "── NEXT: поручи I003 подагенту, затем bash $BRG wait --as $Bn --busy \"I003\""
   assert_eq claimed "$(hdr "$D/items/I003" Status)"
   assert_file_exists "$D/reservations/I003"
   assert_contains "$(metrics_of "$Bn" item.claim | tail -n 1)" "own=I001"
@@ -558,7 +558,7 @@ test_item_list_show_status_who() {
   out=$(brg item show I1 --as "$C")
   assert_contains "$out" "── I001 «Первая» · claimed · задача T001"
   assert_contains "$out" "Создал: ${A%%.*} · "
-  assert_contains "$out" "Исполнитель: ${Bn%%.*} (working) · взята "
+  assert_contains "$out" "Исполнитель: ${Bn%%.*} (работает) · взята "
   assert_contains "$out" "Пути: src/a, tests/a"
   assert_contains "$out" "── описание ──
 строка описания 1
@@ -573,7 +573,7 @@ test_item_list_show_status_who() {
   out=$(brg status --as "$C")
   assert_contains "$out" "Мои подзадачи: нет — свободные: bash $BRG item list --status todo"
   out=$(brg who)
-  assert_contains "$out" "${Bn%%.*} · codex · gpt · working · активен "
+  assert_contains "$out" "${Bn%%.*} · codex · gpt · работает"
   assert_contains "$out" " с назад · подзадач в работе: 1" # seconds: 0 or 1, by timing
   assert_not_contains "$(printf '%s\n' "$out" | awk -v c="${C%%.*}" 'index($0, c " ") == 1')" "подзадач"
 }
@@ -814,7 +814,7 @@ test_review_start() {
   assert_contains "$out" "пути I001: src/a"
   assert_contains "$out" "Внимание: ты на той же модели (gpt), что и исполнитель ${Bn%%.*}" "warned before the work, not after"
   assert_contains "$out" "Вердикт пишешь ты: bash $BRG item review I001 --as $C --verdict ok|changes"
-  assert_eq "── NEXT: поручи проверку I001 подагенту, затем bash $BRG wait --as $C" "$(printf '%s\n' "$out" | tail -n 1)"
+  assert_eq "── NEXT: поручи проверку I001 подагенту, затем bash $BRG wait --as $C --busy \"проверка I001\"" "$(printf '%s\n' "$out" | tail -n 1)"
   assert_eq "${C%%.*}" "$(hdr "$f" Reviewing)"
   n=$(cat "$D/seq")
   assert_eq system "$(hdr "$(last_msg)" Kind)"
@@ -1263,7 +1263,7 @@ test_item_cancel() {
   assert_eq cancelled "$(hdr "$D/items/I002" Status)"
   assert_eq "" "$(hdr "$D/items/I002" Reviewing)"
   assert_file_not_exists "$D/reservations/I002"
-  assert_eq "${Bn%%.*}" "$(hdr "$(last_msg)" Wake)" "the assignee (the lead wrote it)"
+  assert_eq "${Bn%%.*},${C%%.*}" "$(hdr "$(last_msg)" Wake)" "the assignee and the reviewer (the lead wrote it)"
   assert_contains "$(cat "$(last_msg)")" "${A%%.*} отменил I002 «В работе» (была: claimed): задача решена иначе"
   assert_contains "$(cat "$(last_msg)")" "${Bn%%.*}: прекрати правки по I002"
   # done: the assignee, while stopped
