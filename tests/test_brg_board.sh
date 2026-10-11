@@ -281,7 +281,7 @@ test_board_loop_and_term() {
   a=$(join_as claude)
   task_new_as "$a" "Цикл"
   out=$(mk_tmpdir)/out
-  bash "$BRG" board --interval 1 >"$out" 2>&1 &
+  bash "$BRG" board --static --interval 1 >"$out" 2>&1 &
   bp=$!
   track_pid $bp
   wait_for 5 test -f "$B/run/board/data.js" || fail "no data.js"
@@ -330,7 +330,14 @@ test_board_cli_errors_and_init() {
   out=$(brg board --help) || fail "board --help"
   assert_contains "$out" "--interval"
   assert_contains "$out" "--once"
-  assert_contains "$(brg help)" "board [--interval S] [--once]"
+  assert_contains "$out" "--port"
+  assert_contains "$out" "--static"
+  assert_contains "$(brg help)" "board [--interval S] [--port P] [--static] [--once]"
+  out=$(brg board --port 70000 2>&1)
+  assert_eq 1 "$?" "--port 70000"
+  assert_contains "$out" "--port"
+  out=$(brg board --port x 2>&1)
+  assert_eq 1 "$?" "--port x"
   out=$(brg board --interval 0 2>&1)
   rc=$?
   assert_eq 1 "$rc" "--interval 0"

@@ -4,14 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<!--BRG_META-->
 <title>brigada — доска</title>
 <!--
-  brigada board: a read-only page for the human (DESIGN §9.1). Opened as file://
-  without a server. `brg board` writes run/board/data.js (window.BRG_BOARD) and
-  run/board/T00N.js (window.BRG_TASKS) next to this file; the page reloads data.js
-  every 2 s with a classic script tag. The agent state words (DESIGN §5.2): "ждёт" =
-  free, "работает · подпись · N мин" = busy mark. Data go into the page only through
-  textContent / createElement / safe attributes — never parsed as markup.
+  brigada board: the page of the human (DESIGN §9.1). Two modes, one file. As file://
+  (no server) it only shows. Served by `brg board` with Python (bin/brg-serve.py), the
+  server puts <meta name="brg-token"> in place of the BRG_META comment above — that
+  turns on the control mode: writing to the brigade, answering questions, a new task,
+  lead, pause, stop; every button is a POST to /api/<action> that runs brg as the human.
+  `brg board` writes run/board/data.js (window.BRG_BOARD) and run/board/T00N.js
+  (window.BRG_TASKS) next to this file; the page reloads data.js every 2 s with a
+  classic script tag. The agent state words (DESIGN §5.2): "ждёт" = free, "работает ·
+  подпись · N мин" = busy mark. Data go into the page only through textContent /
+  createElement / safe attributes — never parsed as markup.
 -->
 <style>
 :root {
@@ -19,7 +24,7 @@
   --line: #e1e4ea; --line2: #d0d5dd; --accent: #2b6cd4; --accentbg: #e7effc;
   --ok: #1b7f47; --okbg: #e3f3e9; --warn: #995a00; --warnbg: #fcf1dc; --bad: #bf342e; --badbg: #fbe8e7;
   --rev: #6e46c6; --revbg: #efe9fb; --human: #c98500; --humanbg: #fff8e7; --humanline: #f0dcaa; --humanink: #8a5800;
-  --code: #f2f4f7; --shadow: 0 1px 2px rgba(20, 28, 45, .06);
+  --code: #f2f4f7; --shadow: 0 1px 2px rgba(20, 28, 45, .06); --onacc: #ffffff;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 /* agent colors: --c fills the avatar and the stripe, --ct colors text */
@@ -35,7 +40,7 @@
     --line: #272c35; --line2: #343a46; --accent: #6ea0ff; --accentbg: #1a2740;
     --ok: #55c486; --okbg: #14291c; --warn: #e6aa48; --warnbg: #2d2410; --bad: #f2776f; --badbg: #351a1a;
     --rev: #b39fff; --revbg: #231d37; --human: #e8aa2c; --humanbg: #231e12; --humanline: #4c3d1b; --humanink: #f3c565;
-    --code: #121419; --shadow: none;
+    --code: #121419; --shadow: none; --onacc: #0b1428;
   }
   .c0 { --c: #3d7be3; --ct: #8db3ff; } .c1 { --c: #12968a; --ct: #5fd4c5; }
   .c2 { --c: #8a62e6; --ct: #bca5ff; } .c3 { --c: #d4621d; --ct: #ffa46e; }
@@ -72,7 +77,7 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
   background: var(--sunken); border: 1px solid var(--line); cursor: pointer;
 }
 .tsel { display: flex; flex: 0 1 auto; min-width: 0; max-width: 560px; }
-.fresh { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.fresh { margin-left: auto; flex: none; width: 178px; justify-content: flex-end; overflow: hidden; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .fresh .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
 .fresh.stale .dot { background: var(--warn); }
 .fresh.off .dot { background: var(--faint); }
@@ -325,6 +330,71 @@ pre {
 .sys .st { color: var(--faint); }
 .sys .sb { margin: 4px 0 2px 1em; padding: 6px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); white-space: pre-wrap; font-size: 12px; color: var(--muted); }
 
+
+/* control mode: buttons, composer, agent menu, dialogs (only served by brg board with Python) */
+.ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cbtn {
+  border: 1px solid var(--line2); background: var(--panel); color: var(--fg); border-radius: 8px;
+  padding: 4px 11px; font-size: 12.5px; line-height: 1.4; cursor: pointer; white-space: nowrap;
+}
+.cbtn:hover { background: var(--sunken); }
+.cbtn.pri { background: var(--accent); border-color: var(--accent); color: var(--onacc); font-weight: 600; }
+.cbtn.pri:hover { filter: brightness(1.08); }
+.cbtn.danger { color: var(--bad); border-color: var(--bad); }
+.cbtn.danger.fill { background: var(--bad); color: #fff; }
+.cbtn:disabled { opacity: .5; cursor: default; }
+.composer { flex: none; padding: 10px 12px 12px; background: var(--panel); border-top: 1px solid var(--line); }
+.cmp-to { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-bottom: 6px; font-size: 12px; color: var(--muted); }
+.tchip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 1px 9px 1px 3px; border-radius: 999px;
+  border: 1px solid var(--line2); background: var(--panel); font-size: 12px; cursor: pointer;
+}
+.tchip.all { padding-left: 9px; }
+.tchip .av { width: 18px; height: 18px; font-size: 8.5px; }
+.tchip.on { border-color: var(--c, var(--accent)); background: var(--accentbg); font-weight: 600; }
+.tchip.all.on { border-color: var(--accent); }
+.cmp-re { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 4px 8px; border-radius: 8px; background: var(--sunken); font-size: 12px; color: var(--muted); }
+.cmp-re .rt { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer textarea, .dlg textarea, .dlg input[type="text"] {
+  display: block; width: 100%; padding: 8px 10px; border: 1px solid var(--line2); border-radius: 9px; background: var(--bg);
+  line-height: 1.45; resize: vertical;
+}
+.composer textarea { min-height: 58px; max-height: 40vh; }
+.composer textarea:focus, .dlg textarea:focus, .dlg input[type="text"]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.cmp-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px; }
+.cmp-foot label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.cmp-foot select { padding: 2px 6px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); max-width: 150px; }
+.cmp-st { flex: 1 1 120px; min-width: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.cmp-st.ok { color: var(--ok); } .cmp-st.bad { color: var(--bad); }
+.achip { position: relative; }
+.kebab {
+  flex: none; align-self: flex-start; margin: -3px -9px 0 0; padding: 2px 7px; border: 0; border-radius: 7px;
+  background: transparent; color: var(--faint); font-size: 16px; line-height: 1.2; cursor: pointer;
+}
+.kebab:hover { background: var(--sunken); color: var(--fg); }
+.menu {
+  position: absolute; right: 6px; top: calc(100% - 4px); z-index: 20; min-width: 180px; padding: 4px;
+  background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 8px 26px rgba(0, 0, 0, .25);
+}
+.menu button { display: block; width: 100%; padding: 6px 10px; border: 0; border-radius: 7px; background: none; text-align: left; font-size: 13px; cursor: pointer; }
+.menu button:hover { background: var(--sunken); }
+.menu button.danger { color: var(--bad); }
+.ovl { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(10, 14, 22, .55); }
+.dlg { width: 100%; max-width: 560px; max-height: 92vh; overflow: auto; padding: 16px 18px; background: var(--panel); border: 1px solid var(--line2); border-radius: 14px; box-shadow: 0 14px 44px rgba(0, 0, 0, .4); }
+.dlg h3 { margin: 0 0 8px; font-size: 16px; }
+.dlg label { display: block; margin-top: 10px; margin-bottom: 3px; font-size: 12px; color: var(--muted); }
+.dlg .note { margin-top: 8px; padding: 7px 10px; border-radius: 8px; background: var(--warnbg); font-size: 13px; }
+.dlg .acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.dlg .err { margin-top: 8px; color: var(--bad); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.toast {
+  position: fixed; left: 50%; bottom: 18px; z-index: 60; transform: translateX(-50%); max-width: min(640px, calc(100vw - 24px));
+  padding: 9px 14px; border-radius: 10px; background: var(--fg); color: var(--bg); font-size: 13px; box-shadow: 0 8px 26px rgba(0, 0, 0, .3);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.toast.bad { background: var(--bad); color: #fff; }
+.ask .acts2 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 8px; }
+.mh .reply { font-size: 11.5px; }
+
 @media (max-width: 1240px) {
   main { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
   #s-msgs { grid-column: 1; grid-row: auto; }
@@ -338,7 +408,7 @@ pre {
   main { padding: 12px 12px 24px; gap: 12px; }
   #banners { padding: 0 12px; }
   .kanban, .kanban.k5 { grid-template-columns: minmax(0, 1fr); }
-  .fresh { margin-left: 0; }
+  .fresh { margin-left: 0; width: auto; justify-content: flex-start; }
   .ttitle { font-size: 18px; }
 }
 @media (prefers-reduced-motion: no-preference) {
@@ -351,6 +421,7 @@ pre {
 <header class="top">
   <div class="brand"><span id="proj">brigada</span><span class="sub">доска бригады</span></div>
   <label class="tsel"><span class="sr">Задача</span><select id="tasksel" aria-label="Задача"></select></label>
+  <div id="ctl" class="ctl hide"></div>
   <div id="fresh" class="fresh off"></div>
 </header>
 <div id="banners"></div>
@@ -371,12 +442,23 @@ pre {
         <div id="msgtrunc"></div>
       </div>
       <div id="msglist"></div>
+      <div id="composer" class="composer hide">
+        <div class="cmp-to" id="cmpto"></div>
+        <div class="cmp-re hide" id="cmpre"></div>
+        <textarea id="cmptext" rows="3" placeholder="Написать бригаде… (Ctrl/⌘+Enter — отправить)" aria-label="Сообщение бригаде"></textarea>
+        <div class="cmp-foot">
+          <label>канал <select id="cmpchan"></select></label>
+          <span id="cmpst" class="cmp-st"></span>
+          <button type="button" class="cbtn pri" id="cmpsend">Отправить</button>
+        </div>
+      </div>
     </div>
   </section>
   <section id="s-runs" class="sec hide"></section>
   <section id="s-docs" class="sec hide"></section>
   <section id="s-tasks" class="sec hide"></section>
 </main>
+<div id="toast" class="toast hide" role="status"></div>
 <script>
 (function () {
   "use strict";
@@ -391,8 +473,15 @@ pre {
 
   var S = {
     data: null, err: "", sel: "", msgTab: "task", agent: "", hideSys: false, docTab: "",
-    open: {}, last: {}, tload: {}, msgChan: "", colors: {}, csig: "", idleSince: 0
+    open: {}, last: {}, tload: {}, msgChan: "", colors: {}, csig: "", idleSince: 0,
+    to: [], re: null, sendChan: "", menu: "", modal: null, act: "", actTitle: ""
   };
+  // the control mode (DESIGN §9.1): the server put the token in the page; as file:// there is none
+  var TOKEN = (function () {
+    var m = document.querySelector('meta[name="brg-token"]');
+    return m ? m.getAttribute("content") || "" : "";
+  })();
+  var CTL = !!TOKEN && /^https?:$/.test(location.protocol);
 
   // ── helpers ──
   function $(id) { return document.getElementById(id); }
@@ -485,6 +574,237 @@ pre {
   function mini(box, title, text) {
     box.className = "sec mini";
     add(box, el("span", "mt", title), el("span", "faint", text));
+  }
+
+
+  // ── control mode: actions are POSTs to the server of `brg board`; it runs brg as the human ──
+  function api(action, body, done) {
+    var x = new XMLHttpRequest();
+    x.open("POST", "/api/" + action);
+    x.setRequestHeader("Content-Type", "application/json");
+    x.setRequestHeader("X-Brg-Token", TOKEN);
+    x.onload = function () {
+      var r = null;
+      try { r = JSON.parse(x.responseText); } catch (e) { r = null; }
+      if (!r || typeof r !== "object") r = { ok: false, out: x.status === 403 ? "доступ закрыт (токен или cookie) — открой адрес из вывода brg board" : "ответ сервера не разобран (" + x.status + ")" };
+      setTimeout(load, 300);
+      setTimeout(load, 1000);
+      done(r);
+    };
+    x.onerror = function () { done({ ok: false, out: "сервер доски недоступен — он остановлен? Запусти brg board" }); };
+    x.send(JSON.stringify(body || {}));
+  }
+  // the first lines of brg's answer, without the «── » marks
+  function brief(out) {
+    return String(out || "").split("\n").filter(Boolean).slice(0, 3).map(function (l) {
+      l = l.replace(/^── /, "");
+      return l.length > 160 ? l.slice(0, 159) + "…" : l;
+    }).join("\n");
+  }
+  // the first line only (hints for the terminal, long paths — in the tooltip)
+  function first(out) { return brief(String(out || "").split("\n").filter(Boolean).slice(0, 1).join("\n")); }
+  var toastT = 0;
+  function toast(text, bad, full) {
+    var t = $("toast");
+    t.textContent = text;
+    t.title = full || "";
+    t.className = "toast" + (bad ? " bad" : "");
+    clearTimeout(toastT);
+    toastT = setTimeout(function () { t.className = "toast hide"; }, bad ? 10000 : 5000);
+  }
+  function act(action, body) {
+    api(action, body, function (r) { toast((r.ok ? first(r.out) : brief(r.out)) || (r.ok ? "готово" : "ошибка"), !r.ok, r.out); });
+  }
+  function closeModal() {
+    if (S.modal && S.modal.parentNode) S.modal.parentNode.removeChild(S.modal);
+    S.modal = null;
+  }
+  function modal(build) {
+    closeModal();
+    var o = el("div", "ovl"), d = el("div", "dlg");
+    d.setAttribute("role", "dialog");
+    d.setAttribute("aria-modal", "true");
+    o.addEventListener("mousedown", function (e) { if (e.target === o) closeModal(); });
+    o.appendChild(d);
+    document.body.appendChild(o);
+    S.modal = o;
+    build(d);
+  }
+  // a dangerous action asks first; the button says what it does
+  function confirmBox(title, text, label, fn) {
+    modal(function (d) {
+      var no = btn("cbtn", "Не надо", closeModal);
+      d.appendChild(el("h3", null, title));
+      d.appendChild(el("div", "pre", text));
+      d.appendChild(add(el("div", "acts"), no, btn("cbtn danger fill", label, function () { closeModal(); fn(); })));
+      no.focus();
+    });
+  }
+  function newTaskBox() {
+    modal(function (d) {
+      var ti = el("input"), br = el("textarea"), err = el("div", "err hide"), go;
+      ti.type = "text";
+      ti.maxLength = 200;
+      ti.placeholder = "коротко, о чём задача (одна строка)";
+      br.rows = 9;
+      br.placeholder = "Постановка — что нужно сделать, дословно. Бригада прочитает её как есть.";
+      d.appendChild(el("h3", null, "Новая задача"));
+      if (S.act) d.appendChild(el("div", "note", "Сейчас идёт " + S.act + " «" + S.actTitle + "». Новая задача отменит её: работа агентов по ней прекратится."));
+      d.appendChild(add(el("label", null, "Заголовок"), ti));
+      d.appendChild(add(el("label", null, "Постановка"), br));
+      d.appendChild(err);
+      go = btn("cbtn pri", S.act ? "Отменить " + S.act + " и создать" : "Создать задачу", function () {
+        var t = ti.value.replace(/^\s+|\s+$/g, ""), b = br.value;
+        function bad(m) { err.textContent = m; err.className = "err"; }
+        if (!t) { bad("Нужен заголовок."); ti.focus(); return; }
+        if (!b.replace(/\s+/g, "")) { bad("Нужна постановка."); br.focus(); return; }
+        go.disabled = true;
+        api("task-new", { title: t, brief: b, cancel_current: !!S.act }, function (r) {
+          go.disabled = false;
+          if (r.ok) { closeModal(); toast(first(r.out), false, r.out); } else bad(brief(r.out) || "ошибка");
+        });
+      });
+      d.appendChild(add(el("div", "acts"), btn("cbtn", "Отмена", closeModal), go));
+      ti.focus();
+    });
+  }
+  // the toolbar of the page: whole-brigade actions
+  function renderCtl(v) {
+    var box = $("ctl");
+    clear(box);
+    if (!CTL) { box.className = "ctl hide"; return; }
+    box.className = "ctl";
+    box.appendChild(btn("cbtn pri", "Новая задача", newTaskBox));
+    if (v.halted) {
+      var r = btn("cbtn", "Продолжить", function () { act("resume", {}); });
+      r.title = "снять общие и личные паузы и стопы (остановленным агентам потом надо написать «продолжай» в их окнах)";
+      box.appendChild(r);
+    }
+    if (!v.pause && !v.stop) {
+      var p = btn("cbtn", "Пауза", function () { act("pause", {}); });
+      p.title = "агенты ждут и новую работу не начинают, подагенты доводят начатое; просыпаются от ваших сообщений";
+      box.appendChild(p);
+    }
+    if (!v.stop) {
+      var st = btn("cbtn danger", "Стоп всех", function () {
+        confirmBox("Остановить всю бригаду?", "Агенты завершат ход. Вернуть их можно только словом «продолжай» в окне каждого агента (после «Продолжить»). Мягче — «Пауза».", "Остановить всех", function () { act("stop", {}); });
+      });
+      st.title = "STOP: агенты завершают ход";
+      box.appendChild(st);
+    }
+    if (v.act) {
+      box.appendChild(btn("cbtn danger", "Отменить задачу", function () {
+        confirmBox("Отменить " + v.act + "?", "«" + v.title + "»\nЗадача будет отменена, работа агентов по ней прекратится, подзадачи и прогоны остановятся.", "Отменить задачу", function () { act("task-cancel", {}); });
+      }));
+    }
+  }
+  // the message to the brigade
+  function autoChan() { return S.re ? S.re.chan : S.msgTab === "lobby" || !S.act ? "lobby" : S.act; }
+  function chanOpts() {
+    var o = [];
+    if (S.act) o.push(S.act);
+    o.push("lobby");
+    if (S.re && o.indexOf(S.re.chan) < 0) o.push(S.re.chan);
+    return o;
+  }
+  function sendChan() { return S.sendChan && chanOpts().indexOf(S.sendChan) >= 0 ? S.sendChan : autoChan(); }
+  var cmpT = 0;
+  function cmpStatus(text, bad, full) {
+    var e = $("cmpst");
+    e.textContent = text || "";
+    e.title = full || "";
+    e.className = "cmp-st" + (text ? (bad ? " bad" : " ok") : "");
+    clearTimeout(cmpT);
+    if (text && !bad) cmpT = setTimeout(function () { cmpStatus("", false); }, 10000);
+  }
+  function renderComposer(v) {
+    var box = $("composer"), to = $("cmpto"), re = $("cmpre"), ch = $("cmpchan");
+    if (!CTL) { box.className = "composer hide"; return; }
+    box.className = "composer";
+    clear(to);
+    to.appendChild(document.createTextNode("кому:"));
+    var all = el("button", "tchip all" + (S.to.length ? "" : " on"), "всем");
+    all.type = "button";
+    all.addEventListener("click", function () { S.to = []; render(); });
+    to.appendChild(all);
+    v.names.forEach(function (n) {
+      var on = S.to.indexOf(n) >= 0, c = add(el("button", "tchip " + colorCls(n) + (on ? " on" : "")), el("span", "av", initials(n)), n);
+      c.type = "button";
+      c.addEventListener("click", function () {
+        S.to = on ? S.to.filter(function (x) { return x !== n; }) : S.to.concat([n]);
+        render();
+      });
+      to.appendChild(c);
+    });
+    clear(re);
+    if (S.re) {
+      re.className = "cmp-re";
+      add(re, el("span", "rt", "ответ на #" + S.re.id + " от " + S.re.from + " · " + (S.re.chan === "lobby" ? "lobby" : "задача " + S.re.chan)),
+        btn("lnk", "отменить", function () { S.re = null; render(); }));
+    } else re.className = "cmp-re hide";
+    clear(ch);
+    chanOpts().forEach(function (c) {
+      var o = el("option", null, c === "lobby" ? "lobby" : "задача " + c);
+      o.value = c;
+      ch.appendChild(o);
+    });
+    ch.value = sendChan();
+  }
+  function sendMsg() {
+    var ta = $("cmptext"), go = $("cmpsend"), body;
+    if (!ta.value.replace(/\s+/g, "")) { cmpStatus("напиши текст сообщения", true); ta.focus(); return; }
+    body = { to: S.to.length ? S.to : "all", text: ta.value, channel: sendChan() };
+    if (S.re) body.re = S.re.id;
+    go.disabled = true;
+    api("say", body, function (r) {
+      go.disabled = false;
+      if (r.ok) {
+        ta.value = "";
+        S.re = null;
+        cmpStatus(first(r.out), false, r.out);
+        render();
+      } else cmpStatus(brief(r.out) || "ошибка", true, r.out);
+    });
+  }
+  // «Ответить»: the composer gets the recipient, the channel and Re: N
+  function replyTo(from, id, chan) {
+    S.re = { id: id, from: from, chan: chan };
+    S.to = [from];
+    S.sendChan = chan;
+    S.msgTab = chan === "lobby" ? "lobby" : "task";
+    render();
+    focusComposer();
+  }
+  // the field is at the bottom of the chat: bring it into view, or nothing seems to happen
+  function focusComposer() {
+    var ta = $("cmptext");
+    if (ta.scrollIntoView) ta.scrollIntoView({ block: "center" });
+    ta.focus();
+  }
+  function closeMenus() {
+    var ms = document.querySelectorAll(".menu"), i;
+    S.menu = "";
+    for (i = 0; i < ms.length; i++) ms[i].className = "menu hide";
+  }
+  // the menu of an agent chip: lead, pause, stop
+  function agentMenu(a, v) {
+    var m = el("div", "menu" + (S.menu === a.name ? "" : " hide")), k = btn("kebab", "⋯", function (e) {
+      var open = m.className === "menu";
+      closeMenus();
+      if (!open) { m.className = "menu"; S.menu = a.name; }
+      e.stopPropagation();
+    });
+    k.title = "действия с " + a.name;
+    k.setAttribute("aria-label", "действия с " + a.name);
+    function item(text, cls, fn) { m.appendChild(btn(cls || "", text, fn)); }
+    if (a.name !== v.lead && a.state !== "gone") item("сделать lead’ом", "", function () { act("lead", { name: a.name }); });
+    if (a.paused) item("снять паузу", "", function () { act("resume", { name: a.name }); });
+    else if (!v.gpause) item("поставить на паузу", "", function () { act("pause", { name: a.name }); });
+    if (a.stopped) item("снять стоп", "", function () { act("resume", { name: a.name }); });
+    else item("остановить…", "danger", function () {
+      confirmBox("Остановить " + a.name + "?", "Агент завершит ход; вернуть его можно только словом «продолжай» в его окне (после «Снять стоп»). Мягче — пауза.", "Остановить", function () { act("stop", { name: a.name }); });
+    });
+    return [k, m];
   }
 
   // ── agent colors (DESIGN §9.1): stable by name — a hash, collisions resolved in join order ──
@@ -669,13 +989,22 @@ pre {
     }
     if (v.err) add(line("warn", "Снимок не читается", " — показаны последние данные. Запусти: "), el("code", null, RUN_CMD));
     if (v.stale) add(line("warn", "Доска не обновляется:", " последний снимок "), live("ago", v.time), " — brg board остановлен? ", el("code", null, RUN_CMD));
-    if (v.stop) add(line("stop", "STOP", " — человек остановил бригаду: агенты завершили ход. Снять: "), el("code", null, "brg resume"), " и написать каждому в его окно «продолжай»");
-    if (v.stopped.length) add(line("warn", "Остановлены агенты:", " " + v.stopped.join(", ") + " — они завершили ход. Снять: "), el("code", null, "brg resume <имя>"), " и написать в его окно «продолжай»");
+    // in the control mode the fix is a button, else the command to type
+    function resumeBtns(label, who) {
+      if (!CTL) return el("code", null, who.length ? "brg resume <имя>" : "brg resume");
+      var s = el("span", "ctl");
+      (who.length ? who : [""]).forEach(function (n) {
+        s.appendChild(btn("cbtn", n ? label + " " + n : label, function () { act("resume", n ? { name: n } : {}); }));
+      });
+      return s;
+    }
+    if (v.stop) add(line("stop", "STOP", " — человек остановил бригаду: агенты завершили ход. Снять: "), resumeBtns("Снять стоп", []), " и написать каждому в его окно «продолжай»");
+    if (v.stopped.length) add(line("warn", "Остановлены агенты:", " " + v.stopped.join(", ") + " — они завершили ход. Снять: "), resumeBtns("снять стоп", v.stopped), " и написать в его окно «продолжай»");
     // the pause (DESIGN §9): nobody's turn ended — the agents wait and start no new work
-    if (v.pause) add(line("pause", "ПАУЗА", " — бригада ждёт: новую работу никто не начинает, подагенты доводят начатое; агенты просыпаются от ваших сообщений. Снять: "), el("code", null, "brg resume"));
-    if (v.paused.length && !v.pause) add(line("pause", "На паузе агенты:", " " + v.paused.join(", ") + " — снять: "), el("code", null, "brg resume <имя>"));
+    if (v.pause) add(line("pause", "ПАУЗА", " — бригада ждёт: новую работу никто не начинает, подагенты доводят начатое; агенты просыпаются от ваших сообщений. Снять: "), resumeBtns("Продолжить", []));
+    if (v.paused.length && !v.pause) add(line("pause", "На паузе агенты:", " " + v.paused.join(", ") + " — снять: "), resumeBtns("снять паузу", v.paused));
     // all wait, nobody works, no questions and runs, yet the task goes on (DESIGN §9.1)
-    if (v.idle) add(line("", "Бригада простаивает", " уже "), live("dur", v.idle), ": никто не работает, вопросов и прогонов нет, а задача идёт. Скажи бригаде, что дальше: ", el("code", null, "brg say \"…\""));
+    if (v.idle) add(line("", "Бригада простаивает", " уже "), live("dur", v.idle), ": никто не работает, вопросов и прогонов нет, а задача идёт. Скажи бригаде, что дальше: ", CTL ? btn("cbtn", "Написать бригаде", focusComposer) : el("code", null, "brg say \"…\""));
   }
 
   // ── questions to the human (DESIGN §9.2): open ones, oldest first ──
@@ -710,7 +1039,15 @@ pre {
         sync();
         e.appendChild(x);
       }
-      var kp = v.kp[q.from], w1 = add(el("div", "where"), "Ответить: в чате ", el("b", null, q.from));
+      var kp = v.kp[q.from], w1;
+      if (CTL) { // answer from the page; the chat of the agent works as well
+        w1 = add(el("div", "acts2"), btn("cbtn pri", "Ответить", function () { replyTo(q.from, q.id, q.chan); }),
+          el("span", "where", "или в чате " + q.from + (kp ? " — в окне агента ищи «" + q.from + "." + kp + "»" : "")));
+        e.appendChild(w1);
+        box.appendChild(e);
+        return;
+      }
+      w1 = add(el("div", "where"), "Ответить: в чате ", el("b", null, q.from));
       if (kp) add(w1, " — в окне агента ищи «", el("code", null, q.from + "." + kp), "»");
       e.appendChild(w1);
       var cmd = "brg say --to " + q.from + " --re " + q.id + (q.chan !== v.defChan ? " --channel " + q.chan : "") + " …";
@@ -827,6 +1164,7 @@ pre {
       part("проверяет", w.reviewing, "revw");
       if (a.model) add(l2, " · ", el("span", "faint", a.model));
       c.appendChild(add(el("span", "ab"), l1, l2));
+      if (CTL && a.state !== "gone") agentMenu(a, v).forEach(function (x) { c.appendChild(x); });
       c.title = a.name + " — " + workText(a) + "\n" + (a.harness || "?") + " · " + (a.model || "?") +
         (a.seen > 0 ? "\nпоследний вызов brg: " + hm(a.seen) : "") + (a.note ? "\n" + a.note : "");
       strip.appendChild(c);
@@ -1077,7 +1415,7 @@ pre {
     var tabs = $("msgtabs");
     clear(tabs);
     [["task", v.tid ? "Задача " + v.tid : "Задача", v.nTask], ["lobby", "lobby", v.nLobby]].forEach(function (t) {
-      tabs.appendChild(btn(S.msgTab === t[0] ? "on" : "", t[1] + " · " + t[2], function () { S.msgTab = t[0]; render(); }));
+      tabs.appendChild(btn(S.msgTab === t[0] ? "on" : "", t[1] + " · " + t[2], function () { S.msgTab = t[0]; S.sendChan = ""; render(); }));
     });
     var sel = $("magent");
     clear(sel);
@@ -1118,6 +1456,11 @@ pre {
       if (dl.yes.length) t += " · ответили: " + dl.yes.join(", ");
       if (dl.no.length) t += (past ? " · не ответили: " : " · ждём: ") + dl.no.join(", ");
       h.appendChild(pill(t, (past && dl.no.length ? "bad" : dl.no.length ? "warn" : "ok") + " wrap"));
+    }
+    if (CTL && id && from && from !== "human" && from !== "brg" && v.canReply) {
+      var rb = btn("lnk reply", "ответить", function () { replyTo(from, id, chan); });
+      rb.title = "ответить с доски: " + from + ", re #" + id;
+      h.appendChild(rb);
     }
     var w = el("span", "when", hm(num(hv(m, "Epoch"))) + (id ? " · #" + id : ""));
     w.title = hv(m, "Time");
@@ -1217,6 +1560,12 @@ pre {
 
     // open questions to the human (DESIGN §9.2): "asks" of the snapshot; an older brg has none
     var cth = cur && cur.task ? cur.task.h : null, cActive = !!cth && cth.Status === "active";
+    S.act = cActive ? curId : "";
+    S.actTitle = cActive ? cth.Title || "" : "";
+    // another current task (a new one, a switch): the recipient, the channel, the reply and the status are the old task's
+    var taskKey = curId + ":" + (cActive ? 1 : 0);
+    if (S.taskKey !== undefined && S.taskKey !== taskKey && CTL) { S.to = []; S.re = null; S.sendChan = ""; cmpStatus("", false); }
+    S.taskKey = taskKey;
     var hasAsks = !!d && Array.isArray(d.asks), asking = {}, kps = {};
     var asks = (hasAsks ? d.asks : []).filter(function (x) { return x && x.h && num(hv(x, "Id")); }).map(function (x) {
       return { id: num(hv(x, "Id")), chan: typeof x.chan === "string" && x.chan ? x.chan : hv(x, "Channel"), from: hv(x, "From"),
@@ -1263,7 +1612,14 @@ pre {
     });
     agents.forEach(function (a) { if (a.state === "gone") bad[a.name] = "ушёл"; else if (a.drop) bad[a.name] = "возможно выпал"; });
     runs.forEach(function (r) { if (r.item) (byItem[r.item] = byItem[r.item] || []).push([r.id, r.status]); });
-    sec("agents", { agents: agents, lead: cActive ? cth.Lead || "" : "", work: work, pfx: cActive && v && !v.isCur ? curId : "", asking: asking, hasData: !!d, cs: cs }, renderAgents);
+    sec("agents", { agents: agents, lead: cActive ? cth.Lead || "" : "", work: work, pfx: cActive && v && !v.isCur ? curId : "", asking: asking, hasData: !!d, cs: cs, gpause: !!meta.pause }, renderAgents);
+    if (CTL) {
+      sec("ctl", { act: S.act, title: S.actTitle, pause: !!meta.pause, stop: !!meta.stop,
+        halted: !!meta.pause || !!meta.stop || agents.some(function (a) { return a.paused || a.stopped; }) }, renderCtl);
+      sec("composer", { names: agents.filter(function (a) { return a.state !== "gone"; }).map(function (a) { return a.name; })
+        .concat((S.to || []).filter(function (n) { return !agents.some(function (a) { return a.name === n && a.state !== "gone"; }); })),
+        to: S.to, re: S.re, act: S.act, tab: S.msgTab, sendChan: S.sendChan, cs: cs }, renderComposer);
+    }
     sec("kanban", { items: items, runs: byItem, bad: isLive ? bad : {}, hasTask: !!t, tid: tid, live: isLive, closed: closed,
       closedAt: closed ? num(th["Closed-Epoch"]) : 0, cs: cs }, renderKanban);
     sec("runs", { runs: runs, hasTask: !!t, tid: tid, cs: cs }, renderRuns);
@@ -1280,6 +1636,7 @@ pre {
     var first = S.msgChan !== chan;
     S.msgChan = chan;
     sec("msgs", { chan: chan, msgs: msgs, agent: S.agent, hideSys: S.hideSys, trunc: tr || null, expired: expired, first: first,
+      canReply: CTL && (chan === "lobby" || (!!S.act && chan === S.act)),
       asks: hasAsks ? asks.map(function (q) { return q.chan + ":" + q.id; }) : null, cs: cs }, renderMsgs);
 
     sec("docs", { tab: S.docTab, hasTask: !!t, closed: closed, docs: t ? { brief: t.brief, plan: t.plan, summary: t.summary } : {} }, renderDocs);
@@ -1298,6 +1655,19 @@ pre {
   function readHash() {
     var h = (location.hash || "").replace(/^#/, "");
     S.sel = /^T\d{3,6}$/.test(h) ? h : "";
+  }
+  if (CTL) {
+    $("ctl").className = "ctl";
+    $("cmpsend").addEventListener("click", sendMsg);
+    $("cmptext").addEventListener("keydown", function (e) {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.keyCode === 13)) { e.preventDefault(); sendMsg(); }
+    });
+    $("cmptext").addEventListener("input", function () { if ($("cmpst").textContent) cmpStatus("", false); });
+    $("cmpchan").addEventListener("change", function () { S.sendChan = this.value; });
+    document.addEventListener("click", closeMenus);
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" || e.keyCode === 27) { closeMenus(); closeModal(); }
+    });
   }
   window.addEventListener("hashchange", function () { readHash(); render(); });
   $("tasksel").addEventListener("change", function () { location.hash = this.value; });

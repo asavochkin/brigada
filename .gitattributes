@@ -7,3 +7,4 @@ bin/brg text eol=lf
 template/* text eol=lf
 *.cmd text eol=crlf
 bin/brg-global text eol=lf
+bin/brg-serve.py text eol=lf

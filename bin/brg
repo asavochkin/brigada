@@ -6,6 +6,8 @@
 # Agents (from the project root):  bash .brigada/bin/brg <command> --as <name> …
 # Human:                            init (from the brigada repo), board, say, tail, who, stop, pause,
 #                                   resume, task new|cancel --as human, lead give --as human.
+# Python (3.8+) is optional and only for the human's board server, bin/brg-serve.py: brg
+# calls it in `board` and `doctor` and nowhere else; the agents' tool is bash.
 #
 # Layout: the .brigada root is <dir of this script>/.. (see DESIGN §4).
 #
@@ -17,7 +19,7 @@ _brg_crlf=x
 case ${#_brg_crlf} in 1) ;; *) printf '%s\n' "brg: ОШИБКА: у файла $0 окончания строк CRLF (Windows) — bash его не выполнит." "Причина — git с core.autocrlf=true. Это .brigada/bin/brg — переустанови: bash <brigada>/bin/brg init <проект>. Это сам репозиторий brigada — удали bin/brg и восстанови: git checkout -- bin/brg (по .gitattributes он запишется с LF) или скачай brigada заново. Проверка: bash <brigada>/bin/brg doctor <проект>." >&2; exit 2 ;; esac #
 unset _brg_crlf
 
-BRG_VERSION=0.7.0
+BRG_VERSION=0.8.0
 # the caller's locale, restored for commands started by `brg run`
 _brg_lc_set=${LC_ALL+1}
 _brg_lc=${LC_ALL-}
@@ -1935,7 +1937,7 @@ usage_line_v() { # VAR CMD
     item) _ul_u="$BRG item add --as <имя> --title \"…\" [--desc \"описание\" | --file F | <<'BRG_EOF' описание BRG_EOF] [--paths \"предлагаемые пути\"] [--no-review] | item claim I00N --as <имя> [--paths \"src/a,tests/a\"|none] | item done I00N --as <имя> [--note \"итог\"] [--result <путь>] [--no-review] | item release I00N --as <имя> | item reassign I00N --to <имя> --as <lead> | item review I00N --as <имя> --start | item review I00N --as <имя> --verdict ok|changes [--comment \"…\" | --file F | <<'BRG_EOF' комментарий BRG_EOF] | item review I00N --as <имя> --verdict skip [--comment \"почему\" | --file F] | item cancel I00N --as <имя> [--comment \"почему\" | --file F] | item list [--as <имя> --mine] [--status todo,claimed,done,cancelled] | item show I00N" ;;
     run) _ul_u="$BRG run --as <имя> [--sync] [--timeout 10m] [--item I00N] -- <команда> [аргументы…]  |  run list · run show R00N · run cancel R00N --as <имя>" ;;
     doctor) _ul_u="$BRG doctor  |  из репозитория brigada: bash /путь/к/brigada/bin/brg doctor [каталог_проекта]" ;;
-    board) _ul_u="$BRG board [--interval S] [--once]" ;;
+    board) _ul_u="$BRG board [--interval S] [--port P] [--static] [--once]" ;;
     *) _ul_u="$BRG help" ;;
   esac
   eval "$1=\$_ul_u"
@@ -1964,10 +1966,10 @@ usage_print() {
     stop) echo "Остановить бригаду (или одного агента): wait возвращает STOP сразу и на ближайшем тике; любая команда агента печатает STOP первой строкой; item add|claim|reassign, item review --start и запуск run отказывают." ;;
     pause)
       echo "Пауза для всей бригады (или одного агента): мягче стопа — агент ход не завершает, а ждёт в wait. Новую работу он не начинает (item add|claim|reassign и item review --start откажут; сдать сделанное, отправить сообщение и run для начатой работы можно, подагент доводит своё); wait просыпается только от твоих сообщений (say, task new|cancel --as human, lead give --as human) и от снятия паузы."
-      echo "Снять: brg resume [<имя>] (с доски — когда там появятся кнопки, версия 0.8); say паузу не снимает. Пауза при стопе — стоп сильнее."
+      echo "Снять: brg resume [<имя>] или кнопкой на доске (brg board с Python); say паузу не снимает. Пауза при стопе — стоп сильнее."
       ;;
     resume) echo "Снять стоп и паузу: без имени — общие и все личные, с именем — только этого агента (общая пауза стоит, пока не вызван resume без имени). Остановленные агенты завершили ход — напиши им «продолжай»; агенты на паузе вернутся из wait сами." ;;
-    init) echo "Создать/обновить <проект>/.brigada: bin/brg, README.md, PROTOCOL.md, board.html, config.default, VERSION; состояние и config не трогает. В корне проекта дописывает (или обновляет) короткий блок brigada в AGENTS.md (нет — создаёт и исключает из git) и в CLAUDE.md, если он есть и не импортирует AGENTS.md: тогда агенту достаточно сказать «подключись к бригаде». --no-agents-md — эти файлы не трогать." ;;
+    init) echo "Создать/обновить <проект>/.brigada: bin/brg, brg-serve.py, README.md, PROTOCOL.md, board.html, config.default, VERSION; состояние и config не трогает. В корне проекта дописывает (или обновляет) короткий блок brigada в AGENTS.md (нет — создаёт и исключает из git) и в CLAUDE.md, если он есть и не импортирует AGENTS.md: тогда агенту достаточно сказать «подключись к бригаде». --no-agents-md — эти файлы не трогать." ;;
     task)
       echo "Задачи (одна активная): new — создать (ты lead; постановка человека дословно → brief.md; человек сам даёт задачу с --as human: lead выбирает brg — прежний lead, если на связи, иначе первый подключившийся); close — закрыть (lead; нужен непустой summary.md); cancel — отменить (lead или человек: --as human); show/list — посмотреть."
       echo "close отказывает, пока есть подзадачи в работе или идут прогоны (--force — отменить и остановить их). Есть непрочитанное для lead'а (то, что разбудило бы его wait) — close показывает его (оно считается доставленным) и отказывает: учти и повтори close."
@@ -1992,8 +1994,9 @@ usage_print() {
       echo "Сводка ✓/⚠/✗ с подсказками; код выхода 0 — ошибок (✗) нет, 1 — есть. Сломанную установку (например, bin/brg с CRLF) проверяй копией из репозитория brigada: bash /путь/к/brigada/bin/brg doctor <проект>."
       ;;
     board)
-      echo "Доска для человека в браузере: первой строкой — адрес страницы file://…/.brigada/board.html (открой его в браузере). Раз в --interval с (по умолчанию 2, минимум 1) пишет снимок в .brigada/run/board/: задача и статус, бригада, подзадачи с ревью, прогоны, переписка, постановка, план, итог, прошлые задачи."
-      echo "Работает до Ctrl+C; --once — один снимок и выход. Только читает: никого не будит, ничего в бригаде не меняет."
+      echo "Доска для человека в браузере. Раз в --interval с (по умолчанию 2, минимум 1) пишет снимок в .brigada/run/board/: задача и статус, бригада, подзадачи с ревью, прогоны, переписка, постановка, план, итог, прошлые задачи."
+      echo "Найден Python 3.8+ — brg board сам поднимает сервер (только 127.0.0.1) и первой строкой печатает адрес http://127.0.0.1:ПОРТ/?t=ТОКЕН: открой его в браузере — на странице можно писать бригаде, отвечать на вопросы, давать задачу, назначать lead'а, ставить паузу и стоп (каждое действие — вызов brg от имени человека; в терминале строка «── с доски: …»). Адрес держи при себе: токен — доступ к управлению (постоянный, лежит в .brigada/run/board/token; сменить — удалить файл и перезапустить brg board). Порт: --port P, иначе прошлый, иначе свободный (занят — новый адрес). Python нет, сервер не поднялся или --static — доска как файл: адрес file://…/.brigada/board.html, только просмотр (отвечать — brg say …)."
+      echo "Работает до Ctrl+C (сервер останавливается вместе с ним); --once — один снимок и выход, без сервера. Снимок только читает: никого не будит, ничего в бригаде не меняет."
       ;;
   esac
 }
@@ -2031,7 +2034,7 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
   leave --as <имя>                   отключиться
 Человеку:
   init [--no-agents-md] [каталог]    (из репозитория brigada) создать/обновить .brigada/ и блок в AGENTS.md
-  board [--interval S] [--once]      доска в браузере: задача, бригада, подзадачи, прогоны, переписка
+  board [--interval S] [--port P] [--static] [--once]   доска в браузере (с Python — с управлением): задача, бригада, подзадачи, прогоны, переписка
   say [--to …] [--re N] [текст]      сообщение от human (снимает стоп); --re N — ответ на вопрос #N
   tail [-f] [-n N] [канал]           переписка (по умолчанию lobby + активная задача)
   who                                кто подключён; «возможно выпал» — напиши агенту в его чат «продолжай»
@@ -2330,6 +2333,7 @@ cmd_init() {
     "$B/run/locks" "$B/run/wait" "$B/run/seen" || die "не удалось создать $B"
   install_file "$BIN_DIR/brg" "$B/bin/brg"
   [ -f "$BIN_DIR/brg.cmd" ] && install_file "$BIN_DIR/brg.cmd" "$B/bin/brg.cmd"
+  [ -f "$BIN_DIR/brg-serve.py" ] && install_file "$BIN_DIR/brg-serve.py" "$B/bin/brg-serve.py"
   install_file "$tpl/README.md" "$B/README.md"
   [ -f "$tpl/PROTOCOL.md" ] && install_file "$tpl/PROTOCOL.md" "$B/PROTOCOL.md"
   [ -f "$tpl/board.html" ] && install_file "$tpl/board.html" "$B/board.html"
@@ -2361,7 +2365,7 @@ cmd_init() {
   if [ -n "$fresh" ]; then
     echo "── brigada $BRG_VERSION: создано $B"
   else
-    echo "── brigada $BRG_VERSION: обновлено $B (bin/brg, README.md, PROTOCOL.md, board.html, config.default, VERSION); состояние и config не тронуты"
+    echo "── brigada $BRG_VERSION: обновлено $B (bin/brg, brg-serve.py, README.md, PROTOCOL.md, board.html, config.default, VERSION); состояние и config не тронуты"
   fi
   [ -n "$missing" ] && echo "В config нет ключей:$missing — действуют значения из config.default."
   echo "git: $GIT_NOTE"
@@ -2376,7 +2380,7 @@ cmd_init() {
     echo "Дальше скажи агенту: $AM_FULL."
   fi
   echo "Смотреть переписку: bash .brigada/bin/brg tail -f · кто онлайн: bash .brigada/bin/brg who (у агента «возможно выпал» — напиши ему в его чат «продолжай»)"
-  echo "Доска в браузере: bash .brigada/bin/brg board — открой в браузере адрес из первой строки"
+  echo "Доска в браузере: bash .brigada/bin/brg board — открой в браузере адрес из первой строки (с Python 3.8+ на доске можно писать бригаде и отвечать на вопросы; без него — только просмотр)"
   echo "Проверка среды (Windows, блокировки, раннеры): bash .brigada/bin/brg doctor; из PowerShell/cmd — .\\.brigada\\bin\\brg.cmd doctor"
 }
 
@@ -3800,6 +3804,23 @@ dr_files() {
   fi
 }
 
+# Python is optional (DESIGN §9.1): only the board server, bin/brg-serve.py, needs it. The
+# search is the one `brg board` uses; it never starts the macOS installer or a Store stub.
+dr_python() {
+  local py v
+  py_find_v py
+  if [ -z "$py" ]; then
+    dr_ok "Python 3.8+ не найден — доска только для просмотра (file://); он необязателен: с Python brg board сам поднимает сервер, на доске можно писать бригаде и отвечать на вопросы"
+    return 0
+  fi
+  v=$("$py" -I -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' </dev/null 2>/dev/null)
+  if [ -f "$ROOT/bin/brg-serve.py" ]; then
+    dr_ok "Python ${v:-?} ($py) — brg board поднимет сервер с управлением; bin/brg-serve.py на месте"
+  else
+    dr_warn "Python ${v:-?} найден ($py), но нет $RROOT/bin/brg-serve.py — доска только для просмотра" "Переустанови: bash /путь/к/brigada/bin/brg init $PROJ"
+  fi
+}
+
 # dr_group_kill — set -m gives a background job its own process group, and a TERM
 # to the group stops it (brg run: timeout and cancel)
 dr_group_kill() {
@@ -4240,6 +4261,7 @@ cmd_doctor() {
   dr_install
   dr_platform
   [ -d "$ROOT" ] && dr_files
+  dr_python
   dr_env
   dr_procs
   if [ -n "$DR_STATE" ]; then
@@ -8146,6 +8168,81 @@ bjx() { # KEY TEXT — a multi-line string
   BJ[${#BJ[@]}]=X
 }
 
+# ── Python for the human's board server (DESIGN §9.1) ───────────────────────
+# Python (3.8+) is optional and only for bin/brg-serve.py; brg itself never needs it, and
+# calls it in `board` and `doctor` only. The search must never start the macOS installer
+# dialog (the /usr/bin/python3 stub) or a Microsoft Store stub on Windows.
+
+# py_try_v VAR EXE [ARG] — sys.executable of `EXE [ARG]` if it is Python >= 3.8 (the
+# server is started by that file, not by the command `py -3`); 1 otherwise
+py_try_v() {
+  local _pt_e=$2 _pt_r
+  case $_pt_e in *[Mm]icrosoft[/\\][Ww]indows[Aa]pps*) return 1 ;; esac # Store stubs
+  [ -x "$_pt_e" ] || return 1
+  _pt_r=$("$_pt_e" ${3:+"$3"} -I -c 'import sys; sys.exit(1) if sys.version_info < (3, 8) else print(sys.executable)' </dev/null 2>/dev/null) || return 1
+  _pt_r=${_pt_r%"$CR"}
+  [ -n "$_pt_r" ] || return 1
+  eval "$1=\$_pt_r"
+}
+
+# py_find_v VAR — the Python for the server: BRG_PYTHON (if set, only it) → `type -P python3`
+# (macOS: /usr/bin/python3 only if some developer tools are installed, else it is the
+# installer stub; neither xcode-select nor the stub is run) → on Windows: `py -3`,
+# python3, python. "" if none. Detected once per process (call detect_platform first).
+PY_DONE=
+PY_EXE=
+py_find_v() {
+  local _pf_r= _pf_c _pf_d
+  if [ -z "$PY_DONE" ]; then
+    PY_DONE=1
+    if [ -n "${BRG_PYTHON:-}" ]; then
+      _pf_c=$BRG_PYTHON
+      case $_pf_c in */* | *\\*) ;; *) _pf_c=$(type -P "$_pf_c" 2>/dev/null) ;; esac
+      py_try_v _pf_r "$_pf_c"
+    else
+      _pf_c=$(type -P python3 2>/dev/null)
+      case $PLATFORM in
+        MSYS | Cygwin)
+          py_try_v _pf_r "$(type -P py 2>/dev/null)" -3 || py_try_v _pf_r "$_pf_c" || py_try_v _pf_r "$(type -P python 2>/dev/null)"
+          ;;
+        Darwin)
+          if [ "$_pf_c" = /usr/bin/python3 ]; then
+            for _pf_d in "${DEVELOPER_DIR:-/nonexistent}/usr/bin/python3" /var/db/xcode_select_link/usr/bin/python3 \
+              /Library/Developer/CommandLineTools/usr/bin/python3 /Applications/Xcode.app/Contents/Developer/usr/bin/python3; do
+              if [ -e "$_pf_d" ]; then
+                py_try_v _pf_r "$_pf_c"
+                break
+              fi
+            done
+          else
+            py_try_v _pf_r "$_pf_c"
+          fi
+          ;;
+        *) py_try_v _pf_r "$_pf_c" ;;
+      esac
+    fi
+    PY_EXE=$_pf_r
+  fi
+  eval "$1=\$PY_EXE"
+}
+
+# native_root_v VAR — ROOT as a Windows-native Python wants it (C:/p/.brigada); 1 if that
+# is not a drive path. Elsewhere ROOT as it is.
+native_root_v() {
+  local _nr_p=$ROOT
+  if [ -n "${BRG_VIA_CMD:-}" ]; then # started by brg.cmd: C:\p\.brigada\bin\brg.cmd
+    _nr_p=${BRG_VIA_CMD%\\*}
+    _nr_p=${_nr_p%\\*}
+    _nr_p=${_nr_p//\\//}
+  else
+    case $PLATFORM in
+      MSYS) case $_nr_p in /[A-Za-z]/*) _nr_p=${_nr_p:1:1}:${_nr_p:2} ;; *) return 1 ;; esac ;;
+      Cygwin) case $_nr_p in /cygdrive/[A-Za-z]/*) _nr_p=${_nr_p:10:1}:${_nr_p:11} ;; *) return 1 ;; esac ;;
+    esac
+  fi
+  eval "$1=\$_nr_p"
+}
+
 # board_url_v VAR ROOTDIR PLATFORM — file:// address of ROOTDIR/board.html; 1 and ""
 # when a browser cannot open that path (WSL, MSYS/Cygwin outside a drive). Started by
 # brg.cmd: the path comes from BRG_VIA_CMD (C:\p\.brigada\bin\brg.cmd). Space, #, ?, %
@@ -8497,14 +8594,120 @@ board_tick() {
   board_write data.js
 }
 
+# The server (DESIGN §9.1): a child of this bash — the loop of the snapshot stays here.
+# It is signalled only as our own child ($!), never by a pid from a file; if we die
+# without a word, it leaves itself when run/board/alive goes stale (and on Unix when its
+# parent changes).
+B_SRV= # pid of the server, if it runs
+B_NOTE=
+B_PORT= # --port P
+B_URL=
+
+board_alive() { # the heartbeat of the server (one file per brg board: two boards in a project)
+  printf '1\n' >"$BD/.tmp.alive.$$" 2>/dev/null && mv -f "$BD/.tmp.alive.$$" "$BD/alive.$$" 2>/dev/null
+  return 0
+}
+
+board_srv_stop() {
+  local i=0
+  [ -n "$B_SRV" ] || return 0
+  kill "$B_SRV" 2>/dev/null
+  while kill -0 "$B_SRV" 2>/dev/null && [ $i -lt 40 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -0 "$B_SRV" 2>/dev/null && kill -KILL "$B_SRV" 2>/dev/null
+  wait "$B_SRV" 2>/dev/null
+  B_SRV=
+}
+
+# board_serve_start — start the server; on success B_URL is the address. 1 and B_NOTE (why
+# the board is view-only) otherwise.
+board_serve_start() {
+  local py nroot port x i=0 rc retry= tok
+  B_NOTE=
+  py_find_v py
+  if [ -z "$py" ]; then
+    B_NOTE="── Python 3.8+ не найден — доска только для просмотра (отвечать — brg say …); Python необязателен: с ним brg board сам поднимает сервер с управлением"
+    return 1
+  fi
+  if [ ! -f "$ROOT/bin/brg-serve.py" ]; then
+    B_NOTE="── нет $RROOT/bin/brg-serve.py — доска только для просмотра; обнови .brigada: bash /путь/к/brigada/bin/brg init $PROJ"
+    return 1
+  fi
+  if ! native_root_v nroot; then
+    B_NOTE="── путь $ROOT не на диске Windows — сервер доски недоступен, доска только для просмотра"
+    return 1
+  fi
+  if [ -n "$B_PORT" ]; then
+    port=$B_PORT
+  else
+    port=0
+    retry=--retry-any
+    x=
+    [ -f "$BD/port" ] && IFS= read -r x <"$BD/port"
+    if is_uint "$x" && [ ${#x} -le 5 ] && [ $((10#$x)) -ge 1 ] && [ $((10#$x)) -le 65535 ]; then port=$((10#$x)); fi
+  fi
+  rm -f "$BD/ready"
+  board_alive
+  BRG_SERVE_BASH=$BASH "$py" -I -X utf8 "$nroot/bin/brg-serve.py" --root "$nroot" --port "$port" ${retry:+"$retry"} --interval "$B_INT" --alive "alive.$$" </dev/null &
+  B_SRV=$!
+  while [ ! -f "$BD/ready" ]; do
+    if ! kill -0 "$B_SRV" 2>/dev/null; then
+      wait "$B_SRV" 2>/dev/null
+      rc=$?
+      B_SRV=
+      if [ "$rc" = 3 ]; then
+        B_NOTE="── сервер доски не запустился: порт занят — доска только для просмотра (другой порт: --port P; любой свободный: --port 0)"
+      else
+        B_NOTE="── сервер доски не запустился (код $rc) — доска только для просмотра"
+      fi
+      return 1
+    fi
+    if [ $i -ge 50 ]; then
+      board_srv_stop
+      B_NOTE="── сервер доски не ответил за 5 с — доска только для просмотра"
+      return 1
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  {
+    IFS= read -r port
+    IFS= read -r x # pid of the server (for the tests)
+    x=
+    IFS= read -r x # the saved port that was taken, if so
+  } <"$BD/ready"
+  IFS= read -r tok <"$BD/token"
+  B_URL="http://127.0.0.1:$port/?t=$tok"
+  [ -z "$x" ] || B_NOTE="── порт $x занят — новый адрес"
+  return 0
+}
+
+# every tick: the server is still there? (our own child)
+board_srv_check() {
+  local url
+  [ -n "$B_SRV" ] || return 0
+  kill -0 "$B_SRV" 2>/dev/null && return 0
+  wait "$B_SRV" 2>/dev/null
+  B_SRV=
+  echo "── сервер доски остановился — доска только для просмотра"
+  if board_url_v url "$ROOT" "$PLATFORM"; then
+    echo "$url"
+  else
+    echo "── открой в браузере файл .brigada/board.html проекта ($ROOT/board.html)"
+  fi
+}
+
 board_quit() {
   [ -n "$B_SLEEP" ] && kill "$B_SLEEP" 2>/dev/null
-  rm -f "$BD"/.tmp.*."$$" 2>/dev/null
+  board_srv_stop
+  rm -f "$BD"/.tmp.*."$$" "$BD/alive.$$" 2>/dev/null
   exit 0
 }
 
 cmd_board() {
-  local once= url x u
+  local once= static= url x u
   B_INT=2
   B_ASKS_SEEN= # questions already shown in the terminal
   while [ $# -gt 0 ]; do
@@ -8518,6 +8721,20 @@ cmd_board() {
         fi
         B_INT=$((10#$x))
         shift 2
+        ;;
+      --port)
+        x=${2:-}
+        if ! is_uint "$x" || [ ${#x} -gt 5 ] || [ $((10#$x)) -gt 65535 ]; then
+          usage_line_v u board
+          say_err "── ОШИБКА: --port — номер порта 0–65535 (0 — любой свободный)${2+: $2}" "Использование: $u"
+          exit 1
+        fi
+        B_PORT=$((10#$x))
+        shift 2
+        ;;
+      --static)
+        static=1
+        shift
         ;;
       --once)
         once=1
@@ -8552,21 +8769,30 @@ cmd_board() {
     printf '%s\n' "$BRG_VERSION" >"$BD/.tmp.VERSION.$$" && mv -f "$BD/.tmp.VERSION.$$" "$BD/VERSION"
   fi
   detect_platform
-  if board_url_v url "$ROOT" "$PLATFORM"; then
-    printf '%s\n' "$url"
-  else
-    echo "── открой в браузере файл .brigada/board.html проекта ($ROOT/board.html)"
-  fi
-  [ -f "$ROOT/board.html" ] || say_err "── нет $ROOT/board.html — обнови .brigada: bash /путь/к/brigada/bin/brg init $PROJ"
   B_SLEEP=
   trap board_quit INT TERM HUP
+  # with Python: the server and its address; without it (or --static, --once) the page is a file
+  if [ -z "$once" ] && [ -z "$static" ] && board_serve_start; then
+    printf '%s\n' "$B_URL"
+    [ -z "$B_NOTE" ] || echo "$B_NOTE"
+  else
+    if board_url_v url "$ROOT" "$PLATFORM"; then
+      printf '%s\n' "$url"
+    else
+      echo "── открой в браузере файл .brigada/board.html проекта ($ROOT/board.html)"
+    fi
+    [ -z "$B_NOTE" ] || echo "$B_NOTE"
+  fi
+  [ -f "$ROOT/board.html" ] || say_err "── нет $ROOT/board.html — обнови .brigada: bash /путь/к/brigada/bin/brg init $PROJ"
   if [ -n "$once" ]; then
     board_tick || exit 1
     echo "── снимок записан: $RROOT/run/board/data.js"
     exit 0
   fi
-  echo "── доска обновляется каждые $B_INT с (снимок: $RROOT/run/board/); Ctrl+C — выход"
+  echo "── доска обновляется каждые $B_INT с (снимок: $RROOT/run/board/); Ctrl+C — выход${B_SRV:+ (сервер остановится)}"
   while :; do
+    [ -z "$B_SRV" ] || board_alive
+    board_srv_check
     board_tick
     sleep "$B_INT" &
     B_SLEEP=$!
