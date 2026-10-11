@@ -366,8 +366,8 @@ test_wait_argument_errors_print_next() {
   assert_eq "── NEXT: bash $BRG wait --as <имя>" "$(printf '%s\n' "$out" | tail -n 1)"
   out=$(BRG_AS=$A bash "$BRG" wait --timeout 0)
   assert_contains "$out" "── нет новых (0 с)"
-  out=$(brg wait --as ghost-7)
-  assert_contains "$out" "неизвестный агент: ghost-7"
+  out=$(brg wait --as nobody-7)
+  assert_contains "$out" "неизвестный агент: nobody-7"
   assert_eq "── NEXT: bash $BRG join --harness <харнесс> --model <модель>" "$(printf '%s\n' "$out" | tail -n 1)"
 }
 

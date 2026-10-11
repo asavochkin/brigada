@@ -20,7 +20,7 @@ key_cleanup() {
   return 0
 }
 
-# A (claude-1) hosts and leads T001 with item I001 and run R001; Bn (codex-1).
+# A (claude-1) leads T001 with item I001 and run R001; Bn (codex-1).
 # a / bn — the bare names.
 key_setup() {
   trap key_cleanup EXIT
@@ -86,12 +86,10 @@ test_key_bare_name_refused_by_every_write_command() {
   refused_bare "$out" $? "$a"
   out=$(brg task cancel --as "$a" 2>&1)
   refused_bare "$out" $? "$a"
-  for x in lead host; do
-    out=$(brg $x give "$bn" --as "$a" 2>&1)
-    refused_bare "$out" $? "$a"
-    out=$(brg $x take --as "$bn" 2>&1)
-    refused_bare "$out" $? "$bn"
-  done
+  out=$(brg lead give "$bn" --as "$a" 2>&1)
+  refused_bare "$out" $? "$a"
+  out=$(brg lead take --as "$bn" 2>&1)
+  refused_bare "$out" $? "$bn"
   out=$(brg item add --as "$a" --title "t" --desc "d" 2>&1)
   refused_bare "$out" $? "$a"
   out=$(brg item claim I001 --as "$a" --paths none 2>&1)
@@ -112,7 +110,6 @@ test_key_bare_name_refused_by_every_write_command() {
   # nothing changed
   assert_eq active "$(hdr "$D/task" Status)"
   assert_eq "$a" "$(hdr "$D/task" Lead)"
-  assert_eq "$a" "$(hdr "$D/task" Host)"
   assert_eq claimed "$(hdr "$D/items/I001" Status)"
   assert_file_not_exists "$D/items/I002"
   assert_file_not_exists "$D/shared/runs/R002"
@@ -153,7 +150,7 @@ test_key_status_without_key_does_not_confirm_identity() {
   assert_contains "$out" "wait агента $a работает (pid $pw). Если ты не делал join в этом чате — ты не $a: сделай join."
   assert_not_contains "$out" "Мой wait"
   assert_contains "$out" "Имя без ключа — только просмотр"
-  assert_contains "$out" "роль $a: host и lead"
+  assert_contains "$out" "роль $a: lead"
   assert_not_contains "$out" "твоя роль"
   assert_not_contains "$out" "Мои подзадачи"
   assert_not_contains "$(brg task show --as "$a")" "Твоя роль"
@@ -210,7 +207,7 @@ test_key_next_lines_carry_full_name() {
     esac
   done
   # errors after the name was resolved: NEXT with the full name too
-  out=$(printf 'x\n' | brg send --as "$A" --to ghost-9 2>&1)
+  out=$(printf 'x\n' | brg send --as "$A" --to nobody-9 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "── NEXT: исправь команду и повтори: bash $BRG send --as $A"
   no_bare_as "$out" "$a"
@@ -237,7 +234,7 @@ test_key_never_leaves_the_profile() {
   assert_eq "$bn" "$(hdr "$D/items/I001" Assignee)"
 }
 
-# Target names (send --to, lead|host give, item reassign --to, stop/resume) may come
+# Target names (send --to, lead give, item reassign --to, stop/resume) may come
 # with the key: it is dropped.
 test_key_target_names_accept_full_name() {
   local out f c
@@ -252,8 +249,8 @@ test_key_target_names_accept_full_name() {
   dropped "$c" # asleep: the lead may reassign
   brg item reassign I001 --to "$Bn" --as "$A" >/dev/null || fail reassign
   assert_eq "$bn" "$(hdr "$D/items/I001" Assignee)"
-  brg host give "$Bn" --as "$A" >/dev/null || fail "host give"
-  assert_eq "$bn" "$(hdr "$D/task" Host)"
+  brg lead give "$Bn" --as "$A" >/dev/null || fail "lead give"
+  assert_eq "$bn" "$(hdr "$D/task" Lead)"
   brg stop "$Bn" >/dev/null || fail stop
   assert_file_exists "$B/run/stopped.$bn"
   brg resume "$Bn" >/dev/null || fail resume

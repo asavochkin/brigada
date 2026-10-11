@@ -121,9 +121,9 @@ test_as_resolution() {
   out=$(printf 'x\n' | brg send 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "нужно имя агента: --as"
-  out=$(printf 'x\n' | brg send --as ghost-1 2>&1)
+  out=$(printf 'x\n' | brg send --as nobody-1 2>&1)
   assert_eq 1 "$?"
-  assert_contains "$out" "неизвестный агент: ghost-1"
+  assert_contains "$out" "неизвестный агент: nobody-1"
   assert_contains "$out" "join --harness"
   out=$(printf 'x\n' | brg send --as ../x 2>&1)
   assert_eq 1 "$?"
@@ -261,13 +261,13 @@ test_commands_shown_for_brg_cmd() {
 }
 
 # Rehearsal fixes: "X подключился" (and "вернулся") stays quiet for everyone but the
-# host of the active task — it brings the newcomer into the work.
-test_join_wakes_the_task_host() {
+# lead of the active task — it brings the newcomer into the work.
+test_join_wakes_the_task_lead() {
   local a b c out pa pb f
   new_proj
   a=$(join_as claude)
   b=$(join_as codex)
-  printf 'x\n' | brg task new --as "$a" --title "Хост" >/dev/null || fail "task new"
+  printf 'x\n' | brg task new --as "$a" --title "Лид" >/dev/null || fail "task new"
   ack_all "$a"
   ack_all "$b"
   export BRG_TICK=0.2
@@ -277,10 +277,10 @@ test_join_wakes_the_task_host() {
   pb=$WP
   c=$(join_as opencode)
   f=$(msg_file "$(cat "$B/lobby/seq")")
-  assert_eq "${a%%.*}" "$(hdr "$f" Wake)" "wakes only the host"
-  wait_pid $pa 3 || fail "the host was not woken by the join"
+  assert_eq "${a%%.*}" "$(hdr "$f" Wake)" "wakes only the lead"
+  wait_pid $pa 3 || fail "the lead was not woken by the join"
   assert_contains "$(cat "$P/wa")" "${c%%.*} подключился (opencode, m, "
-  assert_contains "$(cat "$P/wa")" "host ${a%%.*}: учти его в задаче T001"
+  assert_contains "$(cat "$P/wa")" "lead ${a%%.*}: учти его в задаче T001"
   sleep 0.6
   is_alive $pb || fail "a participant woke up on the join: $(cat "$P/wb")"
   # back after leave (join --as): the same
@@ -290,16 +290,16 @@ test_join_wakes_the_task_host() {
   brg join --as "$c" --harness opencode >/dev/null || fail "rejoin"
   f=$(msg_file "$(cat "$B/lobby/seq")")
   assert_eq "${a%%.*}" "$(hdr "$f" Wake)"
-  wait_pid $pa 3 || fail "the host was not woken by the return"
+  wait_pid $pa 3 || fail "the lead was not woken by the return"
   assert_contains "$(cat "$P/wa2")" "${c%%.*} переподключён новой сессией (opencode, m, "
   is_alive $pb || fail "a participant woke up on the return"
   kill -TERM $pb
   wait_pid $pb 3 || fail "wait hung"
-  # the host itself coming back: nobody to wake
+  # the lead itself coming back: nobody to wake
   # it has dropped out (asleep: no wait and no brg calls for longer than asleep_after)
   printf '%s\n' $(($(date -u +%s) - 100)) >"$B/run/seen/${a%%.*}"
   printf '%s\n' $(($(date -u +%s) - 100)) >"$B/run/wait/${a%%.*}.last"
-  brg join --as "$a" --harness claude >/dev/null || fail "host rejoin"
+  brg join --as "$a" --harness claude >/dev/null || fail "lead rejoin"
   f=$(msg_file "$(cat "$B/lobby/seq")")
   assert_eq no "$(hdr "$f" Wake)"
   assert_not_contains "$(cat "$f")" "учти его"

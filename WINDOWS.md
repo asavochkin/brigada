@@ -85,6 +85,14 @@ Set-Content -Encoding utf8 msg.txt "Привет, бригада! ёЁ — «к�
 ```
 Ожидается: в выводе первого `wait` — «Ты отмечен «работает: финальная валидация»» и `NEXT: … wait --as test-1.<ключ> --busy "финальная валидация" --timeout 3` (кавычки на месте, команду из `NEXT:` можно выполнить как есть); `who` на время пометки — «работает: финальная валидация», после простого `wait` — «ждёт» (когда идёт wait) или «работает» (между вызовами).
 
+Пауза (ход агента не завершается, `wait` просыпается от слов человека и снятия паузы):
+```
+.\.brigada\bin\brg.cmd pause
+.\.brigada\bin\brg.cmd wait --as $me --timeout 3
+.\.brigada\bin\brg.cmd resume
+```
+Ожидается: `pause` — «── ПАУЗА для всех …»; `wait` через 3 с — «── пауза · нет новых от человека (3 с) · ход не завершай · NEXT: … wait --as test-1.<ключ> --timeout 3»; `resume` — «── пауза снята.».
+
 Не из корня проекта:
 ```
 cd C:\work
@@ -111,6 +119,16 @@ Get-Process sleep, PING -ErrorAction SilentlyContinue
 .\.brigada\bin\brg.cmd board --once
 ```
 Ожидается: первая строка — адрес `file:///C:/work/toy/.brigada/board.html`, затем «снимок записан». Открой адрес (или файл `C:\work\toy\.brigada\board.html`) в Chrome и в Edge: видны задача T001, агент test-1, подзадача, прогоны с хвостом лога по клику, переписка; кириллица без искажений; нет баннера «Снимка ещё нет». Затем `.\.brigada\bin\brg.cmd board` без `--once` и в Git Bash `bash .brigada/bin/brg say "проверка доски"`: сообщение появится на доске за ~2 с; Ctrl+C — выход (на вопрос cmd о завершении пакетного файла — Y), в `.brigada\run\board` не остаётся `.tmp`.
+
+Задача от человека и lead (кириллица в заголовке; агент `test-1` на связи):
+```
+.\.brigada\bin\brg.cmd task cancel --as human
+Set-Content -Encoding utf8 human.txt "Задача от человека: ёЁ — «кавычки»"
+.\.brigada\bin\brg.cmd task new --as human --title "Задача с доски" --file human.txt
+.\.brigada\bin\brg.cmd lead give test-1 --as human
+.\.brigada\bin\brg.cmd task show
+```
+Ожидается: `task new --as human` — «── создана задача T002 «Задача с доски» от человека · lead: test-1.» (без `NEXT:`); `lead give` — «test-1 уже lead задачи T002»; в `task show` заголовок и постановка читаются без искажений, `lead test-1`.
 
 Убрать тестовую задачу и агента (иначе агент в разделе 3 увидит чужую активную задачу):
 ```
@@ -168,6 +186,8 @@ Get-Process sleep, PING -ErrorAction SilentlyContinue
 | 2.4 | коды выхода brg.cmd | 1 на ошибке, 3 у run --sync exit 3 | | |
 | 2.5 | wait --timeout 5 | «нет новых (5 с)» + NEXT | | |
 | 2.5a | brg.cmd не из корня | строка «не из корня» с cd, NEXT относительный | | |
+| 2.5b | pause / wait на паузе / resume | «ПАУЗА», «── пауза · нет новых от человека (3 с)», «пауза снята» | | |
+| 2.5c | task new --as human, lead give --as human | без NEXT, кириллица без искажений | | |
 | 2.6 | run timeout: sleep / ping | timeout, процессов не осталось | | |
 | 2.7 | board: адрес file:///C:/…, страница в Chrome и Edge | все разделы, кириллица, обновление за ~2 с; отправь `say` с текстом `"кавычки" и C:\temp\x` — на доске он точно такой же (Git Bash — это gawk: проверка экранирования) | | |
 | 3.1 | агент подключился сам по фразе | join с верным харнессом | | |

@@ -6,7 +6,7 @@
 
 . "$TESTS_DIR/brg_lib.sh"
 
-DOC_CMDS="join leave busy send wait read who tail say status stop resume task lead host item run doctor init board help"
+DOC_CMDS="join leave busy send wait read who tail say status stop pause resume task lead item run doctor init board help"
 NL=$'\n'
 US=$'\037' # field separator of doc_invocations (tabs would collapse in read)
 
@@ -96,7 +96,7 @@ test_docs_mention_only_real_commands_and_flags() {
       subs=
       case $cmd in
         task) subs="new close cancel show list" ;;
-        lead | host) subs="give take" ;;
+        lead) subs="give take" ;;
         item) subs="add claim done release reassign review cancel list show" ;;
         run) subs="list show cancel" ;;
         *) sb= ;; # a lowercase argument (doctor <dir>, tail lobby), not a subcommand

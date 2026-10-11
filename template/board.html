@@ -86,6 +86,8 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
 }
 .banner b { margin-right: 4px; }
 .banner.bad { background: var(--badbg); }
+.banner.pause { background: var(--warnbg); border-color: var(--warn); }
+.banner.pause b { color: var(--warn); letter-spacing: .04em; }
 .banner.stop { background: var(--badbg); border-color: var(--bad); }
 .banner.stop b { color: var(--bad); letter-spacing: .04em; }
 .banner code { background: var(--panel); padding: 1px 6px; border-radius: 5px; }
@@ -196,6 +198,7 @@ button.pill:hover { text-decoration: underline; }
 .ab .l2 .revw { color: var(--rev); font-weight: 600; }
 .role { font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 1px 5px; border-radius: 5px; background: var(--sunken); color: var(--muted); }
 .role.stop { background: var(--badbg); color: var(--bad); }
+.role.pause { background: var(--warnbg); color: var(--warn); }
 .role.ask { background: var(--humanbg); color: var(--humanink); box-shadow: inset 0 0 0 1px var(--humanline); text-transform: none; letter-spacing: 0; font-size: 11px; }
 .achip.asking { border-color: var(--human); }
 .kp { font-family: var(--mono); font-size: 10.5px; color: var(--faint); cursor: help; }
@@ -494,8 +497,8 @@ pre {
   // работает[ · подпись] with how long (mark) or "не на связи N мин" (no wait for a while)
   function offline(a) { var m = /не на связи ([^·]+?)\s*(?:·|$)/.exec(a.note || ""); return m ? "не на связи " + m[1] : ""; }
   function workText(a) { // plain text, no live parts
-    if (a.halt) return "остановлен";
-    if (a.state === "waiting" && !a.mark) return "ждёт";
+    if (a.halt) return "остановлен — напиши «продолжай» в его окне";
+    if (a.state === "waiting" && !a.mark) return "ждёт" + (a.paused ? " · пауза" : "");
     if (a.state === "gone" || a.state === "asleep") return STATE_RU[a.state];
     return "работает" + (a.mark && a.mark.note ? " · " + a.mark.note : "") +
       (a.state === "waiting" && a.mark ? " · " + dur(now() - a.mark.since) : offline(a) ? " · " + offline(a) : "");
@@ -666,8 +669,11 @@ pre {
     }
     if (v.err) add(line("warn", "Снимок не читается", " — показаны последние данные. Запусти: "), el("code", null, RUN_CMD));
     if (v.stale) add(line("warn", "Доска не обновляется:", " последний снимок "), live("ago", v.time), " — brg board остановлен? ", el("code", null, RUN_CMD));
-    if (v.stop) add(line("stop", "STOP", " — человек остановил бригаду. Снять: "), el("code", null, "brg resume"));
-    if (v.stopped.length) add(line("warn", "Остановлены агенты:", " " + v.stopped.join(", ") + " — снять: "), el("code", null, "brg resume <имя>"));
+    if (v.stop) add(line("stop", "STOP", " — человек остановил бригаду: агенты завершили ход. Снять: "), el("code", null, "brg resume"), " и написать каждому в его окно «продолжай»");
+    if (v.stopped.length) add(line("warn", "Остановлены агенты:", " " + v.stopped.join(", ") + " — они завершили ход. Снять: "), el("code", null, "brg resume <имя>"), " и написать в его окно «продолжай»");
+    // the pause (DESIGN §9): nobody's turn ended — the agents wait and start no new work
+    if (v.pause) add(line("pause", "ПАУЗА", " — бригада ждёт: новую работу никто не начинает, подагенты доводят начатое; агенты просыпаются от ваших сообщений. Снять: "), el("code", null, "brg resume"));
+    if (v.paused.length && !v.pause) add(line("pause", "На паузе агенты:", " " + v.paused.join(", ") + " — снять: "), el("code", null, "brg resume <имя>"));
     // all wait, nobody works, no questions and runs, yet the task goes on (DESIGN §9.1)
     if (v.idle) add(line("", "Бригада простаивает", " уже "), live("dur", v.idle), ": никто не работает, вопросов и прогонов нет, а задача идёт. Скажи бригаде, что дальше: ", el("code", null, "brg say \"…\""));
   }
@@ -736,12 +742,11 @@ pre {
     top.appendChild(ts);
     box.appendChild(top);
     var r = el("div", "troles");
-    [["host", h.Host], ["lead", h.Lead]].forEach(function (p) {
-      r.appendChild(add(el("span"), el("span", "lab", p[0]), p[1] ? chip(p[1], "sm") : el("span", "faint", "—")));
-    });
+    // one role (DESIGN §6.1): the lead — the facilitator and the link with the human; empty only while nobody is on the line
+    r.appendChild(add(el("span"), el("span", "lab", "lead"), h.Lead ? chip(h.Lead, "sm") : el("span", "faint", "нет — назначится первому, кто выйдет на связь")));
     box.appendChild(r);
     if (v.fin) {
-      var f = v.fin, fl = add(el("div", "tfin"), el("b", null, "подзадачи готовы"), " · lead ", f.lead ? chip(f.lead, "sm") : el("span", "faint", "не назначен"));
+      var f = v.fin, fl = add(el("div", "tfin"), el("b", null, "подзадачи готовы"), " · lead ", f.lead ? chip(f.lead, "sm") : el("span", "faint", "нет"));
       if (f.lead) {
         if (f.state === "waiting" && !f.mark) add(fl, "ждёт — итог ещё не подведён");
         else if (f.state === "waiting" || f.state === "working") {
@@ -789,7 +794,6 @@ pre {
     var hidden = []; // gone agents with no role, work or open question: only counted
     v.agents.forEach(function (a) {
       var w = v.work[a.name] || { doing: [], fixing: [], reviewing: [] }, roles = [];
-      if (a.name === v.host) roles.push("host");
       if (a.name === v.lead) roles.push("lead");
       var busy = roles.length || w.doing.length || w.fixing.length || w.reviewing.length;
       var asks = v.asking[a.name] || [];
@@ -804,11 +808,12 @@ pre {
       }
       roles.forEach(function (r) { l1.appendChild(el("span", "role", r)); });
       if (a.stopped) l1.appendChild(el("span", "role stop", "stop"));
+      if (a.paused) l1.appendChild(el("span", "role pause", "пауза"));
       if (asks.length) { var ra = el("span", "role ask", "ждёт вашего ответа"); ra.title = "вопрос " + asks.join(", "); l1.appendChild(ra); }
       var l2 = el("span", "l2");
       // the caption of the mark is shown only if it adds to the list of work below («делает I015» says it)
       var dup = !!(a.mark && a.mark.item && w.doing.concat(w.fixing, w.reviewing).indexOf(a.mark.item) >= 0);
-      if (a.halt) l2.appendChild(document.createTextNode("остановлен"));
+      if (a.halt) l2.appendChild(document.createTextNode("остановлен — напиши «продолжай» в его окне (" + a.name + (a.kp ? " · " + a.kp + "…" : "") + ")"));
       else if (a.state === "waiting" && !a.mark) l2.appendChild(document.createTextNode("ждёт"));
       else if (isWorking(a)) {
         l2.appendChild(el("span", "wk", "работает"));
@@ -1194,7 +1199,7 @@ pre {
     var cur = d && d.current, curId = cur ? cur.id : "";
     var agents = ((d && d.agents) || []).map(function (a) {
       return { name: a.name, harness: hv(a, "Harness"), model: hv(a, "Model"), state: a.state, seen: a.seen || 0,
-        note: a.note || "", drop: !!a.drop, stopped: !!a.stopped, joined: num(hv(a, "Joined-Epoch")),
+        note: a.note || "", drop: !!a.drop, stopped: !!a.stopped, paused: !!a.paused, joined: num(hv(a, "Joined-Epoch")),
         kp: typeof a.kp === "string" ? a.kp : "",
         halt: (a.state === "waiting" || a.state === "working") && (!!a.stopped || !!meta.stop), // the human's stop ended its turn
         mark: a.mark && typeof a.mark === "object" ? { note: typeof a.mark.note === "string" ? a.mark.note : "", since: num(a.mark.since), via: a.mark.via || "", item: a.mark.item || "" } : null };
@@ -1227,14 +1232,15 @@ pre {
     var idleFrom = 0, anyFree = false, anyWork = false;
     var cRuns = (cur && cur.runs || []).filter(Boolean).map(runOf);
     agents.forEach(function (a) { if (isWorking(a)) anyWork = true; else if (a.state === "waiting") anyFree = true; });
-    if (d && cActive && !stale && !meta.stop && anyFree && !anyWork && !asks.length && !cRuns.some(function (r) { return !RUN_FINAL[r.status]; })) {
+    if (d && cActive && !stale && !meta.stop && !meta.pause && anyFree && !anyWork && !asks.length && !cRuns.some(function (r) { return !RUN_FINAL[r.status]; })) {
       if (!S.idleSince) S.idleSince = now();
       var lastMsg = 0;
       (cur.messages || []).forEach(function (m) { lastMsg = Math.max(lastMsg, num(hv(m, "Epoch"))); });
       idleFrom = lastMsg ? Math.min(S.idleSince, lastMsg) : S.idleSince;
       if (now() - idleFrom <= 120) idleFrom = 0;
     } else S.idleSince = 0;
-    sec("banners", { hasData: !!d, err: S.err, stale: stale, time: meta.time || 0, stop: !!meta.stop, stopped: meta.stopped || [], idle: idleFrom }, renderBanners);
+    sec("banners", { hasData: !!d, err: S.err, stale: stale, time: meta.time || 0, stop: !!meta.stop, stopped: meta.stopped || [],
+      pause: !!meta.pause, paused: agents.filter(function (a) { return a.paused; }).map(function (a) { return a.name; }), idle: idleFrom }, renderBanners);
 
     var counts = { todo: 0, work: 0, review: 0, done: 0, cancelled: 0, other: 0 };
     items.forEach(function (i) { counts[i.st.col]++; });
@@ -1257,7 +1263,7 @@ pre {
     });
     agents.forEach(function (a) { if (a.state === "gone") bad[a.name] = "ушёл"; else if (a.drop) bad[a.name] = "возможно выпал"; });
     runs.forEach(function (r) { if (r.item) (byItem[r.item] = byItem[r.item] || []).push([r.id, r.status]); });
-    sec("agents", { agents: agents, host: cActive ? cth.Host || "" : "", lead: cActive ? cth.Lead || "" : "", work: work, pfx: cActive && v && !v.isCur ? curId : "", asking: asking, hasData: !!d, cs: cs }, renderAgents);
+    sec("agents", { agents: agents, lead: cActive ? cth.Lead || "" : "", work: work, pfx: cActive && v && !v.isCur ? curId : "", asking: asking, hasData: !!d, cs: cs }, renderAgents);
     sec("kanban", { items: items, runs: byItem, bad: isLive ? bad : {}, hasTask: !!t, tid: tid, live: isLive, closed: closed,
       closedAt: closed ? num(th["Closed-Epoch"]) : 0, cs: cs }, renderKanban);
     sec("runs", { runs: runs, hasTask: !!t, tid: tid, cs: cs }, renderRuns);
