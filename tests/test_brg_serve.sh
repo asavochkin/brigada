@@ -5,6 +5,7 @@
 # Python too (brg itself never calls it outside board/doctor).
 
 . "$TESTS_DIR/brg_lib.sh"
+. "$TESTS_DIR/spawn_lib.sh"
 
 NL=$'\n'
 
@@ -679,4 +680,68 @@ print(code); print(text)
   assert_contains "$out" "AS=[]"
   assert_contains "$out" "PWD="
   assert_contains "$out" "ARGS=task new --title README*"
+}
+
+# Agents launched by brg (DESIGN §5.5, §9.1): /api/spawn and /api/spawn-ctl — the checks
+# (400), a call that launches the fake harness (spawn.opencode.bin in config) and answers in
+# < 2 s; the human's locale (brg exports LC_ALL=C) reaches the harness through the server
+test_serve_spawn_actions_and_locale() {
+  local t0 e
+  serve_need || return 0
+  sp_proj
+  script 1 <<'XEOF'
+sleep 1.2
+XEOF
+  export LC_ALL=en_US.UTF-8 LANG=ru_RU.UTF-8
+  start_board
+  unset LC_ALL
+  export LANG=C
+  post spawn -j harness=opencode -j model=-x
+  assert_eq 400 "$HTTP_ST" "a model starting with -"
+  post spawn -j harness=opencode -j model=provider/model -ji count=9
+  assert_eq 400 "$HTTP_ST" "count 9"
+  post spawn -j harness=opencode -j model=provider/model -j rights=root
+  assert_eq 400 "$HTTP_ST" "rights"
+  post spawn -j "harness=open code" -j model=provider/model
+  assert_eq 400 "$HTTP_ST" "harness"
+  post spawn -j harness=opencode -j model=provider/model -j "note=две${NL}строки"
+  assert_eq 400 "$HTTP_ST" "a note of two lines"
+  post spawn-ctl -j id=../x -j op=wake
+  assert_eq 400 "$HTTP_ST" "id"
+  post spawn-ctl -j id=S001 -j op=kill
+  assert_eq 400 "$HTTP_ST" "op"
+  post spawn-ctl -j id=S001 -j op=rights -j rights=root
+  assert_eq 400 "$HTTP_ST" "rights of spawn-ctl"
+  assert_file_not_exists "$B/run/spawn/S001"
+  t0=$(date -u +%s)
+  post spawn -j harness=opencode -j model=provider/model -j rights=project -ji count=1 -j "note=с доски"
+  # < 2 s on an idle machine (the supervisor is detached); a loaded one gets a margin
+  [ $(($(date -u +%s) - t0)) -le 8 ] || fail "spawn from the board took longer than 8 s"
+  assert_eq 200 "$HTTP_ST"
+  assert_contains "$HTTP_BODY" '"ok": true'
+  assert_contains "$HTTP_BODY" "S001 → opencode-1 (provider/model) запущен · права: project"
+  assert_contains "$(cat "$BOUT")" "── с доски: spawn opencode × 1 (provider/model, права project)"
+  wait_turn S001 1
+  e=$(cat "$FK/run.1/env")
+  assert_contains "$e" "LC_ALL=en_US.UTF-8" "the human's LC_ALL, not C"
+  assert_contains "$e" "LANG=ru_RU.UTF-8"
+  assert_contains "$e" "BRG_SPAWN=S001"
+  assert_not_contains "$(cat "$FK/run.1/argv")" "--auto"
+  assert_contains "$(cat "$FK/run.1/prompt")" "Человек: «с доски»"
+  wait_state S001 frozen
+  post spawn-ctl -j id=opencode-1 -j op=rights -j rights=full
+  assert_eq 200 "$HTTP_ST"
+  assert_contains "$HTTP_BODY" '"ok": true'
+  wait_turn S001 2
+  assert_contains "$(cat "$FK/run.2/argv")" "--auto"
+  wait_state S001 frozen
+  post spawn-ctl -j id=S001 -j op=wake
+  assert_contains "$HTTP_BODY" '"ok": true'
+  wait_turn S001 3
+  wait_state S001 frozen
+  post spawn-ctl -j id=S001 -j op=rm
+  assert_contains "$HTTP_BODY" '"ok": true'
+  wait_state S001 removed
+  stop_board
+  sp_assert_clean
 }

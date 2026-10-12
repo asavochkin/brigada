@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+# A fake `opencode` for tests/test_brg_spawn.sh (DESIGN §5.5): deterministic, no LLM. It
+# behaves like OpenCode 2 where brg depends on it:
+#   opencode run [--standalone] --format json --model M [--auto] [--session SID] [--title T]
+#     the prompt comes from stdin (saved byte for byte, with argv and some env) into
+#     $FAKE_OC_DIR/run.<n>/; the JSON events (step_start, text, tool_use, step_finish, error)
+#     go to stdout, tool_use only when the "tool" is over; the tools run in their own process
+#     groups; on SIGINT the tools are stopped, an error event is written, exit 130.
+#   opencode session export [args] SID — JSON with info.cost and info.tokens first
+# The scenario of a run — $FAKE_OC_DIR/script.<n> (n: the number of the run, 1, 2, …), else
+# $FAKE_OC_DIR/script, else "text готово"; one command per line:
+#   text T · brg ARGS (bash .brigada/bin/brg ARGS) · sh CMD (bash -c CMD) · wait [--busy CAP]
+#   bgwait [DELAY] (wait --busy in the background, its own group; the run goes on and ends)
+#   sleep N · error MSG (an error event, exit 1) · exit N · task [CMD] · task-bg [CMD]
+#   (a child session: CMD runs with its OPENCODE_SESSION_ID) · perm WHAT (a refused permission)
+# In commands $ME is the agent's full name (from the prompt), $BRG — bash .brigada/bin/brg.
+# $FAKE_OC_DIR/overlap appears if two runs of one session overlap.
+# Env: FAKE_OC_EXPORT_SLEEP (s), FAKE_OC_EXPORT_FAIL=1, FAKE_OC_BG_DELIVER_DELAY (BRG_TEST_DELIVER_DELAY
+# of the background wait only). Tool pids: run.<n>/tool.<step>.pid; a SIGINT is noted in run.<n>/sig.
+
+set -u
+D=${FAKE_OC_DIR:?FAKE_OC_DIR}
+mkdir -p "$D/sessions"
+NL=$'\n'
+
+now_ms() { printf '%s000' "$(date +%s)"; }
+jstr() { # VAR TEXT → a JSON string literal
+  local s=$2
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\t'/\\t}
+  case $s in *[[:cntrl:]]*) s=$(printf '%s' "$s" | LC_ALL=C tr -d '\000-\037') ;; esac
+  printf -v "$1" '"%s"' "$s"
+}
+SID=
+STEP=0
+emit() { printf '%s\n' "$1"; }
+step_start() {
+  STEP=$((STEP + 1))
+  MID=msg_fake${STEP}_$$
+  emit "{\"type\":\"step_start\",\"timestamp\":$(now_ms),\"sessionID\":\"$SID\",\"part\":{\"id\":\"prt_s$STEP\",\"sessionID\":\"$SID\",\"messageID\":\"$MID\",\"type\":\"step-start\"}}"
+}
+tok_add() { # SID IN OUT REAS CR CW COST
+  local f=$D/sessions/$1.tok a=0 b=0 c=0 d=0 e=0 g=0
+  [ -f "$f" ] && read -r a b c d e g <"$f"
+  awk -v a="$a $b $c $d $e $g" -v x="$2 $3 $4 $5 $6 $7" 'BEGIN { split(a, A, " "); split(x, X, " ")
+    printf "%d %d %d %d %d %.6f\n", A[1] + X[1], A[2] + X[2], A[3] + X[3], A[4] + X[4], A[5] + X[5], A[6] + X[6] }' >"$f.tmp" && mv -f "$f.tmp" "$f"
+}
+step_finish() { # [REASON]
+  emit "{\"type\":\"step_finish\",\"timestamp\":$(now_ms),\"sessionID\":\"$SID\",\"part\":{\"id\":\"prt_f$STEP\",\"sessionID\":\"$SID\",\"messageID\":\"$MID\",\"type\":\"step-finish\",\"reason\":\"${1:-tool-calls}\",\"cost\":0.001,\"tokens\":{\"input\":100,\"output\":10,\"reasoning\":2,\"cache\":{\"read\":5,\"write\":1}}}}"
+  tok_add "$SID" 100 10 2 5 1 0.001
+}
+text_ev() {
+  local j
+  jstr j "$1"
+  step_start
+  emit "{\"type\":\"text\",\"timestamp\":$(now_ms),\"sessionID\":\"$SID\",\"part\":{\"id\":\"prt_t$STEP\",\"sessionID\":\"$SID\",\"messageID\":\"$MID\",\"type\":\"text\",\"text\":$j}}"
+  step_finish stop
+}
+tool_ev() { # TOOL INPUT_JSON OUTPUT STATUS
+  local j
+  jstr j "$3"
+  emit "{\"type\":\"tool_use\",\"timestamp\":$(now_ms),\"sessionID\":\"$SID\",\"part\":{\"id\":\"prt_u$STEP\",\"sessionID\":\"$SID\",\"messageID\":\"$MID\",\"type\":\"tool\",\"tool\":\"$1\",\"state\":{\"status\":\"${4:-completed}\",\"input\":$2,\"output\":$j}}}"
+}
+TOOLPG=
+OUT=
+RC=0
+# run_tool CMD [SESSION] — a shell tool: bash -c CMD in its own process group
+run_tool() {
+  local o=$RD/tool.$STEP.out
+  set -m
+  OPENCODE_SESSION_ID=${2:-$SID} OPENCODE=1 AGENT=1 ME=$ME BRG="bash .brigada/bin/brg" \
+    bash -c "$1" </dev/null >"$o" 2>&1 &
+  TOOLPG=$!
+  printf "%s\n" "$TOOLPG" >"$RD/tool.$STEP.pid"
+  set +m
+  wait "$TOOLPG"
+  RC=$?
+  TOOLPG=
+  OUT=$(cat "$o" 2>/dev/null)
+}
+sh_tool() { # CMD
+  local j
+  step_start
+  run_tool "$1"
+  printf '%s\n' "$1" >>"$RD/tools"
+  jstr j "$1"
+  tool_ev bash "{\"command\":$j,\"description\":\"fake\"}" "$OUT"
+  step_finish
+}
+on_int() {
+  [ -z "$TOOLPG" ] || kill -TERM -- -"$TOOLPG" 2>/dev/null
+  echo INT >"$RD/sig"
+  emit "{\"type\":\"error\",\"timestamp\":$(now_ms),\"sessionID\":\"$SID\",\"error\":{\"name\":\"AbortError\",\"message\":\"The operation was aborted.\"}}"
+  exit 130
+}
+on_term() {
+  [ -z "$TOOLPG" ] || kill -TERM -- -"$TOOLPG" 2>/dev/null
+  echo TERM >"$RD/sig"
+  exit 143
+}
+child_session() { # BG CMD
+  local c=ses_child${N}x$RANDOM j out
+  printf '1000 100 0 0 0 0.010000\n' >"$D/sessions/$c.tok"
+  step_start
+  out=
+  if [ -n "$2" ]; then
+    run_tool "$2" "$c"
+    out=$OUT
+  fi
+  printf '%s\n' "$c" >>"$D/children"
+  if [ "$1" = bg ]; then
+    out="Subagent is working in the background.${NL}sessionID: $c${NL}$out"
+  else
+    out="task_id: $c (for resuming to continue this task if needed)${NL}${NL}<task_result>${NL}$out${NL}</task_result>"
+  fi
+  jstr j "${2:-работа}"
+  tool_ev task "{\"description\":\"поручение\",\"prompt\":$j,\"subagent_type\":\"general\"}" "$out"
+  step_finish
+}
+
+oc_run() {
+  local session= model= title= auto= line cmd arg i
+  N=1
+  while ! mkdir "$D/run.$N" 2>/dev/null; do N=$((N + 1)); done
+  RD=$D/run.$N
+  printf '%s\n' "$@" >"$RD/argv"
+  cat >"$RD/prompt"
+  printf 'LC_ALL=%s\nLANG=%s\nBRG_SPAWN=%s\nPWD=%s\nBRG_CMD_LC=%s\n' "${LC_ALL-<unset>}" "${LANG-<unset>}" "${BRG_SPAWN-<unset>}" "$PWD" "${BRG_CMD_LC-<unset>}" >"$RD/env"
+  printf '%s\n' "$$" >"$RD/pid"
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --session | -s) session=$2; shift 2 ;;
+      --model | -m) model=$2; shift 2 ;;
+      --title) title=$2; shift 2 ;;
+      --format) shift 2 ;;
+      --auto) auto=1; shift ;;
+      *) shift ;;
+    esac
+  done
+  SID=${session:-ses_fake${N}x$$}
+  printf '%s\n' "$SID" >"$RD/session"
+  if ! mkdir "$D/live.$SID" 2>/dev/null; then : >"$D/overlap"; fi
+  trap 'rmdir "$D/live.$SID" 2>/dev/null' EXIT
+  trap on_int INT
+  trap on_term TERM
+  ME=$(awk '{ if (match($0, /[a-z0-9]+-[0-9]+[.][a-z2-9][a-z2-9][a-z2-9][a-z2-9][a-z2-9][a-z2-9]/)) { print substr($0, RSTART, RLENGTH); exit } }' "$RD/prompt")
+  local sc=$D/script
+  [ -f "$D/script.$N" ] && sc=$D/script.$N
+  local lines="text готово"
+  [ -f "$sc" ] && lines=$(cat "$sc")
+  while IFS= read -r line; do
+    cmd=${line%% *}
+    arg=
+    case $line in *" "*) arg=${line#* } ;; esac
+    case $cmd in
+      '' | '#'*) ;;
+      text) text_ev "$arg" ;;
+      brg) sh_tool "bash .brigada/bin/brg $arg" ;;
+      sh) sh_tool "$arg" ;;
+      wait) sh_tool "bash .brigada/bin/brg wait --as \$ME $arg" ;;
+      bgwait)
+        # a wait left in the background: its subshell stays, so the wait is no orphan
+        step_start
+        set -m
+        (
+          [ -z "$arg" ] || sleep "$arg"
+          BRG_TEST_DELIVER_DELAY=${FAKE_OC_BG_DELIVER_DELAY:-} OPENCODE_SESSION_ID=$SID ME=$ME \
+            bash .brigada/bin/brg wait --as "$ME" --busy bg >"$RD/bgwait.out" 2>&1
+          :
+        ) </dev/null >/dev/null 2>&1 &
+        printf '%s\n' "$!" >"$RD/bgwait.pid"
+        set +m
+        tool_ev bash "{\"command\":\"brg wait (bg)\"}" "started"
+        step_finish
+        ;;
+      sleep) sh_tool "sleep $arg" ;;
+      error)
+        step_start
+        emit "{\"type\":\"error\",\"timestamp\":$(now_ms),\"sessionID\":\"$SID\",\"error\":{\"name\":\"APIError\",\"data\":{\"message\":\"${arg:-provider is down}\",\"statusCode\":503}}}"
+        exit 1
+        ;;
+      exit) exit "${arg:-0}" ;;
+      task) child_session fg "$arg" ;;
+      task-bg) child_session bg "$arg" ;;
+      perm)
+        step_start
+        printf '\033[33m\033[1m! permission requested: %s; auto-rejecting\033[0m\n' "$arg" >&2
+        local j
+        jstr j "$arg"
+        tool_ev bash "{\"command\":$j}" "Error: The user rejected permission to use this specific tool call. request was rejected" error
+        step_finish
+        ;;
+      *) text_ev "неизвестная команда сценария: $line" ;;
+    esac
+  done <<EOF
+$lines
+EOF
+  text_ev "готово"
+  exit 0
+}
+
+oc_export() {
+  local id= a=0 b=0 c=0 d=0 e=0 g=0 k=1
+  while [ $# -gt 0 ]; do
+    case $1 in
+      -*) shift ;;
+      *) id=$1; shift ;;
+    esac
+  done
+  while ! mkdir "$D/export.$k" 2>/dev/null; do k=$((k + 1)); done
+  printf '%s\n' "$ORIG_ARGS" >"$D/export.$k/argv"
+  printf '%s\n' "$$" >"$D/export.$k/pid"
+  SLP=
+  trap 'echo INT >"$D/export.$k/sig"; [ -z "$SLP" ] || kill "$SLP" 2>/dev/null; exit 130' INT
+  trap 'echo TERM >"$D/export.$k/sig"; [ -z "$SLP" ] || kill "$SLP" 2>/dev/null; exit 143' TERM
+  if [ -n "${FAKE_OC_EXPORT_SLEEP:-}" ]; then
+    sleep "$FAKE_OC_EXPORT_SLEEP" &
+    SLP=$!
+    wait $SLP
+  fi
+  [ "${FAKE_OC_EXPORT_FAIL:-}" != 1 ] || { echo "Session not found" >&2; exit 1; }
+  [ -f "$D/sessions/$id.tok" ] || { echo "Session not found: $id" >&2; exit 1; }
+  read -r a b c d e g <"$D/sessions/$id.tok"
+  cat <<EOF
+{
+  "info": {
+    "id": "$id",
+    "model": {
+      "id": "model",
+      "providerID": "provider"
+    },
+    "cost": $g,
+    "tokens": {
+      "input": $a,
+      "output": $b,
+      "reasoning": $c,
+      "cache": {
+        "read": $d,
+        "write": $e
+      }
+    }
+  },
+  "messages": []
+}
+EOF
+}
+
+ORIG_ARGS="$*"
+case ${1:-} in
+  run)
+    shift
+    oc_run "$@"
+    ;;
+  session)
+    [ "${2:-}" = export ] || { echo "fake opencode: session export only" >&2; exit 2; }
+    shift 2
+    oc_export "$@"
+    ;;
+  --version) echo "fake-opencode 0.9" ;;
+  *)
+    echo "fake opencode: only run and session export" >&2
+    exit 2
+    ;;
+esac

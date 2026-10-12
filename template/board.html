@@ -210,6 +210,19 @@ button.pill:hover { text-decoration: underline; }
 .warns { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .wline { padding: 7px 12px; border-radius: 10px; background: var(--warnbg); color: var(--fg); font-size: 13px; overflow-wrap: anywhere; }
 .wline b { color: var(--warn); }
+/* agents launched by brg (DESIGN §5.5) */
+.role.spawn { background: var(--sunken); color: var(--muted); }
+.spawnp { margin-top: 8px; border: 1px solid var(--line); border-left: 4px solid var(--c, var(--line2)); border-radius: 10px; background: var(--panel); }
+.spawnp > summary { padding: 6px 10px; font-size: 12.5px; cursor: pointer; overflow-wrap: anywhere; }
+.spb { padding: 4px 12px 10px; font-size: 12.5px; }
+.spact { margin-top: 6px; max-height: 260px; overflow: auto; font-size: 12px; }
+.spl { white-space: pre-wrap; overflow-wrap: anywhere; }
+.spl .st, .spl .sk { color: var(--faint); }
+.spt { margin-top: 2px; padding: 6px 8px; border-radius: 8px; background: var(--sunken); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow: auto; font-size: 12px; }
+.spawnp .bad, .spl.bad { color: var(--bad); }
+.spawnp .wk { color: var(--ct, var(--fg)); font-weight: 600; }
+.spperm { margin-top: 6px; }
+.dlg label.radio { display: block; margin-top: 4px; font-size: 12.5px; color: var(--fg); }
 
 /* kanban */
 .kanban { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
@@ -675,6 +688,7 @@ pre {
     if (!CTL) { box.className = "ctl hide"; return; }
     box.className = "ctl";
     box.appendChild(btn("cbtn pri", "Новая задача", newTaskBox));
+    if (v.canSpawn) box.appendChild(btn("cbtn", "Добавить агента", spawnBox));
     if (v.halted) {
       var r = btn("cbtn", "Продолжить", function () { act("resume", {}); });
       r.title = "снять общие и личные паузы и стопы (остановленным агентам потом надо написать «продолжай» в их окнах)";
@@ -797,6 +811,15 @@ pre {
     k.title = "действия с " + a.name;
     k.setAttribute("aria-label", "действия с " + a.name);
     function item(text, cls, fn) { m.appendChild(btn(cls || "", text, fn)); }
+    if (a.spawn) { // launched by brg (DESIGN §5.5)
+      var sp = a.spawn;
+      item("Разбудить", "", function () { act("spawn-ctl", { id: sp.id, op: "wake" }); });
+      if (sp.rights === "project") item("Дать полные права", "", function () { act("spawn-ctl", { id: sp.id, op: "rights", rights: "full" }); });
+      item("Забрать в окно…", "", function () { detachBox(a); });
+      item("Убрать…", "danger", function () {
+        confirmBox("Убрать " + a.name + "?", "Идущий ход остановится, агент отключится от бригады (leave); его подзадачи вернёт lead.", "Убрать", function () { act("spawn-ctl", { id: sp.id, op: "rm" }); });
+      });
+    }
     if (a.name !== v.lead && a.state !== "gone") item("сделать lead’ом", "", function () { act("lead", { name: a.name }); });
     if (a.paused) item("снять паузу", "", function () { act("resume", { name: a.name }); });
     else if (!v.gpause) item("поставить на паузу", "", function () { act("pause", { name: a.name }); });
@@ -824,6 +847,113 @@ pre {
       (a.state === "waiting" && a.mark ? " · " + dur(now() - a.mark.since) : offline(a) ? " · " + offline(a) : "");
   }
   function isWorking(a) { return !a.halt && (a.state === "working" || (a.state === "waiting" && !!a.mark)); }
+
+  // ── agents launched by brg (DESIGN §5.5): the "spawn" of the snapshot ──
+  // what the rights mean, verbatim as `brg spawn` says it
+  var RIGHTS_RU = {
+    full: "агент может всё, что можешь ты, в том числе вне каталога проекта и чтение .env",
+    project: "правила OpenCode по умолчанию: в проекте можно всё — любые команды, правки, сеть, git push; вне проекта и .env — отказ"
+  };
+  var ACT_RU = { turn: "ход", tool: "инструмент", text: "текст", error: "ошибка", permission: "права", end: "конец", stop: "стоп" };
+  function str(x) { return typeof x === "string" ? x : ""; }
+  function spawnOf(s) {
+    if (!s || typeof s !== "object") return null;
+    var t = s.tokens && typeof s.tokens === "object" ? s.tokens : {};
+    var act = str(s.activity).split("\n").filter(Boolean).map(function (l) {
+      var p = l.split("\t");
+      return { ep: num(p[0]), kind: p[1] || "", text: p.slice(2).join(" ") };
+    });
+    return { id: str(s.id), harness: str(s.harness), model: str(s.model), rights: str(s.rights), state: str(s.state),
+      turn: num(s.turn), turnStart: num(s.turn_start), turnEnd: num(s.turn_end), result: str(s.turn_result),
+      lastEvent: num(s.last_event), lastError: str(s.last_error), perm: str(s.perm_denied), lastText: str(s.last_text),
+      tin: num(t.in), tout: num(t.out), tcr: num(t.cache_read), tcw: num(t.cache_write),
+      cost: /^\d+(\.\d+)?$/.test(str(s.cost)) ? parseFloat(s.cost) : 0, src: str(s.tokens_source), subs: num(s.sub_sessions),
+      alive: s.supervisor_alive === true, note: str(s.note), head: str(s.prompt_head), act: act };
+  }
+  function ktok(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? Math.round(n / 1e3) + "k" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n); }
+  function money(c) { return "$" + (c >= 1 ? c.toFixed(2) : c.toFixed(4)); }
+  function tokText(sp) {
+    return "токены " + ktok(sp.tin) + " / " + ktok(sp.tout) + (sp.tcr ? " · кэш " + ktok(sp.tcr) : "") + " · " + money(sp.cost) +
+      (sp.src === "export" ? "" : " · без подагентов");
+  }
+  // the state of a launch for people; live durations as live() spans
+  function spawnState(sp, box) {
+    if (!sp.alive) { add(box, el("span", "bad", "надзор не отвечает"), " — «Разбудить» перезапустит"); return; }
+    if (sp.state === "running") {
+      add(box, el("span", "wk", "ход " + sp.turn + " идёт "), sp.turnStart ? live("dur", sp.turnStart) : null);
+      if (sp.lastEvent && sp.lastEvent >= sp.turnStart) add(box, " · последнее событие ", live("ago", sp.lastEvent));
+      else add(box, " · событий ещё нет");
+    } else if (sp.state === "crashed") add(box, el("span", "bad", "упал: " + (sp.lastError || "?")));
+    else if (sp.state === "stopped") add(box, "остановлен — снимется кнопкой «Продолжить»");
+    else if (sp.state === "conflict") add(box, el("span", "bad", "конфликт: под именем работает другой wait"));
+    else if (sp.state === "starting") add(box, "запуск");
+    else { add(box, "ждёт"); if (sp.turnEnd) add(box, " ", live("dur", sp.turnEnd)); }
+    if (sp.perm && !(sp.state === "crashed" && /^отказ в правах/.test(sp.lastError))) add(box, " · ", el("span", "bad", "отказ в правах: " + sp.perm));
+  }
+  // the form "Добавить агента" (with the server): harness, model, count, rights, a note
+  function lsGet(k) { try { return window.localStorage.getItem(k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { window.localStorage.setItem(k, v); } catch (e) { /* no storage */ } }
+  function spawnBox() {
+    var sm = (S.data && S.data.meta && S.data.meta.spawn) || {}, av = Array.isArray(sm.available) ? sm.available : [];
+    modal(function (d) {
+      var hs = el("select"), mo = el("input"), cn = el("select"), nt = el("input"), err = el("div", "err hide"), go, rs = {}, i;
+      d.appendChild(el("h3", null, "Добавить агента"));
+      d.appendChild(el("div", "pre faint", "brg сам подключит агента и будет вести его ходы без окна: свободный — завершает ход, brg будит его, когда есть новое."));
+      if (!av.length) d.appendChild(el("div", "note", "Бинарь харнесса не найден (" + (Array.isArray(sm.supported) ? sm.supported.join(", ") : "opencode") + "): установи его или укажи путь в .brigada/config — spawn.opencode.bin: /путь/к/opencode — и перезапусти brg board."));
+      av.forEach(function (h) { var o = el("option", null, h); o.value = h; hs.appendChild(o); });
+      mo.type = "text";
+      mo.maxLength = 120;
+      mo.placeholder = "провайдер/модель, как в харнессе";
+      mo.value = lsGet("brg.spawn.model");
+      for (i = 1; i <= 5; i++) { var o = el("option", null, String(i)); o.value = String(i); cn.appendChild(o); }
+      nt.type = "text";
+      nt.maxLength = 200;
+      nt.placeholder = "необязательно: подпись (войдёт в первый промпт)";
+      d.appendChild(add(el("label", null, "Харнесс"), hs));
+      d.appendChild(add(el("label", null, "Модель"), mo));
+      d.appendChild(add(el("label", null, "Сколько"), cn));
+      d.appendChild(el("label", null, "Права"));
+      ["full", "project"].forEach(function (r) {
+        var x = el("input"), l = el("label", "radio");
+        x.type = "radio";
+        x.name = "spawn-rights";
+        x.value = r;
+        x.checked = r === "full";
+        rs[r] = x;
+        add(l, x, " ", el("b", null, r === "full" ? "full (полные)" : "project"), " — " + RIGHTS_RU[r]);
+        d.appendChild(l);
+      });
+      d.appendChild(add(el("label", null, "Подпись"), nt));
+      d.appendChild(err);
+      go = btn("cbtn pri", "Запустить", function () {
+        var m = mo.value.replace(/^\s+|\s+$/g, ""), r = rs.project.checked ? "project" : "full";
+        function bad(x) { err.textContent = x; err.className = "err"; }
+        if (!hs.value) { bad("Нет харнесса, который можно запустить."); return; }
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:\/@#+-]{0,119}$/.test(m)) { bad("Модель: буквы, цифры и ._:/@#+- (не с «-»)."); mo.focus(); return; }
+        go.disabled = true;
+        var body = { harness: hs.value, model: m, rights: r, count: parseInt(cn.value, 10) || 1 };
+        if (nt.value.replace(/\s+/g, "")) body.note = nt.value;
+        api("spawn", body, function (x) {
+          go.disabled = false;
+          if (x.ok) { lsSet("brg.spawn.model", m); closeModal(); toast(brief(x.out), false, x.out); } else bad(brief(x.out) || "ошибка");
+        });
+      });
+      d.appendChild(add(el("div", "acts"), btn("cbtn", "Отмена", closeModal), go));
+      mo.focus();
+    });
+  }
+  // "Забрать в окно": brg prints the command that opens the session — show it whole
+  function detachBox(a) {
+    confirmBox("Забрать " + a.name + " в окно?", "brg перестанет будить агента (после текущего хода) и покажет команду, которой открыть его сессию в харнессе; в окне напиши «продолжай: status, затем wait».", "Забрать", function () {
+      api("spawn-ctl", { id: a.spawn.id, op: "detach" }, function (r) {
+        modal(function (d) {
+          d.appendChild(el("h3", null, r.ok ? a.name + ": забрать в окно" : "Не вышло"));
+          d.appendChild(el("div", "pre", r.out || ""));
+          d.appendChild(add(el("div", "acts"), btn("cbtn pri", "Закрыть", closeModal)));
+        });
+      });
+    });
+  }
   function setColors(agents) {
     var m = {}, used = {}, n = 0;
     agents.slice().sort(function (a, b) { return (a.joined - b.joined) || natcmp(a.name, b.name); }).forEach(function (a) {
@@ -1081,6 +1211,7 @@ pre {
     var r = el("div", "troles");
     // one role (DESIGN §6.1): the lead — the facilitator and the link with the human; empty only while nobody is on the line
     r.appendChild(add(el("span"), el("span", "lab", "lead"), h.Lead ? chip(h.Lead, "sm") : el("span", "faint", "нет — назначится первому, кто выйдет на связь")));
+    if (v.ssum && v.ssum.n) r.appendChild(add(el("span", "faint"), "запущены brg: " + v.ssum.n + " · токены " + ktok(v.ssum.tin) + " / " + ktok(v.ssum.tout) + " · " + money(v.ssum.cost) + (v.ssum.stream ? " · без подагентов" : "")));
     box.appendChild(r);
     if (v.fin) {
       var f = v.fin, fl = add(el("div", "tfin"), el("b", null, "подзадачи готовы"), " · lead ", f.lead ? chip(f.lead, "sm") : el("span", "faint", "нет"));
@@ -1129,6 +1260,7 @@ pre {
     }
     var strip = el("div", "strip"), warns = el("div", "warns");
     var hidden = []; // gone agents with no role, work or open question: only counted
+    var spawned = []; // launched by brg: a panel each under the strip
     v.agents.forEach(function (a) {
       var w = v.work[a.name] || { doing: [], fixing: [], reviewing: [] }, roles = [];
       if (a.name === v.lead) roles.push("lead");
@@ -1147,10 +1279,18 @@ pre {
       if (a.stopped) l1.appendChild(el("span", "role stop", "stop"));
       if (a.paused) l1.appendChild(el("span", "role pause", "пауза"));
       if (asks.length) { var ra = el("span", "role ask", "ждёт вашего ответа"); ra.title = "вопрос " + asks.join(", "); l1.appendChild(ra); }
+      if (a.spawn) { // launched by brg (DESIGN §5.5)
+        var sr = el("span", "role spawn", "⚙ " + a.spawn.id);
+        sr.title = "запущен brg (" + a.spawn.id + ") · права " + a.spawn.rights + " — " + (RIGHTS_RU[a.spawn.rights] || "?");
+        l1.appendChild(sr);
+        spawned.push(a);
+      }
       var l2 = el("span", "l2");
       // the caption of the mark is shown only if it adds to the list of work below («делает I015» says it)
       var dup = !!(a.mark && a.mark.item && w.doing.concat(w.fixing, w.reviewing).indexOf(a.mark.item) >= 0);
-      if (a.halt) l2.appendChild(document.createTextNode("остановлен — напиши «продолжай» в его окне (" + a.name + (a.kp ? " · " + a.kp + "…" : "") + ")"));
+      if (a.halt && a.spawn) l2.appendChild(document.createTextNode("остановлен — снимется кнопкой «Продолжить»"));
+      else if (a.halt) l2.appendChild(document.createTextNode("остановлен — напиши «продолжай» в его окне (" + a.name + (a.kp ? " · " + a.kp + "…" : "") + ")"));
+      else if (a.spawn && !(a.mark && isWorking(a))) spawnState(a.spawn, l2);
       else if (a.state === "waiting" && !a.mark) l2.appendChild(document.createTextNode("ждёт"));
       else if (isWorking(a)) {
         l2.appendChild(el("span", "wk", "работает"));
@@ -1163,7 +1303,8 @@ pre {
       part("правки", w.fixing, "fixing");
       part("проверяет", w.reviewing, "revw");
       if (a.model) add(l2, " · ", el("span", "faint", a.model));
-      c.appendChild(add(el("span", "ab"), l1, l2));
+      var l3 = a.spawn ? el("span", "l2 faint", "права " + a.spawn.rights + " · " + tokText(a.spawn)) : null;
+      c.appendChild(add(el("span", "ab"), l1, l2, l3));
       if (CTL && a.state !== "gone") agentMenu(a, v).forEach(function (x) { c.appendChild(x); });
       c.title = a.name + " — " + workText(a) + "\n" + (a.harness || "?") + " · " + (a.model || "?") +
         (a.seen > 0 ? "\nпоследний вызов brg: " + hm(a.seen) : "") + (a.note ? "\n" + a.note : "");
@@ -1179,6 +1320,36 @@ pre {
     }
     box.appendChild(strip);
     if (warns.firstChild) box.appendChild(warns);
+    spawned.forEach(function (a) { box.appendChild(spawnPanel(a)); });
+  }
+
+  // the panel of an agent launched by brg: the last finished steps (what goes on now is not in the
+  // stream: a tool shows up when it is over), its last answer, the beginning of its last prompt
+  function spawnPanel(a) {
+    var sp = a.spawn, d = details("sp:" + sp.id, "spawnp " + colorCls(a.name)), sm = el("summary"), b = el("div", "spb");
+    add(sm, el("b", null, "⚙ " + sp.id + " · " + a.name), " · ");
+    spawnState(sp, sm);
+    add(sm, el("span", "faint", " · " + tokText(sp)));
+    d.appendChild(sm);
+    b.appendChild(el("div", "faint", (sp.harness || "?") + " · " + (sp.model || "?") + " · права " + sp.rights + " — " + (RIGHTS_RU[sp.rights] || "?") +
+      (sp.subs ? " · подагентов: " + sp.subs : "") + (sp.note ? " · подпись: «" + sp.note + "»" : "")));
+    if (sp.perm) { // stays until the rights change (DESIGN §5.5)
+      var pr = add(el("div", "spperm"), el("span", "bad", "отказ в правах: " + sp.perm));
+      if (CTL && sp.rights === "project") add(pr, " ", btn("cbtn", "дать полные права", function () { act("spawn-ctl", { id: sp.id, op: "rights", rights: "full" }); }));
+      b.appendChild(pr);
+    }
+    if (sp.lastEvent && sp.state === "running" && sp.lastEvent >= sp.turnStart) b.appendChild(add(el("div", "faint"), "последнее событие ", live("ago", sp.lastEvent), " (идущий инструмент в потоке не виден — он появится, когда закончится)"));
+    var list = el("div", "spact");
+    if (!sp.act.length) list.appendChild(el("div", "faint", "активности пока нет"));
+    sp.act.slice(-30).forEach(function (x) {
+      list.appendChild(add(el("div", "spl" + (x.kind === "error" || x.kind === "permission" ? " bad" : "")),
+        el("span", "st", (x.ep ? hm(x.ep) : "?") + " "), el("span", "sk", (ACT_RU[x.kind] || x.kind) + " "), x.text));
+    });
+    b.appendChild(list);
+    if (sp.lastText) { b.appendChild(el("div", "lab", "последний ответ")); b.appendChild(el("div", "spt", sp.lastText)); }
+    if (sp.head) { b.appendChild(el("div", "lab", "начало последнего промпта")); b.appendChild(el("div", "spt faint", sp.head)); }
+    d.appendChild(b);
+    return d;
   }
 
   // ── kanban ──
@@ -1544,6 +1715,7 @@ pre {
       return { name: a.name, harness: hv(a, "Harness"), model: hv(a, "Model"), state: a.state, seen: a.seen || 0,
         note: a.note || "", drop: !!a.drop, stopped: !!a.stopped, paused: !!a.paused, joined: num(hv(a, "Joined-Epoch")),
         kp: typeof a.kp === "string" ? a.kp : "",
+        spawn: spawnOf(a.spawn), // launched by brg (DESIGN §5.5), else null
         halt: (a.state === "waiting" || a.state === "working") && (!!a.stopped || !!meta.stop), // the human's stop ended its turn
         mark: a.mark && typeof a.mark === "object" ? { note: typeof a.mark.note === "string" ? a.mark.note : "", since: num(a.mark.since), via: a.mark.via || "", item: a.mark.item || "" } : null };
     }).sort(function (a, b) { return (a.state === "gone") - (b.state === "gone") || natcmp(a.name, b.name); });
@@ -1599,7 +1771,10 @@ pre {
       var ln = th.Lead || "", la = agents.filter(function (a) { return a.name === ln; })[0];
       fin = { lead: ln, state: la ? la.state : "", mark: la ? la.mark : null, off: la ? offline(la) : "" };
     }
-    sec("task", { th: th, vid: tid, isCur: v ? v.isCur : true, missing: v ? v.missing || "" : "", hasData: !!d,
+    // the tokens of the agents launched by brg (DESIGN §5.5): their sum in the task's head
+    var ssum = { n: 0, tin: 0, tout: 0, cost: 0, stream: false };
+    agents.forEach(function (a) { if (a.spawn) { ssum.n++; ssum.tin += a.spawn.tin; ssum.tout += a.spawn.tout; ssum.cost += a.spawn.cost; if (a.spawn.src !== "export") ssum.stream = true; } });
+    sec("task", { ssum: ssum, th: th, vid: tid, isCur: v ? v.isCur : true, missing: v ? v.missing || "" : "", hasData: !!d,
       counts: counts, closed: closed, fin: fin, cs: cs }, renderTask);
 
     // the brigade now: roles and work come from the current task while it is active
@@ -1615,6 +1790,7 @@ pre {
     sec("agents", { agents: agents, lead: cActive ? cth.Lead || "" : "", work: work, pfx: cActive && v && !v.isCur ? curId : "", asking: asking, hasData: !!d, cs: cs, gpause: !!meta.pause }, renderAgents);
     if (CTL) {
       sec("ctl", { act: S.act, title: S.actTitle, pause: !!meta.pause, stop: !!meta.stop,
+        canSpawn: !!(meta.spawn && Array.isArray(meta.spawn.supported) && meta.spawn.supported.length),
         halted: !!meta.pause || !!meta.stop || agents.some(function (a) { return a.paused || a.stopped; }) }, renderCtl);
       sec("composer", { names: agents.filter(function (a) { return a.state !== "gone"; }).map(function (a) { return a.name; })
         .concat((S.to || []).filter(function (n) { return !agents.some(function (a) { return a.name === n && a.state !== "gone"; }); })),

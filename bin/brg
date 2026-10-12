@@ -19,7 +19,7 @@ _brg_crlf=x
 case ${#_brg_crlf} in 1) ;; *) printf '%s\n' "brg: ОШИБКА: у файла $0 окончания строк CRLF (Windows) — bash его не выполнит." "Причина — git с core.autocrlf=true. Это .brigada/bin/brg — переустанови: bash <brigada>/bin/brg init <проект>. Это сам репозиторий brigada — удали bin/brg и восстанови: git checkout -- bin/brg (по .gitattributes он запишется с LF) или скачай brigada заново. Проверка: bash <brigada>/bin/brg doctor <проект>." >&2; exit 2 ;; esac #
 unset _brg_crlf
 
-BRG_VERSION=0.8.0
+BRG_VERSION=0.9.0
 # the caller's locale, restored for commands started by `brg run`
 _brg_lc_set=${LC_ALL+1}
 _brg_lc=${LC_ALL-}
@@ -318,9 +318,17 @@ cfg_defaults() {
   CFG_run_timeout=1800
   CFG_runner_stale=60
   CFG_runner_dead_grace=5
+  # agents launched by brg (DESIGN §5.5)
+  CFG_spawn_opencode_bin=opencode
+  CFG_spawn_opencode_args=--standalone
+  CFG_spawn_opencode_export=1
+  CFG_spawn_wait_timeout=3600
+  CFG_spawn_stale=30
 }
 
-# cfg_parse FILE CALLBACK — calls CALLBACK KEY VALUE for every valid "key: value" line
+# cfg_parse FILE CALLBACK — calls CALLBACK KEY VALUE for every valid "key: value" line.
+# Values of spawn.* keys are raw (DESIGN §5.5): a path, several arguments — trimmed, any
+# printable characters; the other values are [A-Za-z0-9_.-] with spaces dropped.
 cfg_parse() {
   local line k v
   [ -f "$1" ] || return 0
@@ -330,9 +338,19 @@ cfg_parse() {
     k=${line%%:*}
     v=${line#*:}
     k=${k//[[:space:]]/}
-    v=${v//[[:space:]]/}
     case $k in '' | *[!A-Za-z0-9_.-]*) continue ;; esac
-    case $v in *[!A-Za-z0-9_.-]*) continue ;; esac
+    case $k in
+      spawn.*)
+        v=${v%"$CR"}
+        while :; do case $v in [[:space:]]*) v=${v#?} ;; *) break ;; esac; done
+        while :; do case $v in *[[:space:]]) v=${v%?} ;; *) break ;; esac; done
+        case $v in *[[:cntrl:]]*) continue ;; esac
+        ;;
+      *)
+        v=${v//[[:space:]]/}
+        case $v in *[!A-Za-z0-9_.-]*) continue ;; esac
+        ;;
+    esac
     "$2" "$k" "$v"
   done <"$1"
 }
@@ -381,6 +399,10 @@ cfg_load() {
   RDG_CFG=$RUNNER_DEAD_GRACE # as configured (doctor)
   [ "$RUNNER_DEAD_GRACE" -lt "$RUNNER_STALE" ] || RUNNER_DEAD_GRACE=$((RUNNER_STALE - 1))
   HB_FRESH=$((HEARTBEAT + 5))
+  cfg_num SPAWN_STALE spawn_stale 30
+  [ "$SPAWN_STALE" -ge 3 ] || SPAWN_STALE=3
+  cfg_num SPAWN_WT spawn.wait_timeout 3600
+  [ "$SPAWN_WT" -ge 1 ] || SPAWN_WT=1
 }
 platform_key_v() { # VAR PLATFORM — key part for config: Darwin → darwin, MSYS → msys, …
   local _pk_p
@@ -584,8 +606,9 @@ hb_obs_init() {
   get_now
   HB_OBS=$NOW HB_OBS_D=$NOW HB_LAST=$NOW HB_JUDGE=
 }
-hb_obs_tick() { # after get_now
-  local gap=$((RUNNER_STALE / 2)) g=$((RUNNER_DEAD_GRACE / 2)) d=$((NOW - HB_LAST))
+hb_obs_tick() { # [STALE] — after get_now; STALE: the silence threshold (runner_stale; spawn_stale for supervisors)
+  local st=${1:-$RUNNER_STALE} gap g=$((RUNNER_DEAD_GRACE / 2)) d=$((NOW - HB_LAST))
+  gap=$((st / 2))
   [ "$gap" -ge 2 ] || gap=2
   [ "$gap" -le 10 ] || gap=10
   [ "$g" -ge 2 ] || g=2
@@ -593,7 +616,7 @@ hb_obs_tick() { # after get_now
   [ "$d" -gt "$g" ] && HB_OBS_D=$NOW
   HB_LAST=$NOW
   HB_JUDGE=
-  [ $((NOW - HB_OBS)) -gt "$RUNNER_STALE" ] && HB_JUDGE=1
+  [ $((NOW - HB_OBS)) -gt "$st" ] && HB_JUDGE=1
   return 0
 }
 # runner_gone HB — a runner whose pid pid_alive calls dead: is it really gone? A pid
@@ -688,9 +711,9 @@ release_all() {
 }
 
 # ── roster ─────────────────────────────────────────────────────────────────
-profile_read() { # FILE → P_KEY P_HARNESS P_MODEL P_PLATFORM P_LEFT P_JOINED (epoch)
+profile_read() { # FILE → P_KEY P_HARNESS P_MODEL P_PLATFORM P_LEFT P_JOINED (epoch) P_SPAWN (S00N: launched by brg)
   local line
-  P_KEY= P_HARNESS= P_MODEL= P_PLATFORM= P_LEFT= P_JOINED=
+  P_KEY= P_HARNESS= P_MODEL= P_PLATFORM= P_LEFT= P_JOINED= P_SPAWN=
   [ -f "$1" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     case $line in
@@ -701,6 +724,7 @@ profile_read() { # FILE → P_KEY P_HARNESS P_MODEL P_PLATFORM P_LEFT P_JOINED (
       Platform:*) P_PLATFORM=${line#Platform: } ;;
       Left:*) P_LEFT=${line#Left: } ;;
       Joined-Epoch:*) P_JOINED=${line#Joined-Epoch: } ;;
+      Spawn:*) P_SPAWN=${line#Spawn: } ;;
     esac
   done <"$1"
   return 0
@@ -809,14 +833,18 @@ pause_who_v() { # VAR — whom the human paused: "бригаду" | "тебя (N
 STOP_SHOWN=
 PAUSE_SHOWN=
 stop_banner() {
-  local w
+  local w x
   [ -z "$STOP_SHOWN" ] || return 0
   if stop_who_v w; then
     STOP_SHOWN=1
     echo "── STOP: человек остановил $w. Новую работу не начинай: сдай сделанное, если нужно (send, item done), и заверши ход."
   elif pause_who_v w; then
     STOP_SHOWN=1 PAUSE_SHOWN=1
-    echo "── ПАУЗА: человек поставил на паузу $w. Новую работу не начинай; сдай сделанное и жди (wait)."
+    if [ -n "$AGENT" ] && spawned_v x "$AGENT"; then
+      echo "── ПАУЗА: человек поставил на паузу $w. Новую работу не начинай; сдай сделанное и заверши ход — brg разбудит тебя при сообщении человека или снятии паузы."
+    else
+      echo "── ПАУЗА: человек поставил на паузу $w. Новую работу не начинай; сдай сделанное и жди (wait)."
+    fi
   fi
 }
 # work_refuse WHAT [stoponly] — commands that start work (item add|claim|reassign, item
@@ -824,15 +852,24 @@ stop_banner() {
 # return STOP. A pause refuses them too (NEXT is wait: the agent keeps its loop), except
 # with "stoponly" (run: a subagent checks the work already begun, DESIGN §9).
 work_refuse() {
-  local w
+  local w sp=
+  [ -n "$AGENT" ] && spawned_v sp "$AGENT"
   if stop_who_v w; then
-    NEXT_ON_ERR="заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
+    if [ -n "$sp" ]; then
+      NEXT_ON_ERR="заверши ход (стоп снимет человек; если стоп прервал твою работу — brg разбудит тебя после его снятия)"
+    else
+      NEXT_ON_ERR="заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
+    fi
     die "человек остановил $w — $1 не выполнено: при стопе новую работу не начинают" \
       "Можно сдать сделанное и сообщить: send, item done|release, item review --verdict, task close. Стоп снимает только человек."
   fi
   [ "${2-}" != stoponly ] || return 0
   pause_who_v w || return 0
   NEXT_ON_ERR="$(next_wait)"
+  if [ -n "$sp" ]; then
+    die "человек поставил на паузу $w — $1 не выполнено: на паузе новую работу не начинают" \
+      "Можно сдать сделанное и сообщить: send, item done|release|cancel, item review --verdict, task close, run (проверка начатой работы). Паузу снимает человек: brg resume или с доски; сообщение (say) её не снимает — заверши ход, brg разбудит тебя."
+  fi
   die "человек поставил на паузу $w — $1 не выполнено: на паузе новую работу не начинают" \
     "Можно сдать сделанное и сообщить: send, item done|release|cancel, item review --verdict, task close, run (проверка начатой работы). Паузу снимает человек: brg resume или с доски; сообщение (say) её не снимает — жди в wait."
 }
@@ -1009,6 +1046,11 @@ next_wait() {
     _nw_b=${AS_HINT%%.*}
     valid_name "$_nw_b" && [ -f "$ROOT/agents/$_nw_b" ] || _nw_b=
   fi
+  # an agent launched by brg (DESIGN §5.5): free — it ends its turn, the supervisor waits for it
+  if [ -n "$_nw_b" ] && spawned_v _nw_r "$_nw_b" && { [ "${2-}" = plain ] || ! busy_read "$_nw_b"; }; then
+    printf '%s' "$SPAWN_IDLE"
+    return 0
+  fi
   _nw_r="$BRG wait --as $_nw_n"
   if [ -n "$_nw_b" ] && [ "${2-}" != plain ] && busy_read "$_nw_b"; then
     if [ -n "$BZ_NOTE" ]; then _nw_r="$_nw_r --busy \"$BZ_NOTE\""; else _nw_r="$_nw_r --busy"; fi
@@ -1135,6 +1177,11 @@ idle_note_v() {
       return 0
       ;;
   esac
+  # launched by brg, its turn going on under a live supervisor: not «не на связи» (DESIGN §5.2)
+  if spawn_turn_note_v _id_x "$2"; then
+    eval "$1=\"\$3\$_id_x\""
+    return 0
+  fi
   idle_calc "$2"
   if [ "$ID_D" -gt "$ID_T" ]; then
     dur_v _id_x "$ID_D"
@@ -1938,6 +1985,7 @@ usage_line_v() { # VAR CMD
     run) _ul_u="$BRG run --as <имя> [--sync] [--timeout 10m] [--item I00N] -- <команда> [аргументы…]  |  run list · run show R00N · run cancel R00N --as <имя>" ;;
     doctor) _ul_u="$BRG doctor  |  из репозитория brigada: bash /путь/к/brigada/bin/brg doctor [каталог_проекта]" ;;
     board) _ul_u="$BRG board [--interval S] [--port P] [--static] [--once]" ;;
+    spawn) _ul_u="$BRG spawn opencode --model <провайдер/модель> [--rights full|project] [--count N] [--note \"…\"]  |  spawn list · spawn show <S|имя> · spawn wake|rm|detach <S|имя> · spawn rights <S|имя> full|project  (только человек)" ;;
     *) _ul_u="$BRG help" ;;
   esac
   eval "$1=\$_ul_u"
@@ -1998,6 +2046,12 @@ usage_print() {
       echo "Найден Python 3.8+ — brg board сам поднимает сервер (только 127.0.0.1) и первой строкой печатает адрес http://127.0.0.1:ПОРТ/?t=ТОКЕН: открой его в браузере — на странице можно писать бригаде, отвечать на вопросы, давать задачу, назначать lead'а, ставить паузу и стоп (каждое действие — вызов brg от имени человека; в терминале строка «── с доски: …»). Адрес держи при себе: токен — доступ к управлению (постоянный, лежит в .brigada/run/board/token; сменить — удалить файл и перезапустить brg board). Порт: --port P, иначе прошлый, иначе свободный (занят — новый адрес). Python нет, сервер не поднялся или --static — доска как файл: адрес file://…/.brigada/board.html, только просмотр (отвечать — brg say …)."
       echo "Работает до Ctrl+C (сервер останавливается вместе с ним); --once — один снимок и выход, без сервера. Снимок только читает: никого не будит, ничего в бригаде не меняет."
       ;;
+    spawn)
+      echo "Агенты, запущенные brg (только человек; с доски — «Добавить агента»). brg сам подключает агента (join), запускает надзор и ходы харнесса без окна: свободный агент завершает ход, надзор ждёт за него и продолжает его сессию, когда есть будящее (сообщение передаётся прямо в промпт). Пока — только OpenCode, macOS и Linux."
+      echo "--rights full (по умолчанию) — агент может всё, что можешь ты, в том числе вне каталога проекта и чтение .env; project — правила OpenCode по умолчанию: в проекте можно всё — любые команды, правки, сеть, git push; вне проекта и .env — отказ. --count — сколько агентов (1–9); --note — подпись человека (одна строка ≤ 200 байт, войдёт в первый промпт)."
+      echo "list — запуски: состояние, ход, токены и стоимость, последняя ошибка; show — запись, активность, логи (ключ замаскирован). wake — разбудить (ход со всем непрочитанным; надзор не отвечает — перезапустить его); rm — убрать (идущий ход остановится, агент отключится); detach — забрать в окно (покажет команду открыть сессию; дальше это обычный агент); rights — сменить права со следующего хода."
+      echo "Настройки (config): spawn.opencode.bin, spawn.opencode.args (--standalone), spawn.opencode.export (1 — токены с подагентами через session export), spawn.wait_timeout. Агентам эта команда не доступна: попроси человека."
+      ;;
   esac
 }
 
@@ -2043,6 +2097,8 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
   item list · run list               подзадачи (кто что делает, пути) · очередь и прогоны
   stop [<имя>] / pause [<имя>] / resume [<имя>]   остановить / поставить на паузу (агент ждёт, новую работу не начинает) / снять
   doctor [каталог_проекта]           проверить среду и состояние (Windows, блокировки, раннеры)
+  spawn opencode --model <м> [--rights full|project] [--count N]   запустить агентов без окна (надзор brg)
+  spawn list · spawn show|wake|rm|detach <S|имя> · spawn rights <S|имя> full|project
 
 Подробнее: brg <команда> --help. Инструкция агента: .brigada/README.md, правила: .brigada/PROTOCOL.md
 BRG_HELP
@@ -2155,7 +2211,7 @@ AM_BEGIN='<!-- brigada:begin'
 AM_END='<!-- brigada:end'
 AM_BLOCK="$AM_BEGIN — блок от brg init, init его обновляет; не нужен — удали по brigada:end включительно и запускай init с --no-agents-md -->
 ## brigada
-Если человек просит «подключиться к бригаде» (brigada, .brigada) — прочитай \`.brigada/README.md\` и следуй ему. Подключиться — значит войти в рабочий цикл бригады и оставаться в нём до STOP: после \`join\` не отчитывайся человеку и не завершай ход — сразу \`wait\`. В бригаде ты только координатор: brg, переписка, решения, поручения подагентам и приём их результата; любую работу — чтение и правку кода, исследование, проверку чужой работы — делает твой подагент — одновременно один; больше — только с разрешения человека (харнесс без подагентов — делаешь сам, короткими шагами между \`wait\`). Без такой просьбы к бригаде не подключайся. Если работу тебе поручил другой агент (ты — подагент), к бригаде не подключайся и \`wait\` не вызывай ни при каких обстоятельствах — выполни поручение сам.
+Если человек просит «подключиться к бригаде» (brigada, .brigada) — прочитай \`.brigada/README.md\` и следуй ему. Подключиться — значит войти в рабочий цикл бригады и оставаться в нём до STOP: после \`join\` не отчитывайся человеку и не завершай ход — сразу \`wait\`. В бригаде ты только координатор: brg, переписка, решения, поручения подагентам и приём их результата; любую работу — чтение и правку кода, исследование, проверку чужой работы — делает твой подагент — одновременно один; больше — только с разрешения человека (харнесс без подагентов — делаешь сам, короткими шагами между \`wait\`). Без такой просьбы к бригаде не подключайся. Тебя запустил сам brg (первое сообщение — от brg, в нём твоё имя) — \`join\` уже сделан: следуй этому сообщению и разделу «Тебя запустил brg» в \`.brigada/README.md\`. Если работу тебе поручил другой агент (ты — подагент), к бригаде не подключайся и \`wait\` не вызывай ни при каких обстоятельствах — выполни поручение сам.
 $AM_END -->"
 AM_EXCLUDE=/AGENTS.md
 AM_EXCLUDE_NOTE='# brigada: AGENTS.md создан brg init — чтобы коммитить его, удали строку ниже'
@@ -2411,6 +2467,7 @@ lead_online() {
   case $ST in
     waiting) return 0 ;;
     working)
+      spawn_turn_note_v ID_X "$1" && return 0 # launched by brg, in a long turn (DESIGN §5.2)
       idle_calc "$1"
       [ "$ID_D" -le "$ID_T" ] && return 0
       ;;
@@ -2533,7 +2590,7 @@ lead_self() {
 # max(wait timeout + 60 s, dropout_after), or asleep/gone/left): otherwise a session
 # that skipped join could take the name, with its roles, from a working agent.
 cmd_join() {
-  local raw_h= m= h n k f conflicts= T hint online s re= line prof was_left= key q
+  local raw_h= m= h n k f conflicts= T hint online s re= line prof was_left= key q x splock=
   NEXT_ON_ERR="$BRG join --harness <claude|codex|opencode|…> --model <модель>"
   while [ $# -gt 0 ]; do
     case $1 in
@@ -2559,6 +2616,24 @@ cmd_join() {
   [ -n "$raw_h" ] || usage_die "нужен --harness (claude, codex, opencode или короткое имя своего харнесса)"
   [ -n "$m" ] || [ -n "$re" ] || usage_die "нужна --model (если не знаешь — --model unknown)"
   need_root
+  # a process of an agent launched by brg (DESIGN §5.5): join is done already, or this is its subagent
+  if [ -z "${JOIN_SPAWN:-}" ] && [ -n "${BRG_SPAWN:-}" ] && spawn_norm_id_v k "$BRG_SPAWN" && [ -f "$RUN/spawn/$k/spawn" ]; then
+    sp_read "$RUN/spawn/$k" SQ
+    case $SQ_State in
+      detached | removed) ;;
+      *)
+        spawn_session_v x "$RUN/spawn/$k"
+        if [ -n "${OPENCODE_SESSION_ID:-}" ] && [ -n "$x" ] && [ "$OPENCODE_SESSION_ID" != "$x" ]; then
+          NEXT_ON_ERR="выполни поручение и верни результат"
+          die "ты подагент участника ${SQ_Agent:-?} — к бригаде не подключайся, выполни поручение" \
+            "Подагент не вызывает join, wait, leave, busy: можно команды чтения (status, read, who, … show|list) и run --sync под именем участника."
+        fi
+        NEXT_ON_ERR="продолжай по первому сообщению: в нём твоё имя"
+        die "join не нужен: тебя подключил brg ($k), имя — в первом сообщении" \
+          "Твоё имя (с ключом) — в первом сообщении и в строке «brg разбудил тебя … — ты <имя>»; передавай его в --as."
+        ;;
+    esac
+  fi
   norm_harness_v h "$raw_h"
   [ -n "$h" ] || usage_die "недопустимый --harness: $raw_h"
   m=${m//[[:cntrl:]]/}
@@ -2569,6 +2644,27 @@ cmd_join() {
   fi
   detect_platform
   get_now_iso
+  # back under the name of an agent launched by brg (DESIGN §5.5): only without its
+  # supervisor and its turn — one try of the supervisor's lock, before roster
+  if [ -n "$re" ] && spawned_v x "$re"; then
+    if ! spawn_lock_try "$x" 0; then
+      if [ "$SL_WHY" = silent ]; then
+        NEXT_ON_ERR="$BRG join --harness $h --model ${m:-<модель>} (новое имя); человеку: brg spawn wake $x — заменит молчащий надзор"
+        die "$re запущен brg ($x), его надзор не отвечает, но его pid жив: человеку — brg spawn wake $x (новый надзор заберёт лок), затем brg spawn detach $x"
+      fi
+      NEXT_ON_ERR="$BRG join --harness $h --model ${m:-<модель>} (новое имя); забрать $re в окно может человек: brg spawn detach $x"
+      die "$re запущен brg ($x), его надзор жив: brg spawn detach $x — забрать в окно" \
+        "Под этим именем работает агент, которого запустил brg. Забрать его в окно может человек: brg spawn detach $x (команда покажет, как открыть его сессию)."
+    fi
+    spawn_turn_state_v q "$RUN/spawn/$x"
+    if [ "$q" != dead ]; then
+      lock_release "spawn.$x"
+      NEXT_ON_ERR="$BRG join --harness $h --model ${m:-<модель>} (новое имя) — или дождись конца хода $re"
+      die "идёт ход агента $re (запущен brg, $x) — дождись его конца или brg spawn rm $x"
+    fi
+    splock=$x
+    get_now_iso
+  fi
   lock_acquire roster
   # One platform per .brigada: pids, locks and paths differ between WSL and Git Bash.
   list_agents
@@ -2628,7 +2724,7 @@ cmd_join() {
     while IFS= read -r line || [ -n "$line" ]; do
       case $line in
         '') break ;;
-        Key:* | Model:* | Platform:* | Left:* | Rejoined:*) ;;
+        Key:* | Model:* | Platform:* | Left:* | Rejoined:* | Spawn:*) ;; # back in a window: no longer launched by brg
         *) prof=$prof$line$NL ;;
       esac
     done <"$ROOT/agents/$re"
@@ -2645,6 +2741,7 @@ cmd_join() {
     key_gen_v key
     printf -v prof 'Name: %s\nKey: %s\nHarness: %s\nModel: %s\nPlatform: %s\nJoined: %s\nJoined-Epoch: %s\n' \
       "$AGENT" "$key" "$h" "$m" "$PLATFORM" "$ISO" "$NOW"
+    [ -z "${JOIN_SPAWN:-}" ] || prof="${prof}Spawn: $JOIN_SPAWN$NL" # brg spawn (DESIGN §5.5)
   fi
   ASN=$AGENT.$key
   f=$ROOT/agents/.tmp.$AGENT.$$
@@ -2654,6 +2751,14 @@ cmd_join() {
     die "не удалось записать $ROOT/agents/$AGENT"
   fi
   lock_release roster
+  if [ -n "$splock" ]; then # taken into a window: the launch is over (Spawn: is dropped above)
+    cursor_rollback "$AGENT" # the result of its last turn is unknown: a duplicate, not a loss (no live wait: checked above)
+    if sp_read "$RUN/spawn/$splock"; then
+      SP_State=detached
+      sp_write "$RUN/spawn/$splock"
+    fi
+    lock_release "spawn.$splock"
+  fi
   busy_clear # a new session: no subagent of the old one is known to work
   touch_seen
   wait_last_mark
@@ -2702,6 +2807,10 @@ cmd_join() {
     echo "Активная задача: нет — её создаст агент, которому человек даст задачу (task new)."
   fi
   echo "Правила совместной работы: $RROOT/PROTOCOL.md — прочитай один раз сейчас."
+  if [ -n "${JOIN_SPAWN:-}" ]; then # launched by brg (DESIGN §5.5): the output goes into its first prompt
+    join_spawn_tail
+    return 0
+  fi
   [ -e "$RUN/stopped.$AGENT" ] && echo "ВНИМАНИЕ: человек остановил $AGENT (stop) — wait вернёт STOP. Снять может только человек: $BRG resume $AGENT"
   if [ -e "$RUN/paused" ]; then
     echo "ВНИМАНИЕ: бригада на паузе (человек): новую работу не начинай, жди в wait — он вернётся при сообщении человека или снятии паузы."
@@ -2719,6 +2828,29 @@ cmd_join() {
     echo "── NEXT: прочитай постановку $RROOT/tasks/$ACT_NAME/brief.md и PROTOCOL.md, раздел 4; закончив шаг — $(next_wait)"
   else
     echo "── NEXT: $(next_wait)"
+  fi
+}
+
+# join_spawn_tail — the end of the join output for an agent launched by brg (DESIGN §5.5):
+# the short rules — it ends its turn when free, brg wakes it; never «ход не завершай»
+join_spawn_tail() {
+  [ -e "$RUN/stopped" ] && echo "ВНИМАНИЕ: человек остановил бригаду (stop) — новую работу не начинай; brg запустит тебя после снятия стопа."
+  [ -e "$RUN/stopped.$AGENT" ] && echo "ВНИМАНИЕ: человек остановил $AGENT (stop) — новую работу не начинай; brg запустит тебя после снятия стопа."
+  if [ -e "$RUN/paused" ]; then
+    echo "ВНИМАНИЕ: бригада на паузе (человек): новую работу не начинай; закончив шаг — заверши ход: brg разбудит тебя при сообщении человека или снятии паузы."
+  elif [ -e "$RUN/paused.$AGENT" ]; then
+    echo "ВНИМАНИЕ: человек поставил $AGENT на паузу (pause): новую работу не начинай; закончив шаг — заверши ход: brg разбудит тебя при сообщении человека или снятии паузы."
+  fi
+  if [ -n "$LEAD_SELF" ]; then
+    echo "── ты lead задачи $LEAD_SELF: lead у неё не было, brg назначил тебя — ты первый на связи. Прочитай постановку и PROTOCOL.md (раздел 4); человек смотрит доску: вопросы ему — send --to human --ask, отчёты — send --to human."
+  fi
+  echo "Ожидание: свободен — заверши ход; brg разбудит тебя и передаст новые сообщения (запуск $JOIN_SPAWN)."
+  echo "Подагент работает (в т.ч. фоновый) — жди его в wait --busy \"<2 слова>\" (с этим же --as): он возвращается при сообщениях или через $T с. Таймаут инструмента: $hint"
+  echo "Правило: ты в бригаде до STOP. Ты только координатор: любую работу (код, исследование, проверку) делает твой подагент — одновременно один; больше — только с разрешения человека (PROTOCOL.md, раздел 2). brg wait никогда не запускай в фоне."
+  if [ -n "$LEAD_SELF" ]; then
+    echo "── NEXT: прочитай постановку $RROOT/tasks/$ACT_NAME/brief.md и PROTOCOL.md, раздел 4; закончив шаг — $SPAWN_IDLE"
+  else
+    echo "── NEXT: прочитай README.md (раздел «Тебя запустил brg») и PROTOCOL.md; закончив шаг — $SPAWN_IDLE"
   fi
 }
 
@@ -2751,6 +2883,14 @@ cmd_leave() {
   done
   need_root
   need_agent write
+  spawn_sub_refuse
+  leave_core
+}
+
+# leave_core — AGENT (need_agent done, or the supervisor of a launched agent: brg spawn rm,
+# DESIGN §5.5) leaves: Left:, the mark, the lead's role (the next one is chosen), messages
+leave_core() {
+  local f note take= newlead= lead_chan= lead_chan_body
   get_now_iso
   lock_acquire roster
   f=$ROOT/agents/.tmp.$AGENT.$$
@@ -2803,7 +2943,7 @@ cmd_leave() {
 # work that is not an item. Not starting work: allowed while stopped (need_agent prints
 # the STOP banner first; NEXT is then "end the turn").
 cmd_busy() {
-  local off= words= w x
+  local off= words= w x sp=
   NEXT_ON_ERR="$(next_wait)"
   while [ $# -gt 0 ]; do
     case $1 in
@@ -2830,11 +2970,13 @@ cmd_busy() {
   [ -z "$off" ] || [ -z "$words" ] || usage_die "--off снимает пометку, подпись с ним не нужна"
   need_root
   need_agent write
+  spawn_sub_refuse
+  spawned_v sp "$AGENT"
   NEXT_ON_ERR="$(next_wait)"
   get_now
   if [ -n "$off" ]; then
     busy_clear
-    echo "── пометка «работает» снята: ты свободен (в списках — «ждёт», когда идёт твой wait)."
+    echo "── пометка «работает» снята: ты свободен (в списках — «ждёт», когда идёт твой wait)${sp:+; свободен — заверши ход, brg разбудит тебя}."
     w=free
   else
     busy_text_v words "$words"
@@ -2844,7 +2986,7 @@ cmd_busy() {
       busy_clear
       w=free
     elif busy_set busy "$words"; then
-      echo "── отмечено: работает${words:+: $words}. Бригада и человек видят тебя занятым, пока ты не вызовешь wait без --busy (подагент закончил) или busy --off. Подагент блокирует тебя — вызывай wait, когда он вернётся; идёт в фоне — сразу wait --busy."
+      echo "── отмечено: работает${words:+: $words}. Бригада и человек видят тебя занятым, пока ты не вызовешь wait без --busy (подагент закончил) или busy --off. ${sp:-Подагент блокирует тебя — вызывай wait, когда он вернётся; идёт в фоне — сразу wait --busy.}${sp:+Подагент блокирует тебя — вернувшись, заверши ход (подагент закончил: ты свободен); идёт в фоне — сразу wait --busy.}"
       w=set
     else
       echo "Задачи нет — пометка «работает» не ставится."
@@ -2854,7 +2996,11 @@ cmd_busy() {
   touch_seen
   metric busy mark="$w"
   if stop_who_v x; then
-    echo "── NEXT: заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
+    if [ -n "$sp" ]; then
+      echo "── NEXT: заверши ход (стоп снимет человек; если стоп прервал твою работу — brg разбудит тебя после его снятия)"
+    else
+      echo "── NEXT: заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
+    fi
   elif [ "$w" = set ]; then
     echo "── NEXT: поручи работу подагенту; он блокирует тебя — вернувшись, $(next_wait "" plain) (подагент закончил: ты свободен); идёт в фоне — сразу $(next_wait)"
   else
@@ -3376,7 +3522,8 @@ BRG_WHO_EOF
     case $idle in *"возможно выпал"*) drop=1 ;; esac
     state_v stv "$n"
     [ "$stv" = остановлен ] && flags=${flags/ (stop)/}
-    echo "$n · $P_HARNESS · $P_MODEL · $stv$flags · активен $ago$items$idle"
+    spawn_note_v x "$n" # launched by brg (DESIGN §5.2)
+    echo "$n · $P_HARNESS · $P_MODEL · $stv$x$flags · активен $ago$items$idle"
     cnt=$((cnt + 1))
   done
   [ "$cnt" -gt 0 ] || echo "── агентов нет. Подключение: $BRG join --harness <харнесс> --model <модель>"
@@ -3469,11 +3616,18 @@ cmd_status() {
       idle_note_v idle "$AGENT" " · "
       echo "wait агента $AGENT: не запущен$idle"
     fi
+  elif spawned_v x "$AGENT"; then # launched by brg (DESIGN §5.5)
+    hdr_v q "$RUN/spawn/$x/spawn" Turn
+    echo "Ты запущен brg ($x, ход ${q:-?}): свободен — заверши ход, brg разбудит тебя, когда будет новое; работает подагент — жди его в wait --busy. brg wait в фоне не запускай."
   elif [ -n "$WI_ALIVE" ]; then
     echo "Мой wait: работает (pid $WI_PID) — второй не запускай, дождись его вывода."
   else
     idle_note_v idle "$AGENT" " · "
     echo "Мой wait: не запущен$idle"
+  fi
+  if [ -z "$AS_NOKEY" ] && [ -z "$x" ] && spawn_resolve_v q "$AGENT"; then
+    hdr_v d "$RUN/spawn/$q/spawn" State
+    [ "$d" != detached ] || echo "Тебя забрали в окно ($q): brg тебя больше не будит — ход не завершай, цикл wait, как у всех (README, раздел 2)."
   fi
   if [ -z "$AS_NOKEY" ] && pause_who_v x; then # the banner covers the no-key case
     echo "── ПАУЗА: человек поставил на паузу $x. Новую работу не начинай (item add|claim|reassign, item review --start откажут); сдай сделанное, run для начатой работы можно. wait просыпается от сообщений человека и снятия паузы. Паузу снимает человек: brg resume или с доски."
@@ -4001,13 +4155,18 @@ dr_lock_problem_v() { # VAR LOCKDIR — the problem with that lock ("" if none)
     [ -d "$2" ] && _lp_r=noowner
   elif ! pid_alive "${_lp_o%% *}"; then
     _lp_r="dead ${_lp_o%% *}"
-    if [ "${2##*/}" = exec.lock ]; then # the verdict of brg itself (runner_gone)
+    case ${2##*/} in exec.lock | spawn.*.lock) # the verdict of brg itself (runner_gone)
       lock_hb_v _lp_f "$2" "$_lp_o"
       runner_gone "$_lp_f" || _lp_r=
-    fi
+      ;;
+    esac
   elif [ "${2##*/}" = exec.lock ]; then
     lock_hb_v _lp_f "$2" "$_lp_o"
     [ $((NOW - _lp_f)) -gt "$RUNNER_STALE" ] && _lp_r="silent ${_lp_o%% *} $((NOW - _lp_f))"
+  elif case ${2##*/} in spawn.*.lock) true ;; *) false ;; esac; then
+    # the supervisor of an agent launched by brg holds it all its life (DESIGN §5.5): by its heartbeat
+    lock_hb_v _lp_f "$2" "$_lp_o"
+    [ $((NOW - _lp_f)) -gt "$SPAWN_STALE" ] && _lp_r="ssilent ${_lp_o%% *} $((NOW - _lp_f))"
   else
     [ $((NOW - ${_lp_o#* })) -gt "$LOCK_STALE" ] && _lp_r="old ${_lp_o%% *} $((NOW - ${_lp_o#* }))"
   fi
@@ -4042,6 +4201,8 @@ dr_locks() {
     dr_lock_problem_v p "$d"
     [ -n "$p" ] || continue
     set -- $p
+    x=${n%.lock}
+    x=${x#spawn.}
     run=
     if [ "$n" = exec.lock ]; then
       x=
@@ -4059,6 +4220,7 @@ dr_locks() {
         fi
         ;;
       silent) dr_fail "раннер прогона ${run:-?} (pid $2) держит exec-блокировку, но не подаёт признаков жизни $3 с" "Завис или его pid занят другим процессом. Следующий прогон в очереди снимет его сам; остановить сейчас: $BRG run cancel ${run:-R00N} --as <имя>." ;;
+      ssilent) dr_fail "надзор $x (pid $2) держит лок, но не подаёт признаков жизни $3 с" "Завис или его pid занят другим процессом: brg spawn wake $x (перезапустит надзор, когда старый будет признан мёртвым) или brg spawn rm." ;;
       old) dr_fail "блокировка $n держится $3 с (владелец pid $2 жив) — завис brg?" "brg снимет её по возрасту (lock_stale $LOCK_STALE с); если повторяется — посмотри, что за процесс $2." ;;
     esac
   done
@@ -4144,6 +4306,35 @@ dr_waits() {
   x=
   [ "$tails" -gt 0 ] && x=", остались pid-файлы завершённых: $tails (безвредно)"
   dr_ok "wait: живых $live$x"
+}
+
+# dr_spawns — agents launched by brg (DESIGN §5.5): supervisors alive or dead (by the lock and
+# its hb), turn wrappers going on without a supervisor, the harness binary
+dr_spawns() {
+  local d s n=0 live=0 sv tw bin
+  for d in "$RUN"/spawn/S[0-9]*; do
+    [ -f "$d/spawn" ] || continue
+    sp_read "$d" SQ
+    case $SQ_State in detached | removed) continue ;; esac
+    s=${d##*/}
+    n=$((n + 1))
+    spawn_sv_state_v sv "$s"
+    spawn_turn_state_v tw "$d"
+    case $sv in
+      alive) live=$((live + 1)) ;;
+      silent) ;; # dr_locks says it
+      *) dr_warn "запуск $s (${SQ_Agent:-?}): надзор не отвечает" "brg spawn wake $s запустит его заново (он дождётся конца прерванного хода); убрать агента — brg spawn rm $s" ;;
+    esac
+    if [ "$sv" != alive ] && [ "$tw" != dead ]; then
+      dr_warn "запуск $s: обёртка хода работает без надзора" "Ход закончится сам; brg spawn wake $s — новый надзор подхватит его итог."
+    fi
+  done
+  [ "$n" -gt 0 ] || return 0
+  if spawn_bin_v bin opencode; then
+    dr_ok "brg spawn: запусков $n, живых надзоров $live; харнесс: $bin"
+  else
+    dr_warn "brg spawn: запусков $n, но бинарь opencode не найден" "Укажи путь в $RROOT/config: spawn.opencode.bin: /путь/к/opencode"
+  fi
 }
 
 dr_stops() {
@@ -4273,6 +4464,7 @@ cmd_doctor() {
     get_now
     dr_runs
     dr_waits
+    dr_spawns
     dr_stops
     dr_config
   fi
@@ -7161,7 +7353,7 @@ run_runner() {
     else
       unset LC_ALL
     fi
-    unset BRG_CMD_LC_SET BRG_CMD_LC BRG_VIA_CMD
+    unset BRG_CMD_LC_SET BRG_CMD_LC BRG_VIA_CMD BRG_SPAWN # the tests of the project do not inherit the launch (DESIGN §5.5)
     BRG_RUN=$rid
     export BRG_RUN
     if [ $# -eq 1 ]; then exec bash -c "$1"; else exec "$@"; fi
@@ -7537,6 +7729,60 @@ W_PLAIN=   # 1: a wait without --busy (it said "I am free")
 W_PAUSED=  # 1: the human's pause stands (general or mine) as of this tick: only the human wakes
 W_SAW=     # 1: this wait saw a pause (its end must reset CH_SEEN and wake)
 W_LIFT=    # 1: the pause ended this tick: deliver everything accumulated, even nothing
+# agents launched by brg (DESIGN §5.5)
+W_SPAWN=   # S00N if AGENT is launched by brg
+W_SV=      # 1: the supervisor's wait (BRG_SPAWN_WAIT): the result goes to W_RES, flags of W_SD are read
+W_RES=
+W_SD=
+W_HOLD=    # 1: after a crash only something new wakes
+W_FORCE=   # 1: deliver all after Acked at once, even quiet, even nothing
+W_ROLL=    # 1: Pending := Acked after the takeover
+W_IDLE=    # 1: a launched agent's own plain wait: one look, no blocking
+W_ROLLED=  # 1: the rollback was done (the result file says so: "rolled")
+
+# w_rollback — ROLLBACK (DESIGN §5.5), in this order: the predecessor, claim, its death (a
+# superseded wait leaves on its next tick, finishing a delivery it began), Pending := Acked;
+# the channels follow (w_channels_init)
+w_rollback() {
+  local x c=0
+  w_pid_v x
+  w_claim
+  if is_uint "$x" && [ "$x" != "$SELF" ]; then
+    while pid_alive "$x" && [ "$c" -lt 50 ]; do
+      sleep 0.1
+      c=$((c + 1))
+    done
+  fi
+  cursor_rollback "$AGENT"
+  W_ROLLED=1
+  get_now
+}
+
+# w_idle_finish — the plain wait of a launched agent found nothing: end the turn (the
+# supervisor waits for it). A second empty one in the same turn says it harder.
+w_idle_finish() {
+  local n= c=0 f x line
+  if [ -n "${BRG_SPAWN:-}" ] && [ "$BRG_SPAWN" = "$W_SPAWN" ]; then
+    hdr_v n "$RUN/spawn/$W_SPAWN/spawn" Turn
+    if is_uint "$n"; then
+      f=$RUN/spawn/$W_SPAWN/turn.$n.idle
+      [ -f "$f" ] && IFS= read -r c <"$f"
+      is_uint "$c" || c=0
+      c=$((c + 1))
+      printf '%s\n' "$c" >"$f.tmp.$SELF" 2>/dev/null && mv -f "$f.tmp.$SELF" "$f" 2>/dev/null
+    fi
+  fi
+  w_notes_v x
+  if [ "$c" -ge 2 ]; then
+    metric wait.idle_repeat n="$c"
+    line="── ты уже свободен — заверши ход сейчас: повторный wait ничего не даст (brg разбудит тебя, когда будет новое)"
+  elif [ -n "$W_PAUSED" ]; then
+    line="── пауза · нет новых от человека · ты свободен — заверши ход: brg разбудит тебя при сообщении человека или снятии паузы"
+  else
+    line="── нет новых · ты свободен — заверши ход: brg разбудит тебя, когда будет новое"
+  fi
+  w_finish idle 0 "$x$line$NL── NEXT: заверши ход"
+}
 
 # w_paused_now — is the AGENT paused (generally or personally)?
 w_paused_now() { [ -e "$RUN/paused" ] || [ -e "$RUN/paused.$AGENT" ]; }
@@ -7551,7 +7797,11 @@ w_next() { NEXT_WAIT=$(next_wait "$W_OPT_T"); }
 w_notes_v() {
   local _wn_r= id st as ti pa ce cr no re hi rv dr ri rn rvv rvr s wk= rw=
   if busy_read "$AGENT"; then
-    _wn_r="Ты отмечен «работает${BZ_NOTE:+: $BZ_NOTE}». Подагент закончил и ты свободен — следующий wait без --busy.$NL"
+    if [ -n "$W_SPAWN" ]; then # launched by brg (DESIGN §5.5)
+      _wn_r="Ты отмечен «работает${BZ_NOTE:+: $BZ_NOTE}» — подагент закончил? тогда заверши ход (brg разбудит тебя, когда будет новое).$NL"
+    else
+      _wn_r="Ты отмечен «работает${BZ_NOTE:+: $BZ_NOTE}». Подагент закончил и ты свободен — следующий wait без --busy.$NL"
+    fi
   elif [ -n "$W_PLAIN" ] && active_task; then
     item_table "$ACT_DIR"
     while IFS=$US read -r id st as ti pa ce cr no re hi rv dr ri rn rvv rvr; do
@@ -7562,7 +7812,13 @@ w_notes_v() {
     done <<BRG_WN_EOF
 $IT_TABLE
 BRG_WN_EOF
-    if [ -n "$wk" ]; then
+    if [ -n "$W_SPAWN" ]; then
+      if [ -n "$wk" ]; then
+        _wn_r="У тебя $wk в работе — продолжи (поручи подагенту) или сдай/отпусти (item done | item release).$NL"
+      elif [ -n "$rw" ]; then
+        _wn_r="Ты проверяешь $rw — продолжи (поручи подагенту) или вынеси вердикт (item review --verdict).$NL"
+      fi
+    elif [ -n "$wk" ]; then
       _wn_r="У тебя $wk в работе: если подагент работает — wait с --busy \"${wk%%, *}\".$NL"
     elif [ -n "$rw" ]; then
       _wn_r="Ты проверяешь $rw: если подагент работает — wait с --busy \"проверка ${rw%%, *}\".$NL"
@@ -7618,7 +7874,11 @@ w_finish() {
     rm -f "$W_PID" "$W_HB"
   fi
   rm -f "$W_HB.tmp.$SELF" "$W_PID.tmp.$SELF"
-  metric wait dur=$((NOW - T0)) result="$1" delivered="$2" timeout="$T" pid="$SELF"
+  # the supervisor's wait (DESIGN §5.5): the result for the supervisor, the output is the prompt
+  if [ -n "$W_SV" ]; then
+    printf '%s\n%s' "$1" "${W_ROLLED:+rolled$NL}" >"$W_RES.tmp.$SELF" 2>/dev/null && mv -f "$W_RES.tmp.$SELF" "$W_RES" 2>/dev/null
+  fi
+  metric wait dur=$((NOW - T0)) result="$1" delivered="$2" timeout="$T" pid="$SELF"${W_SV:+ spawn=1}
   [ -n "${3:-}" ] && printf '%s\n' "$3"
   exit 0
 }
@@ -7645,7 +7905,7 @@ w_on_signal() { # NAME
 # starts from 0: I was there when the task was created (join writes a cursor at
 # the end for latecomers).
 w_channels_init() {
-  local i c d a
+  local i c d a h
   listen_set
   W_TASKRAW=$LISTEN_RAW
   CH_N=0
@@ -7669,8 +7929,46 @@ w_channels_init() {
     CH_DIR[CH_N]=$d
     CH_ACK[CH_N]=$a
     CH_SEEN[CH_N]=$a
+    # HOLD (DESIGN §5.5): a channel known at the start wakes only with what came after the
+    # marks of the start; a new channel (a new task) — as usual
+    case $W_HOLDM in *" $c:"*)
+      h=${W_HOLDM#*" $c:"}
+      h=${h%% *}
+      is_uint "$h" && [ "$h" -gt "$a" ] && CH_SEEN[CH_N]=$h
+      ;;
+    esac
     CH_N=$((CH_N + 1))
   done
+}
+# w_hold_marks — the marks of HOLD, once at the start: " channel:seq …" of every channel listened to
+W_HOLDM=
+w_hold_marks() { # [pending] — the Pending of AGENT's cursors (the supervisor at a crash), else seq
+  local i=0 c d s
+  listen_set
+  W_HOLDM=" "
+  while [ $i -lt "$LS_N" ]; do
+    c=${LS_CH[i]}
+    i=$((i + 1))
+    chan_dir d "$c" || continue
+    if [ "${1:-}" = pending ]; then
+      cursor_read "$d/cursors/$AGENT"
+      s=$CUR_PEND
+    else
+      seq_read_v s "$d"
+    fi
+    W_HOLDM="$W_HOLDM$c:$s "
+  done
+}
+# cursor_rollback NAME — Pending := Acked in every channel of NAME (DESIGN §5.5): what was
+# issued last comes again (the supervisor's wait after a crash, a tail wait, …)
+cursor_rollback() {
+  local f
+  for f in "$ROOT/lobby/cursors/$1" "$ROOT"/tasks/T[0-9]*/cursors/"$1"; do
+    [ -f "$f" ] || continue
+    cursor_read "$f"
+    [ "$CUR_PEND" -gt "$CUR_ACK" ] && cursor_write "$f" "$CUR_ACK" "$CUR_ACK"
+  done
+  return 0
 }
 
 # dl_claim MARKER → 0 if this process created it (O_EXCL via noclobber)
@@ -7750,6 +8048,7 @@ w_deliver() {
     rest_when="после снятия паузы или со следующим сообщением человека"
   fi
   [ -z "$lift" ] || wake=1
+  [ -z "$W_FORCE" ] || wake=1 # the supervisor: wake, the lifted stop, new rights (DESIGN §5.5)
   # pass 1: anything that wakes since the last check?
   i=0
   while [ $i -lt "$CH_N" ]; do
@@ -7774,7 +8073,8 @@ w_deliver() {
   done
   DL_TEXT= DL_FILES= DL_MARKS=
   DL_LOGS=()
-  if [ -z "$W_PAUSED" ] || [ -n "$wake" ]; then w_deadlines "$wake"; fi
+  # HOLD (after a crash) — deadlines do not wake either, as on a pause
+  if [ -z "$W_PAUSED$W_HOLD" ] || [ -n "$wake" ]; then w_deadlines "$wake"; fi
   [ -n "$wake$DL_TEXT" ] || return 1
   # pass 2: format everything for me since Acked (quiet ones included)
   i=0
@@ -7804,7 +8104,7 @@ w_deliver() {
     fi
     i=$((i + 1))
   done
-  [ -n "$out$DL_TEXT$lift" ] || return 1
+  [ -n "$out$DL_TEXT$lift$W_FORCE" ] || return 1
   w_pid_v cur
   if [ "$cur" != "$SELF" ]; then
     dl_unclaim
@@ -7819,9 +8119,15 @@ w_deliver() {
     [ -n "$out$DL_TEXT" ] || res=pause_end
     out="── пауза снята: человек снял паузу — новую работу можно начинать.$NL$out"
   fi
+  if [ -n "$W_FORCE" ]; then # all after Acked, even quiet, even nothing (DESIGN §5.5)
+    res=force
+    [ -n "$out$DL_TEXT" ] || out="── нового нет$NL"
+  fi
   if printf '%s%s%s%s── NEXT: обработай, затем: %s\n' "$out" "$DL_TEXT" "$pn" "$x" "$NEXT_WAIT"; then
     # At-least-once: issued messages become Pending only after the output was
     # written; the next wait acknowledges them (Acked := Pending).
+    # a test hook: a delivery caught between the output and the cursor (DESIGN §5.5)
+    [ -z "${BRG_TEST_DELIVER_DELAY:-}" ] || sleep "$BRG_TEST_DELIVER_DELAY"
     i=0
     while [ $i -lt "$CH_N" ]; do
       [ -n "${CH_SHOW[i]}" ] && cursor_write "${CH_DIR[i]}/cursors/$AGENT" "${CH_ACK[i]}" "${CH_SHOW[i]}"
@@ -7877,6 +8183,21 @@ cmd_wait() {
   need_root
   STOP_SHOWN=1 # wait returns STOP itself
   need_agent write
+  spawn_sub_refuse
+  # agents launched by brg (DESIGN §5.5): the supervisor's wait (BRG_SPAWN_WAIT) holds the
+  # agent's place while it is frozen; the agent's own plain wait does not block (W_IDLE)
+  spawned_v W_SPAWN "$AGENT"
+  if [ -n "${BRG_SPAWN_WAIT:-}" ]; then
+    if [ -z "$W_SPAWN" ] || [ "${BRG_SPAWN_ID:-}" != "$W_SPAWN" ]; then
+      die "надзорный wait — только для агента, запущенного brg (${BRG_SPAWN_ID:-?}): $AGENT ${W_SPAWN:-не запущен brg}"
+    fi
+    W_SV=1 W_RES=$BRG_SPAWN_WAIT W_SD=$RUN/spawn/$W_SPAWN
+    [ -z "${BRG_SPAWN_HOLD:-}" ] || W_HOLD=1
+    [ -z "${BRG_SPAWN_FORCE:-}" ] || W_FORCE=1
+    [ -z "${BRG_SPAWN_ROLLBACK:-}" ] || W_ROLL=1
+  elif [ -n "$W_SPAWN" ] && [ -z "$opt_b" ]; then
+    W_IDLE=1
+  fi
   if [ -n "$opt_t" ]; then T=$opt_t; else wait_timeout_v T "$A_HARNESS" "$A_PLATFORM"; fi
   W_OPT_T=$opt_t
   [ -n "$opt_b" ] || W_PLAIN=1
@@ -7894,7 +8215,10 @@ cmd_wait() {
   trap 'w_on_signal HUP' HUP
   get_now
   T0=$NOW
-  metric wait.start timeout="$T" pid="$SELF" ppid="$PARENT"${opt_b:+ busy=1}
+  metric wait.start timeout="$T" pid="$SELF" ppid="$PARENT"${opt_b:+ busy=1}${W_SV:+ spawn=1}${W_IDLE:+ idle=1}
+  # ROLLBACK (DESIGN §5.5) comes before everything that may end this wait, STOP included:
+  # the supervisor drops its wish only when the result says it was done
+  [ -z "$W_ROLL" ] || w_rollback
   w_stopped && w_finish stop 0 "$W_STOP_TEXT"
 
   # The mark (DESIGN §5.4): --busy says "my subagent works", a plain wait says "I am
@@ -7919,10 +8243,17 @@ cmd_wait() {
 
   # Takeover without signals: claim the pid file; the previous wait notices on
   # its next tick and exits with SUPERSEDED.
-  w_claim
+  [ -n "$W_ROLLED" ] || w_claim
   w_hb
   HB_AT=$NOW
 
+  if [ -n "$W_HOLD" ]; then
+    # the marks the supervisor took when the turn crashed (what came after it wakes, even if it
+    # came before this wait started); none — now
+    W_HOLDM=
+    [ -f "$W_SD/hold.marks" ] && IFS= read -r W_HOLDM <"$W_SD/hold.marks"
+    case $W_HOLDM in " "*) ;; *) w_hold_marks ;; esac
+  fi
   w_channels_init
   touch_seen
   SEEN_AT=$NOW
@@ -7972,11 +8303,19 @@ cmd_wait() {
         done
       fi
     fi
+    # the supervisor's wait reads the flags of the launch (only reads: the supervisor removes them)
+    if [ -n "$W_SV" ]; then
+      [ -e "$W_SD/rm" ] && w_finish flag:rm 0
+      [ -e "$W_SD/detach" ] && w_finish flag:detach 0
+      if [ -e "$W_SD/wake" ] || [ -e "$W_SD/rights" ]; then W_FORCE=1; fi
+    fi
     w_deliver
+    [ -z "$W_IDLE" ] || w_idle_finish
     if [ "$NOW" -ge "$deadline" ]; then
       if [ -n "$W_PAUSED" ]; then
         w_next
         w_notes_v c
+        [ -z "$W_SPAWN" ] || w_finish timeout 0 "$c── пауза · нет новых от человека ($T с) · NEXT: $NEXT_WAIT"
         w_finish timeout 0 "$c── пауза · нет новых от человека ($T с) · ход не завершай · NEXT: $NEXT_WAIT"
       fi
       # nothing new: a one-line digest of the active task before NEXT
@@ -7987,6 +8326,7 @@ cmd_wait() {
       fi
       w_next
       w_notes_v c
+      [ -z "$W_SPAWN" ] || w_finish timeout 0 "$x$c── нет новых ($T с) · NEXT: $NEXT_WAIT"
       w_finish timeout 0 "$x$c── нет новых ($T с) · ход не завершай · NEXT: $NEXT_WAIT"
     fi
     sleep "$TICK" &
@@ -7994,6 +8334,1748 @@ cmd_wait() {
     wait "$W_SLEEP" 2>/dev/null
     W_SLEEP=
   done
+}
+
+# ── agents launched by brg (DESIGN §5.5) ───────────────────────────────────
+# `brg spawn` joins an agent itself and starts its supervisor `brg __spawn S00N`: a detached
+# process (like the runner of brg run) that holds the lock run/locks/spawn.S00N.lock all its
+# life and runs the turns of the harness through the turn wrapper `brg __turn S00N N` (its
+# own process: the harness is its child — signals go only to own children). A free agent
+# ends its turn; the supervisor waits for it (`wait` with BRG_SPAWN_WAIT) and continues the
+# session of the harness with the batch in the prompt (stdin). The record run/spawn/S00N/spawn
+# is written only by the holder of that lock. Stage A: OpenCode only, macOS/Linux only.
+SPAWN_IDLE="заверши ход — brg разбудит тебя, когда будет новое"
+SPAWN_SUPPORTED=opencode
+TAB=$'\t'
+ESC=$'\033'
+SP_FIELDS="Id Agent Harness Model Rights Session State Note Created Created-Epoch Supervisor Turn Turn-Start Turn-End Turn-Result Turn-Stopped Last-Error Perm-Denied Last-Event Hold Tokens-In Tokens-Out Tokens-Reasoning Tokens-Cache-Read Tokens-Cache-Write Cost Tokens-Source Sub-Sessions Locale-Set Locale"
+
+# hdr_v VAR FILE KEY — one header of a record ("" if none)
+hdr_v() {
+  local _hv_l _hv_r=
+  if [ -f "$2" ]; then
+    {
+      while IFS= read -r _hv_l || [ -n "$_hv_l" ]; do
+        case $_hv_l in
+          '') break ;;
+          "$3: "*)
+            _hv_r=${_hv_l#"$3: "}
+            break
+            ;;
+        esac
+      done <"$2"
+    } 2>/dev/null
+  fi
+  eval "$1=\$_hv_r"
+}
+
+# sp_read DIR [PREFIX] — the record DIR/spawn → <PREFIX>_<Field> (dashes → _), <PREFIX>_BODY;
+# PREFIX defaults to SP (the record the caller works with; SQ — a look at another one)
+sp_read() {
+  local _sr_p=${2:-SP} _sr_l _sr_k _sr_h=1 _sr_b= _sr_f
+  for _sr_f in $SP_FIELDS; do eval "${_sr_p}_${_sr_f//-/_}="; done
+  eval "${_sr_p}_BODY="
+  [ -f "$1/spawn" ] || return 1
+  {
+    while IFS= read -r _sr_l || [ -n "$_sr_l" ]; do
+      if [ -n "$_sr_h" ]; then
+        if [ -z "$_sr_l" ]; then
+          _sr_h=
+          continue
+        fi
+        _sr_k=${_sr_l%%: *}
+        case " $SP_FIELDS " in *" $_sr_k "*) eval "${_sr_p}_${_sr_k//-/_}=\${_sr_l#*: }" ;; esac
+      else
+        _sr_b=$_sr_b$_sr_l$NL
+      fi
+    done <"$1/spawn"
+  } 2>/dev/null
+  eval "${_sr_p}_BODY=\${_sr_b%\"\$NL\"}"
+  return 0
+}
+# sp_write DIR — SP_* → DIR/spawn (tmp + mv); only the holder of the supervisor's lock
+sp_write() {
+  local _sw_f _sw_v _sw_o= _sw_t=$1/.spawn.tmp.$$
+  for _sw_f in $SP_FIELDS; do
+    eval "_sw_v=\${SP_${_sw_f//-/_}-}"
+    _sw_o="$_sw_o$_sw_f: ${_sw_v//[[:cntrl:]]/ }$NL"
+  done
+  printf '%s\n%s\n' "$_sw_o" "$SP_BODY" >"$_sw_t" 2>/dev/null && mv_retry "$_sw_t" "$1/spawn"
+}
+
+# spawn_norm_id_v VAR RAW — S1 | s001 | S001 → S001; 1 if not a launch id
+spawn_norm_id_v() {
+  local _sn_n=$2
+  case $_sn_n in [Ss]*) _sn_n=${_sn_n#?} ;; *) return 1 ;; esac
+  is_uint "$_sn_n" && [ ${#_sn_n} -le 6 ] || return 1
+  _sn_n=$((10#$_sn_n))
+  [ "$_sn_n" -gt 0 ] || return 1
+  printf -v _sn_n 'S%03d' "$_sn_n"
+  eval "$1=\$_sn_n"
+}
+
+# spawned_v VAR NAME — the launch (S00N) of agent NAME if it is launched by brg: Spawn: in its
+# profile and the record not detached/removed. 1 otherwise. The one test of "launched?".
+spawned_v() {
+  local _sv_s _sv_t
+  hdr_v _sv_s "$ROOT/agents/$2" Spawn
+  case $_sv_s in S[0-9]*) ;; *) return 1 ;; esac
+  case $_sv_s in *[!S0-9]*) return 1 ;; esac
+  hdr_v _sv_t "$RUN/spawn/$_sv_s/spawn" State
+  case $_sv_t in '' | detached | removed) return 1 ;; esac
+  eval "$1=\$_sv_s"
+}
+
+# spawn_session_v VAR DIR — the harness session of a launch: Session, or turn.session while
+# the supervisor has not carried it over yet (the first turn)
+spawn_session_v() {
+  local _ss_s
+  hdr_v _ss_s "$2/spawn" Session
+  if [ -z "$_ss_s" ] && [ -f "$2/turn.session" ]; then { IFS= read -r _ss_s <"$2/turn.session"; } 2>/dev/null; fi
+  eval "$1=\$_ss_s"
+}
+
+# spawn_sub_refuse — after need_agent in wait, leave, busy: a subagent of a launched agent
+# (OPENCODE_SESSION_ID of another session) must not take its place (DESIGN §5.5)
+spawn_sub_refuse() {
+  local s x
+  [ -n "${OPENCODE_SESSION_ID:-}" ] || return 0
+  spawned_v s "$AGENT" || return 0
+  spawn_session_v x "$RUN/spawn/$s"
+  [ -n "$x" ] && [ "$x" != "$OPENCODE_SESSION_ID" ] || return 0
+  NEXT_ON_ERR="выполни поручение и верни результат"
+  die "ты подагент участника $AGENT — к бригаде не подключайся: wait, leave, busy тебе нельзя" \
+    "Выполни поручение и верни результат участнику. Можно команды чтения (status, read, who, … show|list) и run --sync под его именем."
+}
+
+# spawn_rights_v VAR full|project — what the rights mean, as OpenCode does it (said verbatim
+# by spawn and the board)
+spawn_rights_v() {
+  case $2 in
+    project) eval "$1='правила OpenCode по умолчанию: в проекте можно всё — любые команды, правки, сеть, git push; вне проекта и .env — отказ'" ;;
+    *) eval "$1='агент может всё, что можешь ты, в том числе вне каталога проекта и чтение .env'" ;;
+  esac
+}
+
+# spawn_sv_state_v VAR S — the supervisor of S, by its lock and heartbeat (a one-shot look):
+# alive | silent (pid alive, hb older than spawn_stale) | dying (pid dead, hb fresh) | dead
+spawn_sv_state_v() {
+  local _ss_d=$LOCKS/spawn.$2.lock _ss_o _ss_e _ss_r=dead
+  [ -n "$NOW" ] || get_now
+  if [ -d "$_ss_d" ]; then
+    lock_owner_v _ss_o "$_ss_d"
+    if [ -z "$_ss_o" ]; then
+      _ss_r=alive # being taken right now
+    else
+      lock_hb_v _ss_e "$_ss_d" "$_ss_o"
+      if pid_alive "${_ss_o%% *}"; then
+        if [ $((NOW - _ss_e)) -le "$SPAWN_STALE" ]; then _ss_r=alive; else _ss_r=silent; fi
+      elif [ $((NOW - _ss_e)) -lt "$RUNNER_DEAD_GRACE" ]; then
+        _ss_r=dying
+      fi
+    fi
+  fi
+  eval "$1=\$_ss_r"
+}
+
+# spawn_turn_state_v VAR DIR — the turn wrapper of a launch (a one-shot look): alive | silent | dead.
+# A pid just dead with a fresh turn.hb is not judged yet (alive); no turn.hb — turn.pid.
+spawn_turn_state_v() {
+  local _ts_h= _ts_p _ts_e _ts_r=dead
+  [ -n "$NOW" ] || get_now
+  [ -f "$2/turn.hb" ] && { IFS= read -r _ts_h <"$2/turn.hb"; } 2>/dev/null
+  _ts_p=${_ts_h%% *}
+  _ts_e=${_ts_h#* }
+  if is_uint "$_ts_p" && is_uint "$_ts_e" && [ "$_ts_h" = "$_ts_p $_ts_e" ]; then
+    if pid_alive "$_ts_p"; then
+      if [ $((NOW - _ts_e)) -le "$SPAWN_STALE" ]; then _ts_r=alive; else _ts_r=silent; fi
+    elif [ $((NOW - _ts_e)) -lt "$RUNNER_DEAD_GRACE" ]; then
+      _ts_r=alive
+    fi
+  else
+    _ts_h=
+    [ -f "$2/turn.pid" ] && { IFS= read -r _ts_h <"$2/turn.pid"; } 2>/dev/null
+    is_uint "$_ts_h" && pid_alive "$_ts_h" && _ts_r=alive
+  fi
+  eval "$1=\$_ts_r"
+}
+
+# spawn_turn_note_v VAR NAME — for an agent launched by brg whose turn goes on under a live
+# supervisor: "ход N идёт M мин · последнее событие K мин назад" (DESIGN §5.2); 1 otherwise
+spawn_turn_note_v() {
+  local _tn_s _tn_v _tn_x _tn_r _tn_e
+  spawned_v _tn_s "$2" || return 1
+  hdr_v _tn_v "$RUN/spawn/$_tn_s/spawn" State
+  [ "$_tn_v" = running ] || return 1
+  spawn_sv_state_v _tn_v "$_tn_s"
+  [ "$_tn_v" = alive ] || return 1
+  sp_read "$RUN/spawn/$_tn_s" SQ
+  _tn_x=0
+  is_uint "$SQ_Turn_Start" && _tn_x=$((NOW - SQ_Turn_Start))
+  [ "$_tn_x" -ge 0 ] || _tn_x=0
+  dur_v _tn_x "$_tn_x"
+  _tn_r="ход ${SQ_Turn:-?} идёт $_tn_x"
+  if is_uint "$SQ_Last_Event"; then
+    _tn_e=$((NOW - SQ_Last_Event))
+    ago_v _tn_x "$_tn_e"
+    _tn_r="$_tn_r · последнее событие $_tn_x"
+    [ "$_tn_e" -lt 120 ] || _tn_r="$_tn_r (возможно, долгий инструмент)"
+  else
+    _tn_r="$_tn_r · событий ещё нет"
+  fi
+  eval "$1=\$_tn_r"
+}
+
+# spawn_note_v VAR NAME — " (запущен brg, S003 …)" for who/status: the state of the record
+# beyond «ждёт»/«работает» (crashed, stopped, conflict, a dead supervisor); "" and 1 if not launched
+spawn_note_v() {
+  local _sn_s _sn_r _sn_v
+  if ! spawned_v _sn_s "$2"; then
+    eval "$1="
+    return 1
+  fi
+  sp_read "$RUN/spawn/$_sn_s" SQ
+  _sn_r="запущен brg, $_sn_s"
+  case $SQ_State in
+    starting) _sn_r="$_sn_r · запуск" ;;
+    crashed) _sn_r="$_sn_r · упал: ${SQ_Last_Error:-?}" ;;
+    stopped) _sn_r="$_sn_r · остановлен — снимется по brg resume (кнопка «Продолжить»)" ;;
+    conflict) _sn_r="$_sn_r · конфликт: под именем работает другой wait" ;;
+  esac
+  case $SQ_Perm_Denied:$_sn_r in :* | *"отказ в правах"*) ;; *) _sn_r="$_sn_r · отказ в правах: $SQ_Perm_Denied" ;; esac
+  spawn_sv_state_v _sn_v "$_sn_s"
+  [ "$_sn_v" = alive ] || _sn_r="$_sn_r · надзор не отвечает (brg spawn wake $_sn_s перезапустит)"
+  eval "$1=\" (\$_sn_r)\""
+}
+
+# spawn_resolve_v VAR ARG — the launch named by ARG: S00N, or an agent name (bare or full)
+spawn_resolve_v() {
+  local _sr_s= _sr_n _sr_d _sr_a
+  if spawn_norm_id_v _sr_s "$2"; then
+    [ -f "$RUN/spawn/$_sr_s/spawn" ] || return 1
+  else
+    _sr_n=${2%%.*}
+    valid_name "$_sr_n" || return 1
+    hdr_v _sr_s "$ROOT/agents/$_sr_n" Spawn
+    if [ -z "$_sr_s" ] || [ ! -f "$RUN/spawn/$_sr_s/spawn" ]; then
+      _sr_s=
+      for _sr_d in "$RUN"/spawn/S[0-9]*; do
+        hdr_v _sr_a "$_sr_d/spawn" Agent
+        [ "$_sr_a" = "$_sr_n" ] && _sr_s=${_sr_d##*/}
+      done
+      [ -n "$_sr_s" ] || return 1
+    fi
+  fi
+  eval "$1=\$_sr_s"
+}
+
+# Masking of session keys (DESIGN §5.5): "<harness>-<n>." + six [a-z2-9] not followed by
+# [a-z0-9] → "<name>.<3 chars>…". Six classes in a row: mawk has no {6}.
+AWK_MASK='
+function mask(s,   o, m, k, nx) {
+  o = ""
+  while (match(s, /[a-z0-9]+-[0-9]+[.][a-z2-9][a-z2-9][a-z2-9][a-z2-9][a-z2-9][a-z2-9]/)) {
+    m = substr(s, RSTART, RLENGTH); nx = substr(s, RSTART + RLENGTH, 1)
+    if (nx ~ /[a-z0-9]/) { o = o substr(s, 1, RSTART + RLENGTH - 1); s = substr(s, RSTART + RLENGTH); continue }
+    k = index(m, "."); o = o substr(s, 1, RSTART - 1) substr(m, 1, k + 3) "…"; s = substr(s, RSTART + RLENGTH)
+  }
+  return o s
+}'
+# mask_v VAR TEXT — TEXT with the keys masked
+mask_v() {
+  local _mk_r
+  _mk_r=$(printf '%s\n' "$2" | awk "$AWK_MASK"'
+{ print mask($0) }')
+  eval "$1=\$_mk_r"
+}
+
+# The events of a turn (OpenCode --format json, one JSON object per line) → lines:
+#   A<TAB>epoch<TAB>kind<TAB>text   activity (tool, text, error), ≤ 280 bytes, masked
+#   S<TAB>ses_…   the session · T<TAB>in out reasoning cache_read cache_write cost (step_finish sums)
+#   E<TAB>error · C<TAB>child session (output of the task tool) · P<TAB>a refused permission
+# and the last text of the model (≤ 2 KB, masked) into the file ENVIRON["SP_LAST"]. JSON by
+# regular expressions on the line; unknown events are skipped (a new format loses the view,
+# not the work).
+AWK_SPEV='
+function unesc(s, keepnl,   o, c, i) {
+  if (index(s, "\\") == 0) return s
+  o = ""
+  while ((i = index(s, "\\")) > 0) {
+    o = o substr(s, 1, i - 1); c = substr(s, i + 1, 1)
+    if (c == "n") o = o (keepnl ? "\n" : " ")
+    else if (c == "t" || c == "r" || c == "b" || c == "f") o = o " "
+    else if (c == "u") { o = o "?"; s = substr(s, i + 6); continue }
+    else o = o c
+    s = substr(s, i + 2)
+  }
+  return o s
+}
+function jstr(s, key, keepnl,   p, r) {
+  p = index(s, "\"" key "\":\"")
+  if (!p) return ""
+  r = substr(s, p + length(key) + 4)
+  if (!match(r, /^(\\.|[^"\\])*/)) return ""
+  return unesc(substr(r, 1, RLENGTH), keepnl)
+}
+function jnum(s, key,   p, r) {
+  p = index(s, "\"" key "\":")
+  if (!p) return 0
+  r = substr(s, p + length(key) + 3)
+  if (!match(r, /^-?[0-9][0-9.eE+-]*/)) return 0
+  return substr(r, 1, RLENGTH) + 0
+}
+function cut(s, n) {
+  gsub(/[\001-\037\177]/, " ", s)
+  if (length(s) > n) { s = substr(s, 1, n); sub(/[\300-\377][\200-\277]*$/, "", s); s = s "…" }
+  return s
+}
+function act(ep, kind, text) { print "A\t" ep "\t" kind "\t" cut(mask(text), 280) }
+BEGIN { split("command filePath path pattern description url", K, " ") }
+{
+  line = $0; t = jstr(line, "type")
+  ts = jnum(line, "timestamp"); ep = ts > 0 ? int(ts / 1000) : now
+  if (sid == "") { x = jstr(line, "sessionID"); if (x ~ /^ses_[A-Za-z0-9_-]+$/) sid = x }
+  if (t == "tool_use") {
+    tool = jstr(line, "tool"); st = jstr(line, "status")
+    p = index(line, "\"input\":{"); inp = p ? substr(line, p) : ""
+    what = ""
+    for (i = 1; i <= 6 && what == ""; i++) what = jstr(inp, K[i])
+    if (length(what) > 4000) what = substr(what, 1, 4000)
+    lab = tool (what != "" ? ": " what : "")
+    act(ep, "tool", lab (st == "error" ? " — ошибка" : ""))
+    if (st == "error" && index(line, "request was rejected")) print "P\t" cut(mask(lab), 200)
+    if (tool == "task") {
+      r = line
+      while (match(r, /(task_id|sessionID): ses_[A-Za-z0-9_-]+/)) {
+        m = substr(r, RSTART, RLENGTH); sub(/^[A-Za-z_]+: /, "", m); print "C\t" m
+        r = substr(r, RSTART + RLENGTH)
+      }
+    }
+  } else if (t == "text") {
+    tx = jstr(line, "text", 1)
+    if (tx != "") { last = tx; act(ep, "text", substr(tx, 1, 4000)) }
+  } else if (t == "step_finish") {
+    p = index(line, "\"tokens\":{"); tk = p ? substr(line, p) : ""
+    tin += jnum(tk, "input"); tout += jnum(tk, "output"); trs += jnum(tk, "reasoning")
+    p = index(tk, "\"cache\":{"); ck = p ? substr(tk, p) : ""
+    tcr += jnum(ck, "read"); tcw += jnum(ck, "write")
+    cost += jnum(line, "cost")
+  } else if (t == "error") {
+    p = index(line, "\"error\":{"); er = p ? substr(line, p) : line
+    m = jstr(er, "message"); if (m == "") m = jstr(er, "name"); if (m == "") m = "ошибка без сообщения"
+    err = cut(mask(m), 280); act(ep, "error", m)
+  }
+}
+END {
+  if (sid != "") print "S\t" sid
+  printf "T\t%d\t%d\t%d\t%d\t%d\t%.6f\n", tin, tout, trs, tcr, tcw, cost
+  if (err != "") print "E\t" err
+  if (last != "" && ENVIRON["SP_LAST"] != "") {
+    last = mask(last)
+    if (length(last) > 2048) { last = substr(last, 1, 2048); sub(/[\300-\377][\200-\277]*$/, "", last); last = last "…" }
+    printf "%s\n", last > ENVIRON["SP_LAST"]
+  }
+}'
+# The head of `session export` (whitespace dropped): info.cost and info.tokens → "in out reasoning
+# cache_read cache_write cost"; nothing if there are no tokens
+AWK_EXPORT='
+function num(s, key,   p, r) {
+  p = index(s, "\"" key "\":")
+  if (!p) return -1
+  r = substr(s, p + length(key) + 3)
+  if (!match(r, /^-?[0-9][0-9.eE+-]*/)) return -1
+  return substr(r, 1, RLENGTH) + 0
+}
+{
+  s = $0; p = index(s, "\"tokens\":{"); if (!p) exit
+  tk = substr(s, p); i = num(tk, "input"); if (i < 0) exit
+  o = num(tk, "output"); r = num(tk, "reasoning")
+  q = index(tk, "\"cache\":{"); ck = q ? substr(tk, q) : ""
+  cr = num(ck, "read"); cw = num(ck, "write"); c = num(s, "cost")
+  printf "%d %d %d %d %d %.6f\n", i, (o < 0 ? 0 : o), (r < 0 ? 0 : r), (cr < 0 ? 0 : cr), (cw < 0 ? 0 : cw), (c < 0 ? 0 : c)
+  exit
+}'
+
+# ── the supervisor's lock (DESIGN §5.5): held all its life; never broken by age ──
+# spawn_lock_try S [OBSERVE] → 0 if taken (or ours: the pid of a supervisor after exec);
+# 1 and SL_WHY = alive | silent | dying | busy. A dead owner whose heartbeat is older than
+# runner_dead_grace is broken at once; one just dead (fresh hb) — after the grace, even for a
+# one-shot caller; a live pid with a silent hb — only after watching it, without a gap, for
+# longer than spawn_stale (OBSERVE: how long to watch, 0 — one try). A live owner whose hb is
+# fresh — 1 at once.
+SL_WHY=
+spawn_lock_try() {
+  local d=$LOCKS/spawn.$1.lock obs=${2:-0} o p e t0 since=
+  SL_WHY=
+  get_now
+  t0=$NOW
+  hb_obs_init
+  while :; do
+    if mkdir "$d" 2>/dev/null; then
+      get_now
+      printf '%s %s\n' "$$" "$NOW" >"$d/owner"
+      printf '%s %s\n' "$$" "$NOW" >"$d/hb"
+      HELD="$HELD spawn.$1"
+      return 0
+    fi
+    [ -d "$LOCKS" ] || mkdir -p "$LOCKS" 2>/dev/null
+    lock_owner_v o "$d"
+    get_now
+    hb_obs_tick "$SPAWN_STALE"
+    if [ -z "$o" ]; then
+      if [ -d "$d" ]; then
+        [ -n "$since" ] || since=$NOW
+        if [ $((NOW - since)) -gt "$LOCK_STALE" ]; then # its creator died before writing the owner
+          LS_WHY=
+          lock_break "$d" ""
+          since=
+          continue
+        fi
+      fi
+      SL_WHY=busy
+      [ $((NOW - t0)) -lt "$obs" ] || [ $((NOW - t0)) -lt 2 ] || return 1
+    else
+      since=
+      p=${o%% *}
+      if [ "$p" = "$$" ]; then # ours: a supervisor after exec
+        case " $HELD " in *" spawn.$1 "*) ;; *) HELD="$HELD spawn.$1" ;; esac
+        return 0
+      fi
+      lock_hb_v e "$d" "$o"
+      if ! pid_alive "$p"; then
+        if [ $((NOW - e)) -ge "$RUNNER_DEAD_GRACE" ]; then
+          LS_WHY=dead
+          lock_break "$d" "$o"
+          continue
+        fi
+        SL_WHY=dying # just died: wait out the grace
+        [ $((NOW - t0)) -le $((RUNNER_DEAD_GRACE + 2)) ] || [ $((NOW - t0)) -lt "$obs" ] || return 1
+      else
+        if [ $((NOW - e)) -le "$SPAWN_STALE" ]; then
+          SL_WHY=alive
+          return 1
+        fi
+        if [ -n "$HB_JUDGE" ]; then
+          LS_WHY=hb
+          lock_break "$d" "$o"
+          continue
+        fi
+        SL_WHY=silent
+        [ $((NOW - t0)) -lt "$obs" ] || return 1
+      fi
+    fi
+    sleep 0.5
+  done
+}
+
+# ── the supervisor: brg __spawn S00N [--continue [--roll] [--force]] ──
+SV_STEP=1
+SV_MAXLIFE=
+SV_HB_EVERY=5
+SV_HB_AT=0
+SV_T0=0
+sv_setup() {
+  SV_STEP=${BRG_SPAWN_STEP:-1} # a test hook: the step of sleeps
+  case $SV_STEP in '' | *[!0-9.]* | .*) SV_STEP=1 ;; esac
+  SV_MAXLIFE=${BRG_SPAWN_TEST_MAXLIFE:-} # a test hook: leave after N s (or when the project is gone)
+  is_uint "$SV_MAXLIFE" || SV_MAXLIFE=
+  SV_HB_EVERY=$((SPAWN_STALE / 3))
+  [ "$SV_HB_EVERY" -le 5 ] || SV_HB_EVERY=5
+  [ "$SV_HB_EVERY" -ge 1 ] || SV_HB_EVERY=1
+  get_now
+  SV_T0=$NOW
+}
+sv_log() {
+  local x
+  x=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  printf '%s %s\n' "$x" "$*" >&2
+}
+sv_sleep() {
+  sleep "$SV_STEP" &
+  wait $! 2>/dev/null
+}
+spawn_hb() {
+  printf '%s %s\n' "$$" "$NOW" >"$SV_LOCK/.hb.$$" 2>/dev/null && mv -f "$SV_LOCK/.hb.$$" "$SV_LOCK/hb" 2>/dev/null
+  SV_HB_AT=$NOW
+}
+# sv_tick — every step of every wait of the supervisor: the heartbeat (and the lock still
+# ours), the test hook of the maximal life, the project still there
+sv_tick() {
+  local o
+  get_now
+  if [ $((NOW - SV_HB_AT)) -ge "$SV_HB_EVERY" ]; then
+    lock_owner_v o "$SV_LOCK"
+    if [ "${o%% *}" != "$$" ]; then
+      HELD=${HELD/ spawn.$SV_S/}
+      sv_log "лок надзора потерян (владелец: ${o:-нет}) — выхожу"
+      exit 0
+    fi
+    spawn_hb
+  fi
+  if [ -n "$SV_MAXLIFE" ] && [ $((NOW - SV_T0)) -ge "$SV_MAXLIFE" ]; then
+    sv_log "BRG_SPAWN_TEST_MAXLIFE — выхожу"
+    exit 0
+  fi
+  [ -d "$SD" ] || exit 0
+}
+# sv_pause SECS — sleep in steps, beating
+sv_pause() {
+  local t
+  get_now
+  t=$((NOW + $1))
+  while [ "$NOW" -lt "$t" ]; do
+    sv_sleep
+    sv_tick
+  done
+}
+sv_tail() {
+  tail -n 30 "$SD/activity.log" >"$SD/.activity.tail.$$" 2>/dev/null && mv -f "$SD/.activity.tail.$$" "$SD/activity.tail" 2>/dev/null
+}
+# sv_act KIND TEXT — a line of the activity (written by the supervisor itself)
+sv_act() {
+  local x
+  get_now
+  mask_v x "${2//[[:cntrl:]]/ }"
+  utf8_cut_v x "$x" 280
+  printf '%s\t%s\t%s\n' "$NOW" "$1" "$x" >>"$SD/activity.log"
+  sv_tail
+}
+sv_stopped_now() { [ -e "$RUN/stopped" ] || [ -e "$RUN/stopped.$AGENT" ]; }
+
+# spawn_first_prompt FULLNAME — the first prompt: who it is, how it lives, the output of join
+spawn_first_prompt() {
+  local m
+  spawn_rights_v m "$SP_Rights"
+  cat <<BRG_FP
+Ты — участник бригады brigada в этом проекте; тебя запустил brg по просьбе человека. Окна у тебя нет: человек видит только send --to human (вопрос — с --ask) и доску; текст вне инструментов никто не читает. Твоё имя — $1, передавай его в --as каждой команды bash .brigada/bin/brg …. join уже сделан (ниже) — не повторяй. Прочитай .brigada/README.md (раздел «Тебя запустил brg» — про тебя) и .brigada/PROTOCOL.md. Когда свободен — заверши ход: brg разбудит тебя и передаст новые сообщения. Работает твой подагент (в т.ч. фоновый) — ход не завершай, жди в wait --busy (подагент живёт, пока идёт твой ход). brg wait никогда не запускай в фоне. Права: $SP_Rights — $m.${SP_Note:+ Человек: «$SP_Note».}
+── вывод join ($SV_S) ──
+BRG_FP
+  cat "$SD/join.out" 2>/dev/null
+}
+
+# sv_apply_rights — a flag "rights" (full|project): the new value goes into the record; 1 if
+# there was nothing valid
+sv_apply_rights() {
+  local v=
+  [ -f "$SD/rights" ] && IFS= read -r v <"$SD/rights"
+  rm -f "$SD/rights"
+  case $v in full | project) ;; *) return 1 ;; esac
+  SP_Rights=$v SP_Perm_Denied=
+  sp_write "$SD"
+  sv_act turn "права: $v (со следующего хода)"
+  if [ "$v" = full ]; then
+    SV_REASON="$SV_REASON$NL── человек расширил права (full): повтори действие, в котором тебе отказали, если оно ещё нужно"
+  else
+    SV_REASON="$SV_REASON$NL── человек изменил права (project): вне каталога проекта и чтение .env — отказ"
+  fi
+  return 0
+}
+
+# sv_removed WHY — the end: removed (rm, or the agent left)
+sv_removed() {
+  SP_State=removed
+  sp_write "$SD"
+  rm -f "$SD/rm" "$SD/detach" "$SD/wake" "$SD/rights"
+  sv_act end "убран: $1"
+  sv_log "убран: $1"
+  exit 0
+}
+# spawn_leave_as NAME — the agent leaves (the shared code of brg leave), output to stderr
+spawn_leave_as() {
+  (
+    AGENT=$1 AGENT_FILE=$ROOT/agents/$1 AS_NOKEY=
+    leave_core
+  ) >&2
+}
+# sv_do_rm — brg spawn rm: the agent leaves (if it has not), the launch ends
+sv_do_rm() {
+  profile_read "$ROOT/agents/$AGENT"
+  [ -n "$P_LEFT" ] || spawn_leave_as "$AGENT"
+  sv_removed "brg spawn rm"
+}
+# spawn_unspawn NAME S — Spawn: S off the profile (under the roster lock)
+spawn_unspawn() {
+  local f=$ROOT/agents/$1 t line out= hdr=1
+  lock_acquire roster
+  if [ -f "$f" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [ -n "$hdr" ]; then
+        [ -n "$line" ] || hdr=
+        [ "$line" = "Spawn: $2" ] && continue
+      fi
+      out=$out$line$NL
+    done <"$f"
+    t=$ROOT/agents/.tmp.$1.$$
+    printf '%s' "$out" >"$t" && mv_retry "$t" "$f"
+  fi
+  lock_release roster
+}
+# sv_do_detach — brg spawn detach: the agent goes into a window, a common agent from now on
+sv_do_detach() {
+  # a rollback still owed (a crashed or broken off turn, a tail wait): the window gets that
+  # batch again — a duplicate, never a loss
+  [ -z "$SV_ROLL" ] || sv_rollback_now
+  spawn_unspawn "$AGENT" "$SV_S"
+  SP_State=detached
+  sp_write "$SD"
+  rm -f "$SD/detach" "$SD/wake" "$SD/rights"
+  sv_act end "забран в окно (brg spawn detach)"
+  sv_log "забран в окно"
+  exit 0
+}
+# sv_rollback_now — the supervisor's wait is over and a flag wants rm/detach: what it issued
+# (or what is still unacknowledged) is not for the harness any more — Pending := Acked
+sv_rollback_now() {
+  local i=0
+  get_now
+  wait_info "$AGENT"
+  while [ -n "$WI_ALIVE" ] && [ $i -lt 120 ]; do
+    sv_sleep
+    sv_tick
+    wait_info "$AGENT"
+    i=$((i + 1))
+  done
+  cursor_rollback "$AGENT"
+}
+
+# spawn_rollback_free NAME — taken into a window without a supervisor (spawn detach, join --as):
+# what the last turn was given may be lost (its result is unknown) — Pending := Acked, once no
+# wait of the agent is alive (an orphaned wait of the dead supervisor leaves on its own); 1 if one
+# still is after a few seconds
+spawn_rollback_free() {
+  local i=0
+  get_now
+  wait_info "$1"
+  while [ -n "$WI_ALIVE" ] && [ $i -lt 50 ]; do
+    sleep 0.1
+    i=$((i + 1))
+    get_now
+    wait_info "$1"
+  done
+  [ -z "$WI_ALIVE" ] || return 1
+  cursor_rollback "$1"
+}
+
+# sv_notify_lead N ERROR — the first crash of a series: the lead learns (DESIGN §5.5)
+sv_notify_lead() {
+  # the lead is the crashed agent itself, or there is no task: to the human (the board shows it;
+  # a message to "all" would come back in the crashed agent's own next prompt)
+  local chan=lobby to=human
+  get_now_iso
+  MSG_EXTRA=$QUIET
+  if active_task && task_read "$ACT_DIR"; then
+    chan=$ACT_ID
+    if [ -n "$TK_LEAD" ] && [ "$TK_LEAD" != "$AGENT" ]; then
+      to=$TK_LEAD
+      MSG_EXTRA="Wake: $TK_LEAD$NL"
+    fi
+  fi
+  BODY="$AGENT (запущен brg, $SV_S): ход $1 упал — $2. Разбудит следующее сообщение ему или «Разбудить» на доске"
+  (msg_write "$chan" brg "$to" system "") || sv_log "не удалось сообщить lead-у об аварии"
+  MSG_EXTRA=
+}
+
+# sv_stream_tokens — the record's tokens from the sum of step_finish of the main session
+sv_stream_tokens() {
+  local a b c d e f n=0 x
+  [ -f "$SD/stream.tok" ] || return 0
+  read -r a b c d e f <"$SD/stream.tok"
+  [ -f "$SD/children" ] && n=$(awk 'END { print NR }' "$SD/children")
+  SP_Tokens_In=$a SP_Tokens_Out=$b SP_Tokens_Reasoning=$c SP_Tokens_Cache_Read=$d SP_Tokens_Cache_Write=$e SP_Cost=$f
+  SP_Tokens_Source=stream SP_Sub_Sessions=${n//[!0-9]/}
+}
+
+# sv_export_one ID → EX ("in out reasoning cache_read cache_write cost"); 1 on failure.
+# `session export` is our own child (not a pipeline: the timeout must stop it, not head);
+# only the head of its output is read.
+sv_export_one() {
+  local t=$SD/.export.$$.$RANDOM p i=0 lim=${BRG_SPAWN_EXPORT_TIMEOUT:-20} bin=${CFG_spawn_opencode_bin:-opencode} args=${CFG_spawn_opencode_args-}
+  is_uint "$lim" || lim=20
+  EX=
+  # its own group (set -m): a background command without job control would ignore SIGINT
+  set -f -m
+  # shellcheck disable=SC2086 # the arguments of the config, word by word
+  "$bin" session export $args "$1" </dev/null >"$t" 2>>"$SD/export.err" &
+  p=$!
+  set +f +m
+  while kill -0 "$p" 2>/dev/null; do
+    sleep 0.5
+    i=$((i + 1))
+    if [ "$i" -eq $((lim * 2)) ]; then
+      kill -INT "$p" 2>/dev/null
+    elif [ "$i" -eq $((lim * 2 + 6)) ]; then
+      kill -TERM "$p" 2>/dev/null
+    elif [ "$i" -ge $((lim * 2 + 12)) ]; then
+      kill -KILL "$p" 2>/dev/null
+      break
+    fi
+  done
+  wait "$p" 2>/dev/null
+  [ "$i" -lt $((lim * 2)) ] && EX=$(head -c 2048 "$t" 2>/dev/null | tr -d '\n\r\t ' | awk "$AWK_EXPORT")
+  rm -f "$t"
+  [ -n "$EX" ]
+}
+# sv_export_run — (a background subshell) the main session and every child; a child whose
+# total has not changed for 2 turns in a row and whose id was not seen again this turn is
+# not exported again. → tokens.res: "in out reasoning cache_read cache_write cost subs" | fail
+sv_export_run() {
+  local id ids= a b c d e f k line tot="0 0 0 0 0 0" subs=0 out=
+  if ! sv_export_one "$SP_Session"; then
+    printf 'fail\n' >"$SD/tokens.res.tmp" && mv -f "$SD/tokens.res.tmp" "$SD/tokens.res"
+    return 0
+  fi
+  tot=$EX
+  [ -f "$SD/children" ] && ids=$(cat "$SD/children")
+  for id in $ids; do
+    case $id in ses_*) ;; *) continue ;; esac
+    line=
+    [ -f "$SD/children.tok" ] && line=$(awk -v id="$id" '$1 == id { print; exit }' "$SD/children.tok")
+    k=0
+    if [ -n "$line" ]; then
+      set -- $line
+      k=$8
+      if [ "$k" -ge 2 ] 2>/dev/null; then
+        case " $SV_CHILDREN_NEW " in *" $id "*) ;; *)
+          out="$out$line$NL"
+          tot=$(printf '%s\n%s %s %s %s %s %s\n' "$tot" "$2" "$3" "$4" "$5" "$6" "$7" | awk '{ for (i = 1; i <= 6; i++) s[i] += $i } END { printf "%d %d %d %d %d %.6f", s[1], s[2], s[3], s[4], s[5], s[6] }')
+          subs=$((subs + 1))
+          continue
+          ;;
+        esac
+      fi
+    fi
+    if sv_export_one "$id"; then
+      if [ -n "$line" ] && [ "$(printf '%s' "$line" | awk '{ print $2, $3, $4, $5, $6, $7 }')" = "$EX" ]; then k=$((k + 1)); else k=0; fi
+      out="$out$id $EX $k$NL"
+      tot=$(printf '%s\n%s\n' "$tot" "$EX" | awk '{ for (i = 1; i <= 6; i++) s[i] += $i } END { printf "%d %d %d %d %d %.6f", s[1], s[2], s[3], s[4], s[5], s[6] }')
+      subs=$((subs + 1))
+    elif [ -n "$line" ]; then
+      out="$out$line$NL" # not exported this time: the last known total
+      set -- $line
+      tot=$(printf '%s\n%s %s %s %s %s %s\n' "$tot" "$2" "$3" "$4" "$5" "$6" "$7" | awk '{ for (i = 1; i <= 6; i++) s[i] += $i } END { printf "%d %d %d %d %d %.6f", s[1], s[2], s[3], s[4], s[5], s[6] }')
+      subs=$((subs + 1))
+    fi
+  done
+  printf '%s' "$out" >"$SD/children.tok.tmp" && mv -f "$SD/children.tok.tmp" "$SD/children.tok"
+  printf '%s %s\n' "$tot" "$subs" >"$SD/tokens.res.tmp" && mv -f "$SD/tokens.res.tmp" "$SD/tokens.res"
+}
+SV_EXP_PID=
+sv_export_start() {
+  [ "${CFG_spawn_opencode_export:-1}" = 1 ] || return 0
+  [ -n "$SP_Session" ] || return 0
+  [ -z "$SV_EXP_PID" ] || return 0
+  rm -f "$SD/tokens.res"
+  set -m # not a plain background list: that would ignore SIGINT, and so would the export
+  (sv_export_run) </dev/null >/dev/null 2>>"$SD/supervisor.log" &
+  SV_EXP_PID=$!
+  set +m
+}
+# sv_export_check — the export finished: its totals into the record (only the supervisor writes it)
+sv_export_check() {
+  local a b c d e f g
+  [ -n "$SV_EXP_PID" ] || return 0
+  kill -0 "$SV_EXP_PID" 2>/dev/null && return 0
+  wait "$SV_EXP_PID" 2>/dev/null
+  SV_EXP_PID=
+  [ -f "$SD/tokens.res" ] || return 0
+  read -r a b c d e f g <"$SD/tokens.res"
+  rm -f "$SD/tokens.res"
+  if [ "$a" = fail ] || ! is_uint "$a"; then
+    sv_stream_tokens
+  else
+    SP_Tokens_In=$a SP_Tokens_Out=$b SP_Tokens_Reasoning=$c SP_Tokens_Cache_Read=$d SP_Tokens_Cache_Write=$e SP_Cost=$f
+    SP_Tokens_Source=export SP_Sub_Sessions=$g
+  fi
+  sp_write "$SD"
+}
+
+# sv_turn_files — carry what the wrapper saw into the record: the last growth of the
+# stream (Last-Event) and the session id (the "subagent" check works from the first turn)
+sv_turn_files() {
+  local x= ch=
+  [ -f "$SD/turn.event" ] && IFS= read -r x <"$SD/turn.event"
+  if is_uint "$x" && [ "$x" != "$SP_Last_Event" ]; then
+    SP_Last_Event=$x
+    ch=1
+  fi
+  if [ -z "$SP_Session" ] && [ -f "$SD/turn.session" ]; then
+    x=
+    IFS= read -r x <"$SD/turn.session"
+    case $x in ses_*[!A-Za-z0-9_-]* | '') ;; ses_*)
+      SP_Session=$x
+      ch=1
+      ;;
+    esac
+  fi
+  [ -z "$ch" ] || sp_write "$SD"
+}
+
+# sv_turn — one turn: the prompt ($SD/prompt.new) to the harness through the wrapper
+sv_turn() {
+  local n=$((${SP_Turn:-0} + 1)) off=0 eoff=0 s wp seen_at=0
+  if [ -f "$SD/events.log" ]; then # rotation before a turn
+    s=$(wc -c <"$SD/events.log")
+    s=${s//[!0-9]/}
+    [ "${s:-0}" -le 52428800 ] || mv -f "$SD/events.log" "$SD/events.log.1"
+  fi
+  [ -f "$SD/events.log" ] && off=$(wc -c <"$SD/events.log")
+  [ -f "$SD/stderr.log" ] && eoff=$(wc -c <"$SD/stderr.log")
+  off=${off//[!0-9]/} eoff=${eoff//[!0-9]/}
+  printf '%s %s\n' "${off:-0}" "${eoff:-0}" >"$SD/turn.$n.off"
+  mv -f "$SD/prompt.new" "$SD/prompt.$n"
+  rm -f "$SD/prompt.$((n - 5))" "$SD/turn.$((n - 5)).off" "$SD/turn.$((n - 5)).exit" "$SD/turn.$((n - 5)).idle"
+  head -n 8 "$SD/prompt.$n" 2>/dev/null | awk "$AWK_MASK"'
+{ print mask($0) }' >"$SD/.prompt.head.$$" && mv -f "$SD/.prompt.head.$$" "$SD/prompt.head"
+  rm -f "$SD/turn.stop" "$SD/turn.pid" "$SD/turn.hb" "$SD/turn.event" "$SD/turn.session" "$SD/turn.$n.exit" "$SD/turn.marker"
+  SV_L0=
+  [ -f "$RUN/wait/$AGENT.last" ] && IFS= read -r SV_L0 <"$RUN/wait/$AGENT.last"
+  get_now
+  SP_Turn=$n SP_Turn_Start=$NOW SP_Turn_End= SP_Turn_Result= SP_Turn_Stopped= SP_Last_Event= SP_State=running
+  sp_write "$SD"
+  sv_act turn "ход $n начат${SP_Session:+ · сессия $SP_Session}"
+  SV_STOPREQ= SV_PEND_RM=
+  set -m
+  bash "$BRG_SELF" __turn "$SV_S" "$n" </dev/null >/dev/null 2>>"$SD/supervisor.log" &
+  wp=$!
+  set +m
+  while kill -0 "$wp" 2>/dev/null; do
+    sv_sleep
+    sv_tick
+    if [ $((NOW - seen_at)) -ge "$HEARTBEAT" ]; then
+      touch_seen "$AGENT"
+      seen_at=$NOW
+    fi
+    sv_turn_files
+    if [ -e "$SD/rm" ] && [ -z "$SV_STOPREQ" ]; then
+      : >"$SD/turn.stop"
+      SV_STOPREQ=1 SV_PEND_RM=1
+      sv_log "rm: ход $n останавливается"
+    fi
+    [ ! -e "$SD/wake" ] || rm -f "$SD/wake" # the turn goes on anyway
+  done
+  wait "$wp" 2>/dev/null
+  sv_turn_end "$n"
+}
+
+# sv_turn_end N — the outcome of turn N: activity, tokens, the result, the rollback, HOLD
+sv_turn_end() {
+  local n=$1 code= ep= off=0 eoff=0 x line k res err= perm= last=$SD/.last.$$ tl= tin=0 tout=0 trs=0 tcr=0 tcw=0 tcost=0 sid=
+  [ -f "$SD/turn.$n.exit" ] && { IFS= read -r code && IFS= read -r ep; } <"$SD/turn.$n.exit"
+  get_now
+  is_uint "$ep" || ep=$NOW
+  [ -f "$SD/turn.$n.off" ] && read -r off eoff <"$SD/turn.$n.off"
+  is_uint "$off" || off=0
+  is_uint "$eoff" || eoff=0
+  sv_turn_files
+  SV_CHILDREN_NEW=
+  rm -f "$last"
+  [ -f "$SD/events.log" ] &&
+    tl=$(tail -c +$((off + 1)) "$SD/events.log" 2>/dev/null | SP_LAST=$last awk -v now="$NOW" "$AWK_MASK$AWK_SPEV")
+  while IFS= read -r line; do
+    case $line in
+      A"$TAB"*) printf '%s\n' "${line#A"$TAB"}" >>"$SD/activity.log" ;;
+      S"$TAB"*) sid=${line#S"$TAB"} ;;
+      T"$TAB"*)
+        set -- $line
+        tin=$2 tout=$3 trs=$4 tcr=$5 tcw=$6 tcost=$7
+        ;;
+      E"$TAB"*) err=${line#E"$TAB"} ;;
+      C"$TAB"*) SV_CHILDREN_NEW="$SV_CHILDREN_NEW ${line#C"$TAB"}" ;;
+      P"$TAB"*) [ -n "$perm" ] || perm=${line#P"$TAB"} ;;
+    esac
+  done <<BRG_EV
+$tl
+BRG_EV
+  # a refused permission: the stderr line of OpenCode (escape sequences dropped)
+  if [ -f "$SD/stderr.log" ]; then
+    x=$(tail -c +$((eoff + 1)) "$SD/stderr.log" 2>/dev/null | sed "s/$ESC\[[0-9;?]*[A-Za-z]//g" |
+      awk '/permission requested:/ && /auto-rejecting/ { s = $0; sub(/.*permission requested: */, "", s); sub(/; *auto-rejecting.*/, "", s); print s; exit }')
+    if [ -n "$x" ]; then
+      mask_v x "$x"
+      perm=$x
+    fi
+  fi
+  if [ -n "$SV_STOPREQ" ]; then
+    res=interrupted
+  elif [ "$code" = 0 ] && [ -z "$err" ]; then
+    res=ok
+  else
+    res=crash
+    if [ -z "$err" ]; then
+      if is_uint "$code"; then err="код выхода $code"; else err="обёртка хода пропала"; fi
+    fi
+  fi
+  SP_Turn_End=$ep SP_Turn_Result=$res
+  SP_Turn_Stopped=
+  sv_stopped_now && SP_Turn_Stopped=1
+  [ -n "$SP_Session" ] || [ -z "$sid" ] || SP_Session=$sid
+  if [ -s "$last" ]; then SP_BODY=$(cat "$last"); fi
+  rm -f "$last"
+  # the stream: the main session only, summed over the turns
+  x=$(printf '%s %s %s %s %s %s\n' "$tin" "$tout" "$trs" "$tcr" "$tcw" "$tcost" | cat - "$SD/stream.tok" 2>/dev/null |
+    awk '{ for (i = 1; i <= 6; i++) s[i] += $i } END { printf "%d %d %d %d %d %.6f", s[1], s[2], s[3], s[4], s[5], s[6] }')
+  printf '%s\n' "$x" >"$SD/stream.tok.tmp" && mv -f "$SD/stream.tok.tmp" "$SD/stream.tok"
+  for x in $SV_CHILDREN_NEW; do
+    [ -f "$SD/children" ] && awk -v id="$x" '$1 == id { f = 1 } END { exit !f }' "$SD/children" && continue
+    printf '%s\n' "$x" >>"$SD/children"
+  done
+  if [ "$SP_Tokens_Source" != export ] || [ "${CFG_spawn_opencode_export:-1}" != 1 ]; then sv_stream_tokens; fi
+  # what to deliver again: only by the result, not by the stop; a tail wait — always
+  case $res in crash | interrupted) SV_ROLL=1 ;; esac
+  get_now
+  wait_info "$AGENT"
+  if [ -n "$WI_ALIVE" ]; then
+    SV_ROLL=1
+  else
+    x=
+    [ -f "$RUN/wait/$AGENT.last" ] && IFS= read -r x <"$RUN/wait/$AGENT.last"
+    if is_uint "$x" && [ "$x" != "$SV_L0" ] && [ "$x" -ge "$ep" ]; then SV_ROLL=1; fi
+  fi
+  if [ -n "$perm" ]; then
+    SP_Last_Error="отказ в правах: $perm"
+    SP_Perm_Denied=$perm # stays on the board until the rights change (a good turn does not clear it)
+    sv_act permission "отказ в правах: $perm"
+  fi
+  case $res in
+    crash)
+      [ -n "$perm" ] || SP_Last_Error=$err
+      [ "$SP_Hold" = 1 ] || sv_notify_lead "$n" "$err" # one message per series
+      SP_Hold=1
+      # HOLD (DESIGN §5.5): the marks are what the crashed turn saw — the Pending of each channel
+      # before the rollback; whatever it did not see (even what came during the turn) wakes
+      w_hold_marks pending
+      printf '%s\n' "$W_HOLDM" >"$SD/.hold.marks.$$" && mv -f "$SD/.hold.marks.$$" "$SD/hold.marks"
+      ;;
+    ok)
+      [ -n "$perm" ] || SP_Last_Error=
+      SP_Hold=
+      ;;
+  esac
+  if [ "$SP_Hold" = 1 ]; then SP_State=crashed; else SP_State=frozen; fi
+  sp_write "$SD"
+  sv_act end "ход $n: $res${err:+ — $err}"
+  rm -f "$SD/turn.stop"
+  SV_EXPORT=1
+  [ -z "$SV_PEND_RM" ] || sv_do_rm
+}
+
+# sv_turn_alive — is the wrapper of the current turn alive? (the supervisor after a restart:
+# watching — HB_JUDGE — before a live pid with a silent turn.hb counts as dead)
+sv_turn_alive() {
+  local h= p e
+  [ -f "$SD/turn.hb" ] && { IFS= read -r h <"$SD/turn.hb"; } 2>/dev/null
+  p=${h%% *}
+  e=${h#* }
+  if is_uint "$p" && is_uint "$e" && [ "$h" = "$p $e" ]; then
+    if pid_alive "$p"; then
+      [ $((NOW - e)) -le "$SPAWN_STALE" ] && return 0
+      [ -z "$HB_JUDGE" ]
+      return
+    fi
+    [ $((NOW - e)) -lt "$RUNNER_DEAD_GRACE" ]
+    return
+  fi
+  h=
+  [ -f "$SD/turn.pid" ] && { IFS= read -r h <"$SD/turn.pid"; } 2>/dev/null
+  is_uint "$h" && pid_alive "$h" && [ -z "$HB_JUDGE" ]
+}
+
+# sv_recover — a new supervisor of a launch with turns behind it: the turn in progress (if
+# any) is waited for — no second turn while its wrapper lives — and judged by its code
+sv_recover() {
+  local n=$SP_Turn
+  SV_ROLL=1
+  [ "$SP_State" = running ] || return 0
+  if [ ! -f "$SD/turn.$n.exit" ] && [ ! -f "$SD/turn.pid" ] && [ ! -f "$SD/turn.hb" ]; then
+    # the previous supervisor died between "running" and starting the wrapper: no turn was made
+    sv_log "восстановление: ход $n не начинался"
+    SP_Turn=$((n - 1)) SP_State=frozen
+    [ "$SP_Hold" != 1 ] || SP_State=crashed
+    sp_write "$SD"
+    return 0
+  fi
+  sv_log "восстановление: ход $n"
+  hb_obs_init
+  while [ ! -f "$SD/turn.$n.exit" ]; do
+    get_now
+    hb_obs_tick "$SPAWN_STALE"
+    sv_turn_alive || break
+    if [ -e "$SD/rm" ] && [ ! -e "$SD/turn.stop" ]; then
+      : >"$SD/turn.stop"
+      SV_STOPREQ=1 SV_PEND_RM=1
+    fi
+    sv_turn_files
+    sv_sleep
+    sv_tick
+  done
+  SV_L0=
+  sv_turn_end "$n"
+  SV_ROLL=1
+}
+
+# sv_stopped — the human's stop: no wait (the agent ages like any other); the flags are served
+sv_stopped() {
+  SP_State=stopped
+  sp_write "$SD"
+  sv_act stop "стоп человека"
+  while sv_stopped_now; do
+    sv_sleep
+    sv_tick
+    [ ! -e "$SD/rm" ] || sv_do_rm
+    [ ! -e "$SD/detach" ] || sv_do_detach
+    [ ! -e "$SD/wake" ] || rm -f "$SD/wake"
+  done
+  sv_act stop "стоп снят"
+  if [ "$SP_Turn_Stopped" = 1 ]; then # the stop broke off its work: one wake with all that piled up
+    SV_FORCE=1
+    SV_REASON="$SV_REASON$NL── стоп снят человеком: проверь status; есть начатая работа — продолжай, нет — заверши ход"
+    SP_Turn_Stopped=
+  fi
+}
+
+# sv_noresult — the wait left no result (died through die, or was killed): why?
+sv_noresult() {
+  local x
+  profile_read "$ROOT/agents/$AGENT"
+  [ -z "$P_LEFT" ] || sv_removed "агент отключился (leave)"
+  if [ "$P_KEY" != "$SV_KEY" ] || [ "$P_SPAWN" != "$SV_S" ]; then
+    SP_State=detached
+    sp_write "$SD"
+    sv_act end "под именем $AGENT подключилась другая сессия — запуск окончен"
+    sv_log "ключ сменился (join --as) — detached"
+    exit 0
+  fi
+  x=$(head -n 2 "$SD/wait.err" 2>/dev/null | tr '\n' ' ')
+  mask_v x "$x"
+  utf8_cut_v x "$x" 300
+  SP_Last_Error="надзорный wait не запустился: ${x:-без вывода}"
+  sp_write "$SD"
+  sv_log "$SP_Last_Error"
+}
+
+# sv_backoff DUR — a wait over in less than 2 s without a proper result: a growing pause
+# (1, 2, 4 … ≤ 60 s), not a hot loop of forks
+sv_backoff() {
+  if [ "$1" -lt 2 ]; then
+    SV_BACKOFF=$((SV_BACKOFF * 2))
+    [ "$SV_BACKOFF" -ge 1 ] || SV_BACKOFF=1
+    [ "$SV_BACKOFF" -le 60 ] || SV_BACKOFF=60
+  else
+    SV_BACKOFF=1
+  fi
+  sv_pause "$SV_BACKOFF"
+}
+
+# sv_maybe_exec — brg was updated (VERSION of the project ≠ ours): go on in the new code
+# (the lock stays ours: same pid). Between turns only.
+sv_maybe_exec() {
+  local v=
+  [ -f "$ROOT/VERSION" ] && IFS= read -r v <"$ROOT/VERSION"
+  [ -n "$v" ] && [ "$v" != "$BRG_VERSION" ] || return 0
+  [ "${BRG_SPAWN_EXECVER:-}" != "$v" ] || return 0 # this very image came from that update
+  [ -z "$SV_EXP_PID" ] || return 0                 # the export of tokens first: its result is ours to take
+  [ -f "$ROOT/bin/brg" ] || return 0
+  sv_log "brg обновлён ($BRG_VERSION → $v): надзор продолжает на новом коде"
+  BRG_SPAWN_EXECVER=$v
+  export BRG_SPAWN_EXECVER
+  exec bash "$ROOT/bin/brg" __spawn "$SV_S" --continue ${SV_ROLL:+--roll} ${SV_FORCE:+--force}
+}
+
+# sv_prompt_compose — the prompt of a wake-up: who, why, the output of wait as it is
+sv_prompt_compose() {
+  local n=$((${SP_Turn:-0} + 1))
+  {
+    if [ -z "$SP_Session" ]; then # the first turn failed before its first event: start over
+      spawn_first_prompt "$AGENT.$SV_KEY"
+      echo
+    fi
+    printf '── brg разбудил тебя (%s, ход %s) — ты %s\n' "$SV_S" "$n" "$AGENT.$SV_KEY"
+    [ -z "$SV_REASON" ] || printf '%s\n' "${SV_REASON#"$NL"}"
+    cat "$SD/prompt.next.tmp" 2>/dev/null
+  } >"$SD/prompt.new"
+  SV_REASON=
+}
+
+# sv_wait_phase — the agent is free: the supervisor's wait until something wakes it
+sv_wait_phase() {
+  local res t0 dur wp x k
+  while :; do
+    sv_tick
+    [ ! -e "$SD/rm" ] || sv_do_rm
+    [ ! -e "$SD/detach" ] || sv_do_detach
+    if [ -e "$SD/wake" ]; then
+      rm -f "$SD/wake"
+      SV_FORCE=1 SP_Hold=
+      SV_REASON="$SV_REASON$NL── человек попросил продолжить: проверь status; есть работа — продолжай, нет — заверши ход"
+    fi
+    [ ! -e "$SD/rights" ] || { sv_apply_rights && SV_FORCE=1; }
+    sv_maybe_exec
+    if [ -z "$SV_CONFLICT" ]; then
+      if [ "$SP_Hold" = 1 ]; then x=crashed; else x=frozen; fi
+      if [ "$SP_State" != "$x" ]; then
+        SP_State=$x
+        sp_write "$SD"
+      fi
+    fi
+    profile_read "$ROOT/agents/$AGENT"
+    SV_KEY=$P_KEY
+    rm -f "$SD/wait.res" "$SD/prompt.next.tmp"
+    get_now
+    t0=$NOW
+    BRG_SPAWN_WAIT=$SD/wait.res BRG_SPAWN_ID=$SV_S BRG_SPAWN_HOLD=${SP_Hold:+1} BRG_SPAWN_FORCE=${SV_FORCE:+1} \
+      BRG_SPAWN_ROLLBACK=${SV_ROLL:+1} bash "$RROOT/bin/brg" wait --as "$AGENT.$SV_KEY" --timeout "$SPAWN_WT" \
+      </dev/null >"$SD/prompt.next.tmp" 2>"$SD/wait.err" &
+    wp=$!
+    if [ -n "$SV_EXPORT" ]; then # after the start of the wait: the wake-up is not held up
+      SV_EXPORT=
+      sv_export_start
+    fi
+    while kill -0 "$wp" 2>/dev/null; do
+      sv_sleep
+      sv_tick
+      sv_export_check
+    done
+    wait "$wp" 2>/dev/null
+    get_now
+    dur=$((NOW - t0))
+    res= x=
+    [ -f "$SD/wait.res" ] && { IFS= read -r res && IFS= read -r x; } <"$SD/wait.res"
+    # the wishes are dropped only when served: the rollback when the wait says it was done (a
+    # stop, a missing result keep it), FORCE when the wait delivered
+    [ "$x" != rolled ] || SV_ROLL=
+    case $res in msg | deadline | pause_end | force) SV_FORCE= ;; esac
+    [ "$res" = superseded ] || SV_CONFLICT=
+    case $res in
+      msg | deadline | pause_end | force)
+        SV_BACKOFF=0
+        if [ -e "$SD/rm" ] || [ -e "$SD/detach" ]; then
+          sv_rollback_now
+          [ ! -e "$SD/rm" ] || sv_do_rm
+          sv_do_detach
+        fi
+        if [ -e "$SD/wake" ]; then
+          rm -f "$SD/wake"
+          SP_Hold=
+          case $SV_REASON in *"человек попросил продолжить"*) ;; *)
+            SV_REASON="$SV_REASON$NL── человек попросил продолжить: проверь status; есть работа — продолжай, нет — заверши ход"
+            ;;
+          esac
+        fi
+        [ ! -e "$SD/rights" ] || sv_apply_rights
+        sv_prompt_compose
+        return 0
+        ;;
+      flag:rm) sv_do_rm ;;
+      flag:detach) sv_do_detach ;;
+      timeout | epipe) SV_BACKOFF=0 ;;
+      stop) sv_stopped ;;
+      left) sv_removed "агент отключился (leave)" ;;
+      superseded)
+        # another wait under the name (most often the tail of a turn): take over again, with a
+        # rollback — not "taken into a window"; again and again — a conflict, retries every 30 s
+        SV_ROLL=1
+        SV_SUP="$SV_SUP $NOW"
+        x=
+        for k in $SV_SUP; do [ $((NOW - k)) -le 60 ] && x="$x $k"; done
+        SV_SUP=$x
+        set -- $SV_SUP
+        if [ $# -ge 3 ]; then
+          SV_CONFLICT=1
+          if [ "$SP_State" != conflict ]; then
+            SP_State=conflict
+            sp_write "$SD"
+            sv_act error "конфликт: под именем $AGENT работает другой wait"
+          fi
+          sv_pause 30
+        else
+          sv_pause 1
+        fi
+        ;;
+      '')
+        SV_ROLL=1
+        sv_noresult
+        sv_backoff "$dur"
+        ;;
+      *) sv_backoff "$dur" ;; # orphan, a signal, anything else
+    esac
+  done
+}
+
+# sv_first_turn — the first turn: after the stop is lifted, the first prompt
+sv_first_turn() {
+  local w=
+  while sv_stopped_now; do
+    if [ -z "$w" ]; then
+      w=1
+      sv_act stop "стоп человека — первый ход после его снятия"
+    fi
+    [ ! -e "$SD/rm" ] || sv_do_rm
+    [ ! -e "$SD/detach" ] || sv_do_detach
+    [ ! -e "$SD/wake" ] || rm -f "$SD/wake"
+    sv_sleep
+    sv_tick
+  done
+  [ ! -e "$SD/rm" ] || sv_do_rm
+  [ ! -e "$SD/detach" ] || sv_do_detach
+  rm -f "$SD/wake"
+  [ ! -e "$SD/rights" ] || sv_apply_rights
+  SV_REASON=
+  profile_read "$ROOT/agents/$AGENT"
+  SV_KEY=$P_KEY
+  spawn_first_prompt "$AGENT.$SV_KEY" >"$SD/prompt.new"
+  sv_turn
+}
+
+spawn_supervisor() {
+  local fd cont= roll= force=
+  SV_S=${1:-}
+  [ $# -gt 0 ] && shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --continue) cont=1 ;;
+      --roll) roll=1 ;;
+      --force) force=1 ;;
+    esac
+    shift
+  done
+  for fd in 3 4 5 6 7 8 9; do eval "exec $fd>&-" 2>/dev/null; done
+  trap '' HUP # as nohup does: the end of a terminal or of the server is not ours
+  CMD=__spawn
+  unset BRG_SPAWN OPENCODE_SESSION_ID BRG_AS BRG_SPAWN_WAIT BRG_SPAWN_ID BRG_SPAWN_HOLD BRG_SPAWN_FORCE BRG_SPAWN_ROLLBACK
+  spawn_norm_id_v SV_S "$SV_S" || exit 2
+  SD=$RUN/spawn/$SV_S
+  SV_LOCK=$LOCKS/spawn.$SV_S.lock
+  [ -f "$SD/spawn" ] || exit 0
+  cd "$PROJ" || exit 1
+  case $ROOT in "$PROJ"/.brigada) BRG="bash .brigada/bin/brg" ;; esac
+  sv_setup
+  if ! spawn_lock_try "$SV_S" $((SPAWN_STALE + 5)); then
+    sv_log "надзор $SV_S (pid $$): лок держит другой надзор (${SL_WHY:-?}) — выхожу"
+    exit 0
+  fi
+  get_now
+  spawn_hb
+  sp_read "$SD" || exit 0
+  case $SP_State in detached | removed)
+    sv_log "надзор $SV_S: запуск уже $SP_State — выхожу"
+    exit 0
+    ;;
+  esac
+  AGENT=$SP_Agent
+  AGENT_FILE=$ROOT/agents/$AGENT
+  if ! valid_name "$AGENT" || [ ! -f "$AGENT_FILE" ]; then
+    sv_log "надзор $SV_S: нет агента ${AGENT:-?}"
+    exit 1
+  fi
+  SP_Supervisor=$$
+  sp_write "$SD"
+  sv_log "надзор $SV_S ($AGENT): pid $$${cont:+ · продолжает после обновления brg}"
+  SV_ROLL=$roll SV_FORCE=$force SV_REASON= SV_BACKOFF=0 SV_SUP= SV_CONFLICT= SV_EXPORT= SV_STOPREQ= SV_PEND_RM= SV_L0=
+  if [ -z "$cont" ] && is_uint "$SP_Turn" && [ "$SP_Turn" -gt 0 ]; then sv_recover; fi
+  if ! is_uint "$SP_Turn" || [ "$SP_Turn" -eq 0 ]; then sv_first_turn; fi
+  while :; do
+    sv_wait_phase
+    sv_turn
+  done
+}
+
+# ── the turn wrapper: brg __turn S00N N (a process of its own; the harness is its child) ──
+spawn_turn() {
+  local S=${1:-} n=${2:-} fd bin args argv cpid rc stop_at= hbw=0 evw=0 off=0 x sess
+  for fd in 3 4 5 6 7 8 9; do eval "exec $fd>&-" 2>/dev/null; done
+  trap '' HUP
+  CMD=__turn
+  spawn_norm_id_v S "$S" || exit 2
+  is_uint "$n" || exit 2
+  SD=$RUN/spawn/$S
+  sp_read "$SD" || exit 1
+  sv_setup
+  printf '%s\n' "$$" >"$SD/.turn.pid.$$" && mv -f "$SD/.turn.pid.$$" "$SD/turn.pid"
+  [ -f "$SD/turn.$n.off" ] && read -r off x <"$SD/turn.$n.off"
+  is_uint "$off" || off=0
+  sess=$SP_Session
+  bin=${CFG_spawn_opencode_bin:-opencode}
+  args=${CFG_spawn_opencode_args-}
+  set -f
+  # shellcheck disable=SC2206 # the arguments of the config, word by word
+  argv=(run $args --format json --model "$SP_Model")
+  set +f
+  [ "$SP_Rights" = project ] || argv[${#argv[@]}]=--auto
+  if [ -n "$sess" ]; then
+    argv[${#argv[@]}]=--session
+    argv[${#argv[@]}]=$sess
+  fi
+  argv[${#argv[@]}]=--title
+  argv[${#argv[@]}]="brigada $S $SP_Agent"
+  # the harness: our child, in its own group (set -m: without it bash gives a background
+  # command SIGINT = SIG_IGN), with the human's locale and BRG_SPAWN; the prompt on stdin
+  set -m
+  (
+    cd "$PROJ" || exit 127
+    if [ "$SP_Locale_Set" = 1 ]; then
+      LC_ALL=$SP_Locale
+      export LC_ALL
+    else
+      unset LC_ALL
+    fi
+    unset BRG_AS BRG_VIA_CMD BRG_SPAWN_WAIT BRG_SPAWN_HOLD BRG_SPAWN_FORCE BRG_SPAWN_ROLLBACK BRG_SPAWN_ID BRG_CMD_LC BRG_CMD_LC_SET BRG_SPAWN_EXECVER
+    BRG_SPAWN=$S
+    export BRG_SPAWN
+    exec "$bin" "${argv[@]}"
+  ) <"$SD/prompt.$n" >>"$SD/events.log" 2>>"$SD/stderr.log" &
+  cpid=$!
+  set +m
+  : >"$SD/turn.marker"
+  while kill -0 "$cpid" 2>/dev/null; do
+    sleep "$SV_STEP" &
+    wait $! 2>/dev/null
+    get_now
+    if [ "$NOW" != "$hbw" ]; then
+      printf '%s %s\n' "$$" "$NOW" >"$SD/.turn.hb.$$" && mv -f "$SD/.turn.hb.$$" "$SD/turn.hb"
+      hbw=$NOW
+    fi
+    if [ ! -d "$SD" ] || { [ -n "$SV_MAXLIFE" ] && [ $((NOW - SV_T0)) -ge "$SV_MAXLIFE" ]; }; then
+      [ -n "$stop_at" ] || { kill -INT "$cpid" 2>/dev/null; stop_at=$NOW; } # then TERM, KILL below
+    fi
+    if [ -z "$stop_at" ]; then
+      if [ -e "$SD/turn.stop" ]; then
+        kill -INT "$cpid" 2>/dev/null # OpenCode stops the session and its tool groups
+        stop_at=$NOW
+      fi
+    elif [ $((NOW - stop_at)) -ge 10 ]; then
+      kill -KILL "$cpid" 2>/dev/null
+    elif [ $((NOW - stop_at)) -ge 5 ]; then
+      kill -TERM "$cpid" 2>/dev/null
+    fi
+    if [ $((NOW - evw)) -ge 5 ]; then
+      evw=$NOW
+      if [ "$SD/events.log" -nt "$SD/turn.marker" ]; then
+        printf '%s\n' "$NOW" >"$SD/.turn.event.$$" && mv -f "$SD/.turn.event.$$" "$SD/turn.event"
+        : >"$SD/turn.marker"
+      fi
+    fi
+    if [ -z "$sess" ] && [ ! -f "$SD/turn.session" ] && [ -f "$SD/events.log" ]; then
+      x=$(tail -c +$((off + 1)) "$SD/events.log" 2>/dev/null | sed -n 's/.*"sessionID":"\(ses_[A-Za-z0-9_-]*\)".*/\1/p' | head -n 1)
+      if [ -n "$x" ]; then
+        sess=$x
+        printf '%s\n' "$x" >"$SD/.turn.session.$$" && mv -f "$SD/.turn.session.$$" "$SD/turn.session"
+      fi
+    fi
+  done
+  wait "$cpid" 2>/dev/null
+  rc=$?
+  [ -d "$SD" ] || exit 0
+  get_now
+  printf '%s\n%s\n' "$rc" "$NOW" >"$SD/.turn.exit.$$" && mv -f "$SD/.turn.exit.$$" "$SD/turn.$n.exit"
+  rm -f "$SD/turn.hb" "$SD/turn.pid" "$SD/turn.marker"
+  exit 0
+}
+
+# ── brg spawn: the human's commands (DESIGN §5.5, §9) ──
+# spawn_human_only — launching and steering agents is the human's: not with --as <agent>,
+# not from a process of a launched agent (BRG_SPAWN) or of OpenCode (OPENCODE_SESSION_ID)
+spawn_human_only() {
+  if { [ -n "$OPT_AS" ] && [ "$OPT_AS" != human ]; } || [ -n "${BRG_SPAWN:-}" ] || [ -n "${OPENCODE_SESSION_ID:-}" ]; then
+    NEXT_ON_ERR=
+    [ -z "$OPT_AS" ] || [ "$OPT_AS" = human ] || ! valid_name "$OPT_AS" || NEXT_ON_ERR="$(next_wait)"
+    die "запускает агентов только человек; попроси его: send --to human --ask" \
+      "Человеку: brg spawn <харнесс> --model <модель> (или «Добавить агента» на доске brg board)."
+  fi
+}
+# spawn_bin_v VAR HARNESS — the harness's binary (spawn.<h>.bin, a name or a path); 1 if not found
+spawn_bin_v() {
+  local _sb_b _sb_k=CFG_spawn_${2}_bin _sb_r=
+  eval "_sb_b=\${$_sb_k:-$2}"
+  case $_sb_b in
+    */*) [ -x "$_sb_b" ] && [ -f "$_sb_b" ] && _sb_r=$_sb_b ;;
+    *) _sb_r=$(type -P "$_sb_b" 2>/dev/null) ;;
+  esac
+  eval "$1=\$_sb_r"
+  [ -n "$_sb_r" ]
+}
+# spawn_start S — the supervisor, detached like the runner of brg run: its own process group
+# and nohup, every fd redirected (the caller — a terminal, the server — does not wait for it)
+spawn_start() {
+  local x=nohup
+  command -v nohup >/dev/null 2>&1 || x=
+  set -m
+  $x bash "$BRG_SELF" __spawn "$1" </dev/null >/dev/null 2>>"$RUN/spawn/$1/supervisor.log" &
+  set +m
+}
+
+# spawn_silent_restart S — the supervisor's pid is alive but it has been silent for longer than
+# spawn_stale (stopped, hung, or the pid is someone else's after a reboot): nobody serves the
+# flags. A new supervisor watches it and takes the lock over once the silence is proven (the old
+# one, if it wakes, sees the lock gone and leaves).
+spawn_silent_restart() {
+  spawn_start "$1"
+  echo "── $1: надзор не отвечает (pid жив, признаков жизни нет) — запущен новый: он заберёт лок через ≤ $((SPAWN_STALE + 5)) с и выполнит просьбу; если старый оживёт — новый выйдет."
+}
+
+cmd_spawn() {
+  case ${1:-} in
+    '' | -h | --help)
+      usage_print spawn
+      [ -n "${1:-}" ] && exit 0
+      exit 1
+      ;;
+    list | show)
+      local x=$1
+      shift
+      "spawn_$x" "$@"
+      ;;
+    wake | rm | detach | rights) spawn_ctl "$@" ;;
+    -*) usage_die "сначала харнесс: brg spawn opencode --model <провайдер/модель>" ;;
+    *) spawn_new "$@" ;;
+  esac
+}
+
+spawn_new() {
+  local raw_h=$1 h m= r=full cnt=1 note= i n s d x lcset lc bin out name mean
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --model | --rights | --count | --note | --as)
+        [ $# -ge 2 ] || usage_die "$1 требует значение"
+        case $1 in
+          --model) m=$2 ;;
+          --rights) r=$2 ;;
+          --count) cnt=$2 ;;
+          --note) note=$2 ;;
+          --as) OPT_AS=$2 ;;
+        esac
+        shift 2
+        ;;
+      -h | --help)
+        usage_print spawn
+        exit 0
+        ;;
+      *) usage_die "неизвестный параметр: $1" ;;
+    esac
+  done
+  spawn_human_only
+  need_root
+  detect_platform
+  case $PLATFORM in
+    Darwin | Linux) ;;
+    *) die "запуск агентов на $PLATFORM пока не поддерживается (только macOS и Linux)" "Подключай агентов вручную: «подключись к бригаде» в окне харнесса." ;;
+  esac
+  norm_harness_v h "$raw_h"
+  case " $SPAWN_SUPPORTED " in
+    *" $h "*) ;;
+    *) die "харнесс ${h:-$raw_h} пока не поддерживается: brg запускает только $SPAWN_SUPPORTED (Claude Code и Codex — позже)" "Подключай его вручную: «подключись к бригаде» в окне харнесса." ;;
+  esac
+  [ -n "$m" ] || usage_die "нужна --model <провайдер/модель> (как в харнессе)"
+  case $m in
+    [A-Za-z0-9]*) ;;
+    *) usage_die "--model — имя модели (буквы, цифры, ._:/@#+-; не с -): $m" ;;
+  esac
+  case $m in *[!A-Za-z0-9._:/@#+-]*) usage_die "--model — имя модели (буквы, цифры, ._:/@#+-; не с -): $m" ;; esac
+  [ ${#m} -le 120 ] || usage_die "--model длиннее 120 символов"
+  case $r in full | project) ;; *) usage_die "--rights — full или project: $r" ;; esac
+  case $cnt in [1-9]) ;; *) usage_die "--count — от 1 до 9: $cnt" ;; esac
+  case $note in *[[:cntrl:]]*) usage_die "--note — одна строка без управляющих символов" ;; esac
+  [ ${#note} -le 200 ] || usage_die "--note длиннее 200 байт (${#note})"
+  spawn_bin_v bin "$h" || die "не найден бинарь харнесса $h: ${CFG_spawn_opencode_bin:-$h}" "Установи его или укажи путь в $RROOT/config: spawn.$h.bin: /путь/к/$h"
+  # the human's locale (brg exports LC_ALL=C): from the board's server — what it was given
+  if [ -n "${BRG_CMD_LC_SET+x}" ]; then
+    lcset=$BRG_CMD_LC_SET lc=${BRG_CMD_LC-}
+  else
+    lcset=$_brg_lc_set lc=$_brg_lc
+  fi
+  case $lc in *[!A-Za-z0-9._@-]*) lc= lcset= ;; esac
+  spawn_rights_v mean "$r"
+  if [ -e "$RUN/stopped" ]; then
+    echo "Внимание: бригада остановлена (stop) — первый ход агентов начнётся после снятия стопа (brg resume)."
+  fi
+  i=0
+  while [ "$i" -lt "$cnt" ]; do
+    i=$((i + 1))
+    mkdir -p "$RUN/spawn" 2>/dev/null || die "не удалось создать $RUN/spawn"
+    lock_acquire spawnseq # the number of the launch (not spawn.S00N: that is a supervisor)
+    n=
+    [ -f "$RUN/spawn.seq" ] && IFS= read -r n <"$RUN/spawn.seq"
+    is_uint "$n" || n=0
+    while :; do
+      n=$((10#$n + 1))
+      printf -v s 'S%03d' "$n"
+      mkdir "$RUN/spawn/$s" 2>/dev/null && break
+    done
+    printf '%s\n' "$n" >"$RUN/.spawn.seq.$$" && mv_retry "$RUN/.spawn.seq.$$" "$RUN/spawn.seq"
+    lock_release spawnseq
+    d=$RUN/spawn/$s
+    get_now_iso
+    for x in $SP_FIELDS; do eval "SP_${x//-/_}="; done
+    SP_BODY=
+    SP_Id=$s SP_Harness=$h SP_Model=$m SP_Rights=$r SP_State=starting SP_Note=$note SP_Created=$ISO SP_Created_Epoch=$NOW
+    SP_Turn=0 SP_Locale_Set=$lcset SP_Locale=$lc SP_Tokens_In=0 SP_Tokens_Out=0 SP_Tokens_Reasoning=0
+    SP_Tokens_Cache_Read=0 SP_Tokens_Cache_Write=0 SP_Cost=0.000000 SP_Tokens_Source=stream SP_Sub_Sessions=0
+    sp_write "$d" || die "не удалось записать $d/spawn"
+    # the same join as an agent's (DESIGN §5.5), its output goes into the first prompt
+    (
+      JOIN_SPAWN=$s
+      [ "$ROOT" != "$PROJ/.brigada" ] || BRG="bash .brigada/bin/brg"
+      cd "$PROJ" || exit 1
+      cmd_join --harness "$h" --model "$m"
+    ) >"$d/join.out" 2>&1
+    name=
+    while IFS= read -r x; do
+      case $x in "── подключён: "*)
+        name=${x#"── подключён: "}
+        name=${name%% *}
+        break
+        ;;
+      esac
+    done <"$d/join.out"
+    if [ -z "$name" ]; then
+      out=$(cat "$d/join.out")
+      rm -rf "$d"
+      die "join не удался — агент не запущен" "$out"
+    fi
+    SP_Agent=${name%%.*}
+    sp_write "$d"
+    : >>"$d/supervisor.log"
+    spawn_start "$s"
+    metric spawn id="$s" harness="$h" model="$m" rights="$r" agent="$SP_Agent"
+    echo "$s → $SP_Agent ($m) запущен · права: $r — $mean"
+  done
+  [ "$r" = full ] && echo "Внимание: полные права — агент действует от твоего имени без вопросов (может и вне каталога проекта); ограничить: --rights project."
+  echo "Смотреть: brg spawn list · brg board · убрать: brg spawn rm <S|имя>"
+}
+
+# spawn_ctl wake|rm|detach|rights <S|name> [full|project]
+spawn_ctl() {
+  local op=$1 t= v= s d st sv x m
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --as)
+        [ $# -ge 2 ] || usage_die "--as требует значение"
+        OPT_AS=$2
+        shift 2
+        ;;
+      -h | --help)
+        usage_print spawn
+        exit 0
+        ;;
+      -*) usage_die "неизвестный параметр: $1" ;;
+      *)
+        if [ -z "$t" ]; then t=$1; elif [ "$op" = rights ] && [ -z "$v" ]; then v=$1; else usage_die "лишний аргумент: $1"; fi
+        shift
+        ;;
+    esac
+  done
+  spawn_human_only
+  [ -n "$t" ] || usage_die "нужен запуск: S00N или имя агента"
+  if [ "$op" = rights ]; then
+    case $v in full | project) ;; *) usage_die "права — full или project${v:+: $v}" ;; esac
+  fi
+  need_root
+  spawn_resolve_v s "$t" || die "нет запуска $t" "Запуски: brg spawn list"
+  d=$RUN/spawn/$s
+  sp_read "$d"
+  case $SP_State in detached | removed) die "$s ($SP_Agent) уже $SP_State — им управляют как обычным агентом" ;; esac
+  get_now
+  case $op in
+    wake)
+      if [ -e "$RUN/stopped" ] || [ -e "$RUN/stopped.$SP_Agent" ]; then
+        die "бригада остановлена — сначала «Продолжить» (brg resume)" "Стоп снимает brg resume (или кнопка «Продолжить» на доске); после него brg разбудит агентов, чью работу прервал стоп."
+      fi
+      printf '1\n' >"$d/.wake.$$" && mv -f "$d/.wake.$$" "$d/wake"
+      spawn_sv_state_v sv "$s"
+      metric spawn.wake id="$s"
+      if [ "$sv" = silent ]; then
+        spawn_silent_restart "$s"
+      elif [ "$sv" = alive ]; then
+        if [ "$SP_State" = running ]; then
+          echo "── $s ($SP_Agent): ход ${SP_Turn:-?} и так идёт — будить не нужно."
+        else
+          echo "── $s ($SP_Agent): разбужу — следующий ход начнётся сейчас (всё непрочитанное, или «проверь status»)."
+        fi
+      else
+        spawn_start "$s"
+        echo "── $s ($SP_Agent): надзор не отвечал — запущен заново: он дождётся конца прерванного хода и разбудит агента."
+      fi
+      ;;
+    rm)
+      if spawn_lock_try "$s" 0; then
+        spawn_turn_state_v x "$d"
+        [ "$x" = dead ] || : >"$d/turn.stop" # the orphaned wrapper stops its turn by itself
+        profile_read "$ROOT/agents/$SP_Agent"
+        if [ -z "$P_LEFT" ]; then
+          spawn_leave_as "$SP_Agent" 2>>"$d/supervisor.log"
+        fi
+        sp_read "$d"
+        SP_State=removed
+        sp_write "$d"
+        rm -f "$d/rm" "$d/detach" "$d/wake" "$d/rights"
+        lock_release "spawn.$s"
+        metric spawn.rm id="$s" by=cmd
+        if [ "$x" = dead ]; then x=; else x=" · его ход остановится"; fi
+        echo "── $s ($SP_Agent) убран: агент отключён (leave)$x."
+      else
+        printf '1\n' >"$d/.rm.$$" && mv -f "$d/.rm.$$" "$d/rm"
+        metric spawn.rm id="$s" by=flag
+        x=
+        [ "$SP_State" != running ] || x=" — идущий ход остановится"
+        echo "── $s ($SP_Agent): надзор уберёт агента$x."
+        [ "$SL_WHY" != silent ] || spawn_silent_restart "$s"
+      fi
+      ;;
+    detach)
+      spawn_session_v x "$d"
+      if spawn_lock_try "$s" 0; then
+        spawn_turn_state_v st "$d"
+        if [ "$st" != dead ]; then
+          lock_release "spawn.$s"
+          die "идёт ход агента $SP_Agent ($s) — дождись его конца или brg spawn rm $s"
+        fi
+        if ! spawn_rollback_free "$SP_Agent"; then
+          lock_release "spawn.$s"
+          die "у агента $SP_Agent ещё идёт wait — повтори через несколько секунд"
+        fi
+        spawn_unspawn "$SP_Agent" "$s"
+        sp_read "$d"
+        SP_State=detached
+        sp_write "$d"
+        rm -f "$d/rm" "$d/detach" "$d/wake" "$d/rights"
+        lock_release "spawn.$s"
+        echo "── $s ($SP_Agent) забран: brg его больше не будит — дальше это обычный агент."
+      else
+        printf '1\n' >"$d/.detach.$$" && mv -f "$d/.detach.$$" "$d/detach"
+        st=
+        [ "$SP_State" != running ] || st=" после текущего хода"
+        echo "── $s ($SP_Agent): надзор отпустит агента$st."
+        [ "$SL_WHY" != silent ] || spawn_silent_restart "$s"
+      fi
+      metric spawn.detach id="$s"
+      if [ -n "$x" ]; then
+        echo "Открой его сессию в окне: cd $PROJ && ${CFG_spawn_opencode_bin:-opencode} --session $x"
+      else
+        echo "Сессии у агента ещё нет (первый ход не дошёл до первого события): подключи его в окне фразой «подключись к бригаде» под тем же именем — join --as $SP_Agent --harness $SP_Harness."
+      fi
+      echo "В окне напиши: «продолжай: status, затем wait»."
+      ;;
+    rights)
+      spawn_rights_v m "$v"
+      if spawn_lock_try "$s" 0; then
+        sp_read "$d"
+        SP_Rights=$v SP_Perm_Denied=
+        sp_write "$d"
+        lock_release "spawn.$s"
+        echo "── $s ($SP_Agent): права $v — $m. Со следующего хода (его разбудит сообщение или brg spawn wake $s)."
+      else
+        printf '%s\n' "$v" >"$d/.rights.$$" && mv -f "$d/.rights.$$" "$d/rights"
+        echo "── $s ($SP_Agent): права $v — $m. Со следующего хода; агент ждёт — надзор разбудит его сейчас."
+        [ "$SL_WHY" != silent ] || spawn_silent_restart "$s"
+      fi
+      metric spawn.rights id="$s" rights="$v"
+      ;;
+  esac
+}
+
+# spawn_state_words_v VAR — the state of the loaded record (SQ_*) for people
+spawn_state_words_v() {
+  local _sw_r _sw_v
+  case $SQ_State in
+    starting) _sw_r="запуск" ;;
+    running) _sw_r="ход ${SQ_Turn:-?} идёт" ;;
+    frozen) _sw_r="ждёт" ;;
+    crashed) _sw_r="ждёт · упал: ${SQ_Last_Error:-?}" ;;
+    stopped) _sw_r="остановлен — снимется по brg resume" ;;
+    conflict) _sw_r="конфликт: под именем работает другой wait" ;;
+    detached) _sw_r="забран в окно" ;;
+    removed) _sw_r="убран" ;;
+    *) _sw_r=${SQ_State:-?} ;;
+  esac
+  case $SQ_State in
+    detached | removed) ;;
+    *)
+      spawn_sv_state_v _sw_v "$SQ_Id"
+      [ "$_sw_v" = alive ] || _sw_r="$_sw_r · надзор не отвечает"
+      ;;
+  esac
+  eval "$1=\$_sw_r"
+}
+
+spawn_list() {
+  local d n=0 st src
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --as)
+        [ $# -ge 2 ] || usage_die "--as требует значение"
+        shift 2
+        ;;
+      -h | --help)
+        usage_print spawn
+        exit 0
+        ;;
+      *) usage_die "неизвестный параметр: $1" ;;
+    esac
+  done
+  need_root
+  get_now
+  for d in "$RUN"/spawn/S[0-9]*; do
+    [ -f "$d/spawn" ] || continue
+    sp_read "$d" SQ
+    spawn_state_words_v st
+    src="с подагентами"
+    [ "$SQ_Tokens_Source" = export ] || src="без подагентов"
+    echo "$SQ_Id · ${SQ_Agent:-?} · $SQ_Harness/$SQ_Model · права $SQ_Rights · $st · ход ${SQ_Turn:-0}${SQ_Turn_Result:+ ($SQ_Turn_Result)} · токены: вход ${SQ_Tokens_In:-0}, выход ${SQ_Tokens_Out:-0}, кэш ${SQ_Tokens_Cache_Read:-0}/${SQ_Tokens_Cache_Write:-0} · стоимость ${SQ_Cost:-0} ($src)${SQ_Last_Error:+ · ошибка: $SQ_Last_Error}"
+    n=$((n + 1))
+  done
+  [ "$n" -gt 0 ] || echo "── запусков нет. Запустить агента (человеку): brg spawn opencode --model <провайдер/модель>"
+  return 0
+}
+
+spawn_show() {
+  local t= s d f x e k rest st
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --as)
+        [ $# -ge 2 ] || usage_die "--as требует значение"
+        shift 2
+        ;;
+      -h | --help)
+        usage_print spawn
+        exit 0
+        ;;
+      -*) usage_die "неизвестный параметр: $1" ;;
+      *)
+        [ -z "$t" ] || usage_die "лишний аргумент: $1"
+        t=$1
+        shift
+        ;;
+    esac
+  done
+  [ -n "$t" ] || usage_die "нужен запуск: S00N или имя агента"
+  need_root
+  spawn_resolve_v s "$t" || die "нет запуска $t" "Запуски: brg spawn list"
+  d=$RUN/spawn/$s
+  get_now
+  sp_read "$d" SQ
+  spawn_state_words_v st
+  echo "── $s · ${SQ_Agent:-?} · $st"
+  for f in $SP_FIELDS; do
+    eval "x=\${SQ_${f//-/_}-}"
+    [ -n "$x" ] || continue
+    mask_v x "$x"
+    echo "$f: $x"
+  done
+  if [ -n "$SQ_BODY" ]; then
+    echo "── последний ответ модели:"
+    printf '%s\n' "$SQ_BODY"
+  fi
+  echo "── активность (последние 20):"
+  if [ -s "$d/activity.tail" ]; then
+    tail -n 20 "$d/activity.tail" | while IFS=$TAB read -r e k rest; do
+      is_uint "$e" && hm_v e "$e"
+      printf '  %s %s %s\n' "$e" "$k" "$rest"
+    done
+  else
+    echo "  (пока нет)"
+  fi
+  echo "── логи: $RROOT/run/spawn/$s/ — events.log (поток харнесса), stderr.log, supervisor.log, activity.log; промпт хода — prompt.${SQ_Turn:-N}"
 }
 
 # ── board (DESIGN §9.1): a read-only snapshot for the human's browser page ──
@@ -8471,6 +10553,52 @@ board_cache_write() { # DIR ID
   board_write "$2.js"
 }
 
+# board_spawn NAME — (after a key) the launch of agent NAME (DESIGN §5.5, §9.1) or null. All of
+# it was masked when written; the key itself is never in the record.
+board_spawn() {
+  local s d sv
+  if ! spawned_v s "$1"; then
+    bjo z
+    return 0
+  fi
+  d=$RUN/spawn/$s
+  sp_read "$d" SQ
+  spawn_sv_state_v sv "$s"
+  bjo "{"
+  bjs id "$s"
+  bjs harness "$SQ_Harness"
+  bjs model "$SQ_Model"
+  bjs rights "$SQ_Rights"
+  bjs state "$SQ_State"
+  bjn turn "$SQ_Turn"
+  bjn turn_start "$SQ_Turn_Start"
+  bjn turn_end "$SQ_Turn_End"
+  bjs turn_result "$SQ_Turn_Result"
+  bjn last_event "$SQ_Last_Event"
+  bjs last_error "$SQ_Last_Error"
+  bjs perm_denied "$SQ_Perm_Denied"
+  bjx last_text "$SQ_BODY"
+  bjk tokens
+  bjo "{"
+  bjn in "$SQ_Tokens_In"
+  bjn out "$SQ_Tokens_Out"
+  bjn reasoning "$SQ_Tokens_Reasoning"
+  bjn cache_read "$SQ_Tokens_Cache_Read"
+  bjn cache_write "$SQ_Tokens_Cache_Write"
+  bjo "}"
+  bjs cost "$SQ_Cost"
+  bjs tokens_source "$SQ_Tokens_Source"
+  bjn sub_sessions "$SQ_Sub_Sessions"
+  [ "$sv" = alive ] && sv=1 || sv=0
+  bjb supervisor_alive "$sv"
+  bjs note "$SQ_Note"
+  bjk prompt_head
+  bjo "t$US$d/prompt.head${US}4096"
+  bjk activity
+  bjo "t$US$d/activity.tail${US}32768"
+  bjo "}"
+}
+
 # board_tick — run/board/data.js: agents, tasks, the current task, lobby, meta
 board_tick() {
   local n d x drop st kp i k ch pz
@@ -8504,6 +10632,8 @@ board_tick() {
     bjb drop "$drop"
     bjb stopped "$st"
     bjb paused "$pz" # personal pause (the general one is in meta)
+    bjk spawn # launched by brg (DESIGN §5.5): null if not
+    board_spawn "$n"
     bjk mark # the busy mark (DESIGN §5.4): null if none (or not valid)
     if [ -n "$ST_BUSY" ]; then
       bjo "{"
@@ -8578,6 +10708,17 @@ board_tick() {
   x=0
   [ -e "$RUN/paused" ] && x=1
   bjb pause "$x" # the general pause (DESIGN §9)
+  bjk spawn # brg spawn (DESIGN §5.5): what brg can launch, what is installed (looked up once)
+  bjo "{"
+  bjk supported
+  bjo "["
+  for n in $SPAWN_SUPPORTED; do bjo "s$US$n"; done
+  bjo "]"
+  bjk available
+  bjo "["
+  for n in $B_SPAWN_AVAIL; do bjo "s$US$n"; done
+  bjo "]"
+  bjo "}"
   bjk stopped
   bjo "["
   for d in "$RUN"/stopped.*; do
@@ -8650,7 +10791,7 @@ board_serve_start() {
   fi
   rm -f "$BD/ready"
   board_alive
-  BRG_SERVE_BASH=$BASH "$py" -I -X utf8 "$nroot/bin/brg-serve.py" --root "$nroot" --port "$port" ${retry:+"$retry"} --interval "$B_INT" --alive "alive.$$" </dev/null &
+  BRG_SERVE_BASH=$BASH BRG_CMD_LC_SET=$_brg_lc_set BRG_CMD_LC=$_brg_lc "$py" -I -X utf8 "$nroot/bin/brg-serve.py" --root "$nroot" --port "$port" ${retry:+"$retry"} --interval "$B_INT" --alive "alive.$$" </dev/null &
   B_SRV=$!
   while [ ! -f "$BD/ready" ]; do
     if ! kill -0 "$B_SRV" 2>/dev/null; then
@@ -8771,6 +10912,8 @@ cmd_board() {
   detect_platform
   B_SLEEP=
   trap board_quit INT TERM HUP
+  B_SPAWN_AVAIL= # brg spawn: the harnesses whose binary is found (once, not per tick)
+  for x in $SPAWN_SUPPORTED; do spawn_bin_v u "$x" && B_SPAWN_AVAIL="$B_SPAWN_AVAIL $x"; done
   # with Python: the server and its address; without it (or --static, --once) the page is a file
   if [ -z "$once" ] && [ -z "$static" ] && board_serve_start; then
     printf '%s\n' "$B_URL"
@@ -8842,7 +10985,7 @@ main() {
   [ "$AS_HINT" = '<имя>' ] && valid_name "${BRG_AS:-}" && AS_HINT=$BRG_AS
   trap release_all EXIT
   trap 'release_all; exit 130' INT TERM HUP
-  case $CMD in -h | --help | help | version | --version | init | board | __runner) ;; *) [ -z "$WIN_CD_HINT" ] || printf '%s\n' "$WIN_CD_HINT" ;; esac
+  case $CMD in -h | --help | help | version | --version | init | board | __runner | __spawn | __turn) ;; *) [ -z "$WIN_CD_HINT" ] || printf '%s\n' "$WIN_CD_HINT" ;; esac
   case $CMD in
     -h | --help | help) cmd_help ;;
     version | --version) echo "brg $BRG_VERSION" ;;
@@ -8869,6 +11012,18 @@ main() {
     __runner) # internal: the detached runner of `brg run`
       cfg_load
       run_runner "$@"
+      ;;
+    spawn) # the human launches agents (DESIGN §5.5)
+      cfg_load
+      cmd_spawn "$@"
+      ;;
+    __spawn) # internal: the supervisor of an agent launched by brg
+      cfg_load
+      spawn_supervisor "$@"
+      ;;
+    __turn) # internal: the wrapper of one turn of its harness
+      cfg_load
+      spawn_turn "$@"
       ;;
     *) die "неизвестная команда: $CMD" "Список команд: $BRG help" ;;
   esac

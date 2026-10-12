@@ -243,7 +243,63 @@ def _simple(cmd):
     return act
 
 
+MODEL_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/@#+-]{0,119}')
+HARNESS_RE = re.compile(r'[a-z0-9]{1,20}')
+SPAWN_RE = re.compile(r'S[0-9]{3,6}')
+
+
+def act_spawn(d):
+    # agents launched by brg (DESIGN §5.5): `brg spawn` returns at once (the supervisor is detached)
+    h = d.get('harness')
+    if not isinstance(h, str) or not HARNESS_RE.fullmatch(h):
+        raise Refuse('недопустимый харнесс')
+    m = d.get('model')
+    if not isinstance(m, str) or not MODEL_RE.fullmatch(m):
+        raise Refuse('недопустимая модель: буквы, цифры и ._:/@#+- (не с «-»), до 120 символов')
+    r = d.get('rights', 'full')
+    if r not in ('full', 'project'):
+        raise Refuse('права — full или project')
+    c = d.get('count', 1)
+    if isinstance(c, str) and c.isdigit():
+        c = int(c)
+    if isinstance(c, bool) or not isinstance(c, int) or not 1 <= c <= 5:
+        raise Refuse('число агентов — от 1 до 5')
+    args = ['spawn', h, '--model', m, '--rights', r, '--count', str(c)]
+    note = d.get('note')
+    if note not in (None, ''):
+        if not isinstance(note, str) or re.search(r'[\x00-\x1f\x7f  ]', note):
+            raise Refuse('подпись — одна строка')
+        try:
+            n = len(note.encode('utf-8'))
+        except UnicodeEncodeError:
+            raise Refuse('подпись не в UTF-8')
+        if n > 200:
+            raise Refuse('подпись длиннее 200 байт (%d)' % n)
+        args += ['--note', note]
+    code, out = run_brg(args)
+    return code, out, 'spawn %s × %d (%s, права %s)' % (h, c, m, r)
+
+
+def act_spawn_ctl(d):
+    i = d.get('id')
+    if not isinstance(i, str) or not (SPAWN_RE.fullmatch(i) or NAME_RE.fullmatch(i)):
+        raise Refuse('недопустимый запуск: S00N или имя агента')
+    op = d.get('op')
+    if op not in ('wake', 'rm', 'detach', 'rights'):
+        raise Refuse('действие — wake, rm, detach или rights')
+    args = ['spawn', op, i]
+    if op == 'rights':
+        r = d.get('rights')
+        if r not in ('full', 'project'):
+            raise Refuse('права — full или project')
+        args.append(r)
+    code, out = run_brg(args)
+    return code, out, 'spawn %s %s%s' % (op, i, ' ' + args[-1] if op == 'rights' else '')
+
+
 ACTIONS = {
+    'spawn': act_spawn,
+    'spawn-ctl': act_spawn_ctl,
     'say': act_say,
     'task-new': act_task_new,
     'task-cancel': act_task_cancel,

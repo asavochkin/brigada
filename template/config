@@ -44,3 +44,16 @@ runner_stale: 60
 # старше runner_dead_grace секунд (в песочнице с отдельным пространством pid живой
 # процесс может казаться мёртвым). 0 — верить одному pid. Должно быть меньше runner_stale.
 runner_dead_grace: 5
+
+# Агенты, запущенные brg (brg spawn, DESIGN §5.5). Значения spawn.* — как есть (путь,
+# несколько аргументов через пробел). Бинарь OpenCode (имя в PATH или путь):
+spawn.opencode.bin: opencode
+# Аргументы каждого вызова opencode (run и session export); --standalone — без фонового сервиса.
+spawn.opencode.args: --standalone
+# 1 — токены с подагентами (opencode session export после хода); 0 — только поток основной сессии.
+spawn.opencode.export: 1
+# Таймаут надзорного wait (он ждёт за свободного агента; секунды).
+spawn.wait_timeout: 3600
+# Надзор подаёт признаки жизни раз в 5 с; молчащий дольше spawn_stale секунд (при живом pid,
+# под непрерывным наблюдением) считается мёртвым — его заменит новый надзор (brg spawn wake).
+spawn_stale: 30
