@@ -732,12 +732,13 @@ XEOF
   post spawn-ctl -j id=opencode-1 -j op=rights -j rights=full
   assert_eq 200 "$HTTP_ST"
   assert_contains "$HTTP_BODY" '"ok": true'
+  assert_contains "$HTTP_BODY" "права S001: full — со следующего хода"
+  wait_for 15 rec_is S001 Rights full || fail "the rights were not applied"
+  post spawn-ctl -j id=S001 -j op=wake
+  assert_contains "$HTTP_BODY" '"ok": true'
   wait_turn S001 2
   assert_contains "$(cat "$FK/run.2/argv")" "--auto"
   wait_state S001 frozen
-  post spawn-ctl -j id=S001 -j op=wake
-  assert_contains "$HTTP_BODY" '"ok": true'
-  wait_turn S001 3
   wait_state S001 frozen
   post spawn-ctl -j id=S001 -j op=rm
   assert_contains "$HTTP_BODY" '"ok": true'

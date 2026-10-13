@@ -649,10 +649,14 @@ EOF
 # 18. rights: project → no --auto; a refusal in stderr → activity, Last-Error, the snapshot;
 # spawn rights S001 full of a frozen agent → a turn with --auto and a line on the rights
 test_spawn_rights() {
+  local t
   sp_proj
   script 1 <<'EOF'
-perm read ../секрет.env
+perm read (../секрет.env)
 sleep 1.2
+EOF
+  script 4 <<'EOF'
+error провайдер лежит
 EOF
   script <<'EOF'
 sleep 1.2
@@ -662,24 +666,50 @@ EOF
   wait_turn S001 1
   wait_state S001 frozen
   assert_not_contains "$(cat "$FK/run.1/argv")" "--auto"
-  assert_eq "отказ в правах: read ../секрет.env" "$(rec S001 Last-Error)"
-  assert_contains "$(cat "$B/run/spawn/S001/activity.tail")" "permission	отказ в правах: read ../секрет.env"
+  assert_eq "отказ в правах: read (../секрет.env)" "$(rec S001 Last-Error)"
+  assert_contains "$(cat "$B/run/spawn/S001/activity.tail")" "permission	отказ в правах: read (../секрет.env)"
   brg board --once >/dev/null
-  assert_contains "$(cat "$B/run/board/data.js")" '"last_error":"отказ в правах: read ../секрет.env"'
-  assert_contains "$(brg who)" "отказ в правах"
+  assert_contains "$(cat "$B/run/board/data.js")" '"last_error":"отказ в правах: read (../секрет.env)"'
+  assert_contains "$(brg who)" "отказ в правах: read (../секрет.env)"
   # a good turn after it: the refusal stays visible until the rights change
   brg say --to opencode-1 "дальше" >/dev/null
   wait_turn S001 2
   wait_state S001 frozen
-  assert_eq "read ../секрет.env" "$(rec S001 Perm-Denied)" "the refusal stays"
+  assert_eq "read (../секрет.env)" "$(rec S001 Perm-Denied)" "the refusal stays"
   brg board --once >/dev/null
-  assert_contains "$(cat "$B/run/board/data.js")" '"perm_denied":"read ../секрет.env"'
-  assert_contains "$(brg spawn rights S001 full)" "права full"
+  assert_contains "$(cat "$B/run/board/data.js")" '"perm_denied":"read (../секрет.env)"'
+  # the rights change without a wake: the record at once, no turn
+  t=$(brg spawn rights S001 full)
+  assert_contains "$t" "права S001: full — со следующего хода; разбудить сейчас — «Разбудить»"
+  wait_for 3 rec_is S001 Rights full || fail "the record not updated in 3 s"
+  assert_eq "" "$(rec S001 Perm-Denied)" "cleared by the new rights"
+  assert_contains "$(rec S001 Rights-Note)" "человек расширил права до full"
+  sleep 3
+  assert_eq 2 "$(runs)" "no wake from the rights"
+  # the note survives a restart of the supervisor and a crashed turn
+  kill -KILL "$(sv_pid S001)"
+  sleep 0.5
+  brg say --to opencode-1 "проверь" >/dev/null
+  brg spawn wake S001 >/dev/null
   wait_turn S001 3
   assert_contains "$(cat "$FK/run.3/argv")" "--auto"
-  assert_contains "$(cat "$FK/run.3/prompt")" "── человек расширил права (full): повтори действие"
-  assert_eq full "$(rec S001 Rights)"
-  assert_eq "" "$(rec S001 Perm-Denied)" "cleared by the new rights"
+  assert_contains "$(cat "$FK/run.3/prompt")" "── человек расширил права до full"
+  wait_state S001 frozen
+  assert_eq "" "$(rec S001 Rights-Note)" "a good turn takes it off"
+  # a crashed turn keeps it
+  brg spawn rights S001 project >/dev/null
+  wait_for 3 rec_is S001 Rights project || fail "project not applied"
+  brg say --to opencode-1 "ещё" >/dev/null
+  wait_turn S001 4
+  wait_state S001 crashed
+  assert_contains "$(cat "$FK/run.4/prompt")" "── человек изменил права на project"
+  assert_contains "$(rec S001 Rights-Note)" "изменил права на project" "kept after a crash"
+  brg say --to opencode-1 "снова" >/dev/null
+  wait_turn S001 5
+  assert_contains "$(cat "$FK/run.5/prompt")" "── человек изменил права на project"
+  assert_not_contains "$(cat "$FK/run.5/argv")" "--auto"
+  wait_state S001 frozen
+  assert_eq "" "$(rec S001 Rights-Note)"
   sp_assert_clean
 }
 
@@ -1051,6 +1081,248 @@ XEOF
   wait_state S001 frozen
   sleep 2
   assert_eq 3 "$(runs)" "no more turns without new messages"
+  sp_assert_clean
+}
+
+
+# ── 0.9.1 ──
+# count_act KIND TEXT — lines of activity.log of KIND that contain TEXT
+count_act() { [ -f "$B/run/spawn/S001/activity.log" ] || { echo 0; return; }; awk -F '\t' -v k="$1" -v t="$2" '$2 == k && index($3, t) { n++ } END { print n + 0 }' "$B/run/spawn/S001/activity.log"; }
+act_has() { [ "$(count_act "$1" "$2")" -ge 1 ]; }
+
+# the activity as the turn goes: lines in activity.tail and in the snapshot before the end of the
+# turn; none twice after it; a half-written line counted once
+test_spawn_live_activity() {
+  sp_proj
+  script 1 <<'XEOF'
+text первый шаг
+sh sleep 4
+half половинчатая строка
+sleep 1.2
+XEOF
+  sp_spawn
+  wait_for 20 act_has text "первый шаг" || fail "no live line"
+  assert_eq running "$(rec S001 State)" "seen before the end of the turn"
+  assert_contains "$(cat "$B/run/spawn/S001/activity.tail")" "первый шаг"
+  brg board --once >/dev/null
+  assert_contains "$(cat "$B/run/board/data.js")" "первый шаг"
+  wait_turn S001 1
+  wait_state S001 frozen
+  assert_eq 1 "$(count_act text 'первый шаг')" "no duplicate"
+  assert_eq 1 "$(count_act text 'половинчатая строка')" "a half-written line once"
+  assert_eq 1 "$(count_act tool 'sleep 4')"
+  assert_eq 1 "$(count_act end 'ход 1: ok')"
+  assert_eq 1 "$(rec S001 Last-Text-Turn)"
+  sp_assert_clean
+}
+
+# the harness killed in the middle of a line: the rest parsed at the end without failing; an
+# error event in an intermediate parse — the provider's text, the turn crashes
+test_spawn_live_error_and_cut_line() {
+  local fp
+  sp_proj
+  script 1 <<'XEOF'
+errorev провайдер сломался
+sh sleep 4
+exit 1
+XEOF
+  sp_spawn
+  wait_for 20 act_has error "провайдер сломался" || fail "the error was not parsed during the turn"
+  wait_turn S001 1
+  assert_eq crash "$(rec S001 Turn-Result)"
+  assert_eq "провайдер сломался" "$(rec S001 Last-Error)" "the provider's text, not the exit code"
+  sp_assert_clean
+  sp_proj
+  script 1 <<'XEOF'
+text до обрыва
+halfhang оборванная
+XEOF
+  sp_spawn
+  wait_for 20 [ -f "$FK/run.1/half" ] || fail "no half line"
+  sleep 3.5 # an intermediate parse sees the half line and leaves it
+  fp=$(cat "$FK/run.1/pid")
+  kill -KILL "$fp"
+  wait_turn S001 1
+  assert_eq crash "$(rec S001 Turn-Result)"
+  assert_eq 1 "$(count_act text 'до обрыва')"
+  assert_eq 1 "$(count_act end 'ход 1: crash')"
+  sp_assert_clean
+}
+
+# kill -9 of the supervisor between the lines of the activity and the state of the parse, and
+# between the count of the tokens and the outcome: after the recovery — every line once, the
+# tokens once, one end line, one note to the lead
+test_spawn_kill9_parse_and_tokens() {
+  local c sp
+  sp_proj
+  script 1 <<'XEOF'
+text раз
+sh sleep 5
+text два
+sleep 1.2
+XEOF
+  export BRG_SPAWN_TEST_DELAY_PARSE=4
+  sp_spawn
+  unset BRG_SPAWN_TEST_DELAY_PARSE
+  wait_for 20 act_has text "раз" || fail "no line"
+  sp=$(sv_pid S001)
+  kill -KILL "$sp" # asleep between the lines of the activity and turn.1.parse
+  sleep 0.5
+  brg spawn wake S001 >/dev/null
+  wait_turn S001 1 40
+  wait_state S001 frozen
+  assert_eq 1 "$(count_act text 'раз')" "no duplicate after kill -9"
+  assert_eq 1 "$(count_act text 'два')"
+  assert_eq 1 "$(count_act end 'ход 1:')"
+  assert_eq 500 "$(rec S001 Tokens-Main-In)" "5 steps of the main session"
+  sp_assert_clean
+  # between stream.tok and the outcome
+  sp_proj
+  c=$(join_as claude)
+  task_new_as "$c" "задача" >/dev/null
+  script 1 <<'XEOF'
+text раз
+error упал
+XEOF
+  script <<'XEOF'
+sleep 1.2
+XEOF
+  export BRG_SPAWN_TEST_DELAY_TOK=4
+  sp_spawn
+  unset BRG_SPAWN_TEST_DELAY_TOK
+  wait_for 20 grep -q '^1 ' "$B/run/spawn/S001/stream.tok" || fail "stream.tok not counted"
+  sp=$(sv_pid S001)
+  kill -KILL "$sp" # asleep after the count, before the outcome
+  sleep 0.5
+  assert_eq running "$(rec S001 State)"
+  brg spawn wake S001 >/dev/null
+  wait_for 40 rec_is S001 Turn-Result crash || fail "no outcome after the recovery"
+  assert_eq "1 100" "$(cut -d" " -f1,2 "$B/run/spawn/S001/stream.tok")" "the turn counted once"
+  assert_eq 100 "$(rec S001 Tokens-Main-In)"
+  assert_eq 1 "$(count_act end 'ход 1:')" "one end line"
+  assert_eq 1 "$(awk '/ход 1 упал/' "$(tdir T001)"/messages/*.msg | wc -l | tr -d ' ')" "one note to the lead"
+  sp_assert_clean
+}
+
+# whose refusal: the main session's (stderr + a refused tool_use) and a subagent's (stderr only)
+test_spawn_whose_refusal() {
+  sp_proj
+  script 1 <<'XEOF'
+perm read (/p/main.env)
+sh sleep 4
+perm-sub external_directory (/q/sub/*)
+sleep 1.2
+XEOF
+  sp_spawn --rights project
+  wait_turn S001 1
+  wait_state S001 frozen
+  assert_eq "external_directory (/q/sub/*) (подагент)" "$(rec S001 Perm-Denied)"
+  assert_contains "$(cat "$B/run/spawn/S001/activity.log")" "отказ в правах: read (/p/main.env); отказ в правах (подагент): external_directory (/q/sub/*)"
+  assert_contains "$(brg spawn show S001)" "отказ в правах (подагент): external_directory (/q/sub/*)"
+  sp_assert_clean
+  # the main session's refusal in an early chunk is still the agent's
+  sp_proj
+  script 1 <<'XEOF'
+perm read (/p/early.env)
+sh sleep 4
+sleep 1.2
+XEOF
+  sp_spawn --rights project
+  wait_turn S001 1
+  assert_eq "read (/p/early.env)" "$(rec S001 Perm-Denied)"
+  sp_assert_clean
+}
+
+# the context — of the last step with tokens (a failed step with zeros keeps it); tokens of the
+# main session and subagents apart; no cost when the provider has no prices; Last-Text-Turn
+test_spawn_context_tokens_cost() {
+  local o
+  sp_proj
+  script 1 <<'XEOF'
+task bash .brigada/bin/brg who
+stepzero
+sleep 1.2
+XEOF
+  export FAKE_OC_COST=0
+  sp_spawn
+  unset FAKE_OC_COST
+  wait_turn S001 1
+  wait_for 25 rec_is S001 Tokens-Source export || fail "no export"
+  assert_eq 118 "$(rec S001 Context)" "100+10+2+5+1 of the last step with tokens"
+  assert_eq 300 "$(rec S001 Tokens-Main-In)" "3 steps with tokens"
+  assert_eq 1000 "$(rec S001 Tokens-Sub-In)"
+  assert_eq 1300 "$(rec S001 Tokens-In)"
+  assert_eq 1 "$(rec S001 Last-Text-Turn)"
+  o=$(brg spawn list)
+  assert_contains "$o" "основная 300/30, подагенты 1000/100"
+  assert_contains "$o" "контекст 118"
+  assert_not_contains "$o" '$'
+  assert_not_contains "$(brg spawn show S001)" "Cost:"
+  brg board --once >/dev/null
+  assert_contains "$(cat "$B/run/board/data.js")" '"context":118'
+  assert_contains "$(cat "$B/run/board/data.js")" '"main_in":300,"main_out":30,"sub_in":1000,"sub_out":100'
+  assert_contains "$(cat "$B/run/board/data.js")" '"last_text_turn":1'
+  sp_assert_clean
+}
+
+
+# lines the supervisor writes itself during a turn (a change of rights) survive the next parse;
+# the end line survives a kill -9 between it and the outcome in the record
+test_spawn_own_lines_survive_parse() {
+  local sp
+  sp_proj
+  script 1 <<'XEOF'
+text начало
+sh sleep 6
+text конец
+sleep 1.2
+XEOF
+  sp_spawn --rights project
+  wait_for 20 act_has text "начало" || fail "no live line"
+  brg spawn rights S001 full >/dev/null
+  wait_for 10 act_has turn "права: full" || fail "no line on the rights"
+  wait_turn S001 1
+  wait_state S001 frozen
+  assert_eq 1 "$(count_act turn 'права: full')" "the line on the rights survives the parses"
+  assert_eq 1 "$(count_act text 'конец')"
+  sp_assert_clean
+  sp_proj
+  script 1 <<'XEOF'
+text один
+sleep 1.2
+XEOF
+  export BRG_SPAWN_TEST_DELAY_END=5
+  sp_spawn
+  unset BRG_SPAWN_TEST_DELAY_END
+  wait_for 25 act_has end "ход 1:" || fail "no end line"
+  assert_eq running "$(rec S001 State)"
+  sp=$(sv_pid S001)
+  kill -KILL "$sp" # asleep between the end line and the outcome
+  sleep 0.5
+  brg spawn wake S001 >/dev/null
+  wait_for 40 rec_is S001 Turn-Result ok || fail "no outcome after the recovery"
+  assert_eq 1 "$(count_act end 'ход 1:')" "the end line is not cut off, not twice"
+  assert_eq 1 "$(count_act text 'один')"
+  sp_assert_clean
+}
+
+# the main session after an export = the export + the stream since its START: a turn that passed
+# while the export ran is not lost
+test_spawn_export_stream_snapshot() {
+  sp_proj
+  script <<'XEOF'
+sleep 1.2
+XEOF
+  export FAKE_OC_EXPORT_SLEEP=4
+  sp_spawn
+  unset FAKE_OC_EXPORT_SLEEP
+  wait_turn S001 1
+  wait_for 20 [ -d "$FK/export.1" ] || fail "no export"
+  brg say --to opencode-1 "ещё ход, пока идёт экспорт" >/dev/null
+  wait_turn S001 2
+  wait_for 25 rec_is S001 Tokens-Source export || fail "no export result"
+  sleep 1
+  assert_eq 400 "$(rec S001 Tokens-Main-In)" "2 turns × 2 steps: the turn during the export is counted"
   sp_assert_clean
 }
 

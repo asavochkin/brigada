@@ -218,6 +218,7 @@ button.pill:hover { text-decoration: underline; }
 .spact { margin-top: 6px; max-height: 260px; overflow: auto; font-size: 12px; }
 .spl { white-space: pre-wrap; overflow-wrap: anywhere; }
 .spl .st, .spl .sk { color: var(--faint); }
+.spl.turn { margin-top: 4px; padding-top: 3px; border-top: 1px solid var(--line); font-weight: 650; }
 .spt { margin-top: 2px; padding: 6px 8px; border-radius: 8px; background: var(--sunken); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow: auto; font-size: 12px; }
 .spawnp .bad, .spl.bad { color: var(--bad); }
 .spawnp .wk { color: var(--ct, var(--fg)); font-weight: 600; }
@@ -487,7 +488,7 @@ pre {
   var S = {
     data: null, err: "", sel: "", msgTab: "task", agent: "", hideSys: false, docTab: "",
     open: {}, last: {}, tload: {}, msgChan: "", colors: {}, csig: "", idleSince: 0,
-    to: [], re: null, sendChan: "", menu: "", modal: null, act: "", actTitle: ""
+    to: [], re: null, sendChan: "", menu: "", modal: null, act: "", actTitle: "", spScroll: {}, spLists: []
   };
   // the control mode (DESIGN §9.1): the server put the token in the page; as file:// there is none
   var TOKEN = (function () {
@@ -867,15 +868,20 @@ pre {
       turn: num(s.turn), turnStart: num(s.turn_start), turnEnd: num(s.turn_end), result: str(s.turn_result),
       lastEvent: num(s.last_event), lastError: str(s.last_error), perm: str(s.perm_denied), lastText: str(s.last_text),
       tin: num(t.in), tout: num(t.out), tcr: num(t.cache_read), tcw: num(t.cache_write),
+      min: num(t.main_in), mout: num(t.main_out), sin: num(t.sub_in), sout: num(t.sub_out), subKnown: typeof t.sub_in === "number",
+      ctx: num(s.context), textTurn: num(s.last_text_turn), note2: str(s.rights_note),
       cost: /^\d+(\.\d+)?$/.test(str(s.cost)) ? parseFloat(s.cost) : 0, src: str(s.tokens_source), subs: num(s.sub_sessions),
       alive: s.supervisor_alive === true, note: str(s.note), head: str(s.prompt_head), act: act };
   }
   function ktok(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? Math.round(n / 1e3) + "k" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n); }
   function money(c) { return "$" + (c >= 1 ? c.toFixed(2) : c.toFixed(4)); }
+  // tokens: the main session and subagents apart (export); the cost only if > 0; the context (0.9.1)
   function tokText(sp) {
-    return "токены " + ktok(sp.tin) + " / " + ktok(sp.tout) + (sp.tcr ? " · кэш " + ktok(sp.tcr) : "") + " · " + money(sp.cost) +
-      (sp.src === "export" ? "" : " · без подагентов");
+    return "токены " + ktok(sp.tin) + " / " + ktok(sp.tout) +
+      (sp.src === "export" && sp.subKnown ? " (основная " + ktok(sp.min) + " · подагенты " + ktok(sp.sin) + ")" : " · без подагентов") +
+      (sp.tcr ? " · кэш " + ktok(sp.tcr) : "") + (sp.cost > 0 ? " · " + money(sp.cost) : "") + (sp.ctx ? " · контекст " + ktok(sp.ctx) : "");
   }
+  function permText(p) { var m = / \(подагент\)$/.exec(p); return m ? "отказ в правах (подагент): " + p.slice(0, m.index) : "отказ в правах: " + p; }
   // the state of a launch for people; live durations as live() spans
   function spawnState(sp, box) {
     if (!sp.alive) { add(box, el("span", "bad", "надзор не отвечает"), " — «Разбудить» перезапустит"); return; }
@@ -888,7 +894,7 @@ pre {
     else if (sp.state === "conflict") add(box, el("span", "bad", "конфликт: под именем работает другой wait"));
     else if (sp.state === "starting") add(box, "запуск");
     else { add(box, "ждёт"); if (sp.turnEnd) add(box, " ", live("dur", sp.turnEnd)); }
-    if (sp.perm && !(sp.state === "crashed" && /^отказ в правах/.test(sp.lastError))) add(box, " · ", el("span", "bad", "отказ в правах: " + sp.perm));
+    if (sp.perm && !(sp.state === "crashed" && /^отказ в правах/.test(sp.lastError))) add(box, " · ", el("span", "bad", permText(sp.perm)));
   }
   // the form "Добавить агента" (with the server): harness, model, count, rights, a note
   function lsGet(k) { try { return window.localStorage.getItem(k) || ""; } catch (e) { return ""; } }
@@ -1211,7 +1217,7 @@ pre {
     var r = el("div", "troles");
     // one role (DESIGN §6.1): the lead — the facilitator and the link with the human; empty only while nobody is on the line
     r.appendChild(add(el("span"), el("span", "lab", "lead"), h.Lead ? chip(h.Lead, "sm") : el("span", "faint", "нет — назначится первому, кто выйдет на связь")));
-    if (v.ssum && v.ssum.n) r.appendChild(add(el("span", "faint"), "запущены brg: " + v.ssum.n + " · токены " + ktok(v.ssum.tin) + " / " + ktok(v.ssum.tout) + " · " + money(v.ssum.cost) + (v.ssum.stream ? " · без подагентов" : "")));
+    if (v.ssum && v.ssum.n) r.appendChild(add(el("span", "faint"), "запущены brg: " + v.ssum.n + " · токены " + ktok(v.ssum.tin) + " / " + ktok(v.ssum.tout) + (v.ssum.cost > 0 ? " · " + money(v.ssum.cost) : "") + (v.ssum.stream ? " · без подагентов" : "")));
     box.appendChild(r);
     if (v.fin) {
       var f = v.fin, fl = add(el("div", "tfin"), el("b", null, "подзадачи готовы"), " · lead ", f.lead ? chip(f.lead, "sm") : el("span", "faint", "нет"));
@@ -1320,9 +1326,15 @@ pre {
     }
     box.appendChild(strip);
     if (warns.firstChild) box.appendChild(warns);
+    S.spLists = [];
     spawned.forEach(function (a) { box.appendChild(spawnPanel(a)); });
+    S.spLists.forEach(function (x) { spScrollRestore(x[0], x[1]); });
   }
 
+  function spScrollRestore(list, key) {
+    var st = S.spScroll[key];
+    list.scrollTop = !st || st.end ? list.scrollHeight : st.top;
+  }
   // the panel of an agent launched by brg: the last finished steps (what goes on now is not in the
   // stream: a tool shows up when it is over), its last answer, the beginning of its last prompt
   function spawnPanel(a) {
@@ -1334,19 +1346,29 @@ pre {
     b.appendChild(el("div", "faint", (sp.harness || "?") + " · " + (sp.model || "?") + " · права " + sp.rights + " — " + (RIGHTS_RU[sp.rights] || "?") +
       (sp.subs ? " · подагентов: " + sp.subs : "") + (sp.note ? " · подпись: «" + sp.note + "»" : "")));
     if (sp.perm) { // stays until the rights change (DESIGN §5.5)
-      var pr = add(el("div", "spperm"), el("span", "bad", "отказ в правах: " + sp.perm));
+      var pr = add(el("div", "spperm"), el("span", "bad", permText(sp.perm)));
       if (CTL && sp.rights === "project") add(pr, " ", btn("cbtn", "дать полные права", function () { act("spawn-ctl", { id: sp.id, op: "rights", rights: "full" }); }));
       b.appendChild(pr);
     }
     if (sp.lastEvent && sp.state === "running" && sp.lastEvent >= sp.turnStart) b.appendChild(add(el("div", "faint"), "последнее событие ", live("ago", sp.lastEvent), " (идущий инструмент в потоке не виден — он появится, когда закончится)"));
-    var list = el("div", "spact");
+    if (sp.note2) b.appendChild(el("div", "faint", "придёт с пробуждением: " + sp.note2.replace(/^── /, "")));
+    var list = el("div", "spact"), key = sp.id;
     if (!sp.act.length) list.appendChild(el("div", "faint", "активности пока нет"));
-    sp.act.slice(-30).forEach(function (x) {
-      list.appendChild(add(el("div", "spl" + (x.kind === "error" || x.kind === "permission" ? " bad" : "")),
+    sp.act.slice(-50).forEach(function (x) { // newest at the bottom; the start of a turn stands out
+      list.appendChild(add(el("div", "spl" + (x.kind === "error" || x.kind === "permission" ? " bad" : "") + (x.kind === "turn" ? " turn" : "")),
         el("span", "st", (x.ep ? hm(x.ep) : "?") + " "), el("span", "sk", (ACT_RU[x.kind] || x.kind) + " "), x.text));
     });
+    // the scroll of the list survives a redraw: at the end (or never scrolled) — follow the new lines
+    list.addEventListener("scroll", function () {
+      S.spScroll[key] = { end: list.scrollHeight - list.scrollTop - list.clientHeight < 24, top: list.scrollTop };
+    });
+    d.addEventListener("toggle", function () { if (d.open) spScrollRestore(list, key); });
     b.appendChild(list);
-    if (sp.lastText) { b.appendChild(el("div", "lab", "последний ответ")); b.appendChild(el("div", "spt", sp.lastText)); }
+    S.spLists.push([list, key]);
+    if (sp.lastText) {
+      b.appendChild(el("div", "lab", "последний ответ" + (sp.textTurn ? " (ход " + sp.textTurn + (sp.state === "running" && sp.textTurn === sp.turn ? ", идёт" : "") + ")" : "")));
+      b.appendChild(el("div", "spt", sp.lastText));
+    }
     if (sp.head) { b.appendChild(el("div", "lab", "начало последнего промпта")); b.appendChild(el("div", "spt faint", sp.head)); }
     d.appendChild(b);
     return d;

@@ -12,7 +12,10 @@
 #   text T · brg ARGS (bash .brigada/bin/brg ARGS) · sh CMD (bash -c CMD) · wait [--busy CAP]
 #   bgwait [DELAY] (wait --busy in the background, its own group; the run goes on and ends)
 #   sleep N · error MSG (an error event, exit 1) · exit N · task [CMD] · task-bg [CMD]
-#   (a child session: CMD runs with its OPENCODE_SESSION_ID) · perm WHAT (a refused permission)
+#   (a child session: CMD runs with its OPENCODE_SESSION_ID) · perm WHAT (a refused permission of
+#   the main session: stderr + tool_use error) · perm-sub WHAT (a subagent's: stderr only) · errorev MSG
+#   (an error event, the run goes on) · stepzero (a step with zero tokens) · half T / halfhang T (half of
+#   a text event, a pause, the rest / no rest: the test kills it)
 # In commands $ME is the agent's full name (from the prompt), $BRG — bash .brigada/bin/brg.
 # $FAKE_OC_DIR/overlap appears if two runs of one session overlap.
 # Env: FAKE_OC_EXPORT_SLEEP (s), FAKE_OC_EXPORT_FAIL=1, FAKE_OC_BG_DELIVER_DELAY (BRG_TEST_DELIVER_DELAY
@@ -49,8 +52,8 @@ tok_add() { # SID IN OUT REAS CR CW COST
     printf "%d %d %d %d %d %.6f\n", A[1] + X[1], A[2] + X[2], A[3] + X[3], A[4] + X[4], A[5] + X[5], A[6] + X[6] }' >"$f.tmp" && mv -f "$f.tmp" "$f"
 }
 step_finish() { # [REASON]
-  emit "{\"type\":\"step_finish\",\"timestamp\":$(now_ms),\"sessionID\":\"$SID\",\"part\":{\"id\":\"prt_f$STEP\",\"sessionID\":\"$SID\",\"messageID\":\"$MID\",\"type\":\"step-finish\",\"reason\":\"${1:-tool-calls}\",\"cost\":0.001,\"tokens\":{\"input\":100,\"output\":10,\"reasoning\":2,\"cache\":{\"read\":5,\"write\":1}}}}"
-  tok_add "$SID" 100 10 2 5 1 0.001
+  emit "{\"type\":\"step_finish\",\"timestamp\":$(now_ms),\"sessionID\":\"$SID\",\"part\":{\"id\":\"prt_f$STEP\",\"sessionID\":\"$SID\",\"messageID\":\"$MID\",\"type\":\"step-finish\",\"reason\":\"${1:-tool-calls}\",\"cost\":${FAKE_OC_COST:-0.001},\"tokens\":{\"input\":100,\"output\":10,\"reasoning\":2,\"cache\":{\"read\":5,\"write\":1}}}}"
+  tok_add "$SID" 100 10 2 5 1 "${FAKE_OC_COST:-0.001}"
 }
 text_ev() {
   local j
@@ -103,7 +106,7 @@ on_term() {
 }
 child_session() { # BG CMD
   local c=ses_child${N}x$RANDOM j out
-  printf '1000 100 0 0 0 0.010000\n' >"$D/sessions/$c.tok"
+  printf "1000 100 0 0 0 %s\n" "${FAKE_OC_COST:-0.010000}" >"$D/sessions/$c.tok"
   step_start
   out=
   if [ -n "$2" ]; then
@@ -185,6 +188,33 @@ oc_run() {
       exit) exit "${arg:-0}" ;;
       task) child_session fg "$arg" ;;
       task-bg) child_session bg "$arg" ;;
+      perm-sub)
+        # a subagent's refusal: only the stderr line (its tool_use is not in the main stream)
+        printf '\033[33m! permission requested: %s; auto-rejecting\033[0m\n' "$arg" >&2
+        ;;
+      errorev)
+        # an error event in the middle of a turn (the run goes on; exit with "exit N")
+        step_start
+        emit "{\"type\":\"error\",\"timestamp\":$(now_ms),\"sessionID\":\"$SID\",\"error\":{\"name\":\"APIError\",\"data\":{\"message\":\"${arg:-provider is down}\"}}}"
+        ;;
+      stepzero)
+        # a failed step: step_finish with zero tokens (it must not reset the context)
+        step_start
+        emit "{\"type\":\"step_finish\",\"timestamp\":$(now_ms),\"sessionID\":\"$SID\",\"part\":{\"type\":\"step-finish\",\"reason\":\"error\",\"cost\":0,\"tokens\":{\"input\":0,\"output\":0,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}}}}"
+        ;;
+      half | halfhang)
+        # half of a text event, a pause, then the rest (halfhang: never — the test kills the fake)
+        local j h
+        jstr j "${arg:-половина}"
+        step_start
+        h="{\"type\":\"text\",\"timestamp\":$(now_ms),\"sessionID\":\"$SID\",\"part\":{\"type\":\"text\",\"text\":$j}}"
+        printf '%s' "${h:0:40}"
+        printf '%s\n' "$$" >"$RD/half"
+        [ "$cmd" != halfhang ] || exec sleep 60 # the test kills this very pid (run.N/pid)
+        sleep 4
+        printf '%s\n' "${h:40}"
+        step_finish
+        ;;
       perm)
         step_start
         printf '\033[33m\033[1m! permission requested: %s; auto-rejecting\033[0m\n' "$arg" >&2
@@ -216,6 +246,8 @@ oc_export() {
   SLP=
   trap 'echo INT >"$D/export.$k/sig"; [ -z "$SLP" ] || kill "$SLP" 2>/dev/null; exit 130' INT
   trap 'echo TERM >"$D/export.$k/sig"; [ -z "$SLP" ] || kill "$SLP" 2>/dev/null; exit 143' TERM
+  # the tokens as they are when the export starts (a slow export only prints late)
+  [ -f "$D/sessions/$id.tok" ] && read -r a b c d e g <"$D/sessions/$id.tok"
   if [ -n "${FAKE_OC_EXPORT_SLEEP:-}" ]; then
     sleep "$FAKE_OC_EXPORT_SLEEP" &
     SLP=$!
@@ -223,7 +255,6 @@ oc_export() {
   fi
   [ "${FAKE_OC_EXPORT_FAIL:-}" != 1 ] || { echo "Session not found" >&2; exit 1; }
   [ -f "$D/sessions/$id.tok" ] || { echo "Session not found: $id" >&2; exit 1; }
-  read -r a b c d e g <"$D/sessions/$id.tok"
   cat <<EOF
 {
   "info": {

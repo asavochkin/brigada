@@ -19,7 +19,7 @@ _brg_crlf=x
 case ${#_brg_crlf} in 1) ;; *) printf '%s\n' "brg: ОШИБКА: у файла $0 окончания строк CRLF (Windows) — bash его не выполнит." "Причина — git с core.autocrlf=true. Это .brigada/bin/brg — переустанови: bash <brigada>/bin/brg init <проект>. Это сам репозиторий brigada — удали bin/brg и восстанови: git checkout -- bin/brg (по .gitattributes он запишется с LF) или скачай brigada заново. Проверка: bash <brigada>/bin/brg doctor <проект>." >&2; exit 2 ;; esac #
 unset _brg_crlf
 
-BRG_VERSION=0.9.0
+BRG_VERSION=0.9.1
 # the caller's locale, restored for commands started by `brg run`
 _brg_lc_set=${LC_ALL+1}
 _brg_lc=${LC_ALL-}
@@ -8307,7 +8307,7 @@ cmd_wait() {
     if [ -n "$W_SV" ]; then
       [ -e "$W_SD/rm" ] && w_finish flag:rm 0
       [ -e "$W_SD/detach" ] && w_finish flag:detach 0
-      if [ -e "$W_SD/wake" ] || [ -e "$W_SD/rights" ]; then W_FORCE=1; fi
+      [ ! -e "$W_SD/wake" ] || W_FORCE=1 # a change of rights does not wake (0.9.1): the supervisor applies it
     fi
     w_deliver
     [ -z "$W_IDLE" ] || w_idle_finish
@@ -8348,7 +8348,7 @@ SPAWN_IDLE="заверши ход — brg разбудит тебя, когда 
 SPAWN_SUPPORTED=opencode
 TAB=$'\t'
 ESC=$'\033'
-SP_FIELDS="Id Agent Harness Model Rights Session State Note Created Created-Epoch Supervisor Turn Turn-Start Turn-End Turn-Result Turn-Stopped Last-Error Perm-Denied Last-Event Hold Tokens-In Tokens-Out Tokens-Reasoning Tokens-Cache-Read Tokens-Cache-Write Cost Tokens-Source Sub-Sessions Locale-Set Locale"
+SP_FIELDS="Id Agent Harness Model Rights Session State Note Created Created-Epoch Supervisor Turn Turn-Start Turn-End Turn-Result Turn-Stopped Last-Error Perm-Denied Rights-Note Rights-Note-Turn Last-Event Hold Context Tokens-In Tokens-Out Tokens-Reasoning Tokens-Cache-Read Tokens-Cache-Write Tokens-Main-In Tokens-Main-Out Tokens-Sub-In Tokens-Sub-Out Cost Tokens-Source Sub-Sessions Last-Text-Turn Locale-Set Locale"
 
 # hdr_v VAR FILE KEY — one header of a record ("" if none)
 hdr_v() {
@@ -8542,7 +8542,10 @@ spawn_note_v() {
     stopped) _sn_r="$_sn_r · остановлен — снимется по brg resume (кнопка «Продолжить»)" ;;
     conflict) _sn_r="$_sn_r · конфликт: под именем работает другой wait" ;;
   esac
-  case $SQ_Perm_Denied:$_sn_r in :* | *"отказ в правах"*) ;; *) _sn_r="$_sn_r · отказ в правах: $SQ_Perm_Denied" ;; esac
+  if [ -n "$SQ_Perm_Denied" ]; then
+    spawn_perm_words_v _sn_v "$SQ_Perm_Denied"
+    case $_sn_r in *"отказ в правах"*) ;; *) _sn_r="$_sn_r · $_sn_v" ;; esac
+  fi
   spawn_sv_state_v _sn_v "$_sn_s"
   [ "$_sn_v" = alive ] || _sn_r="$_sn_r · надзор не отвечает (brg spawn wake $_sn_s перезапустит)"
   eval "$1=\" (\$_sn_r)\""
@@ -8592,7 +8595,9 @@ mask_v() {
 # The events of a turn (OpenCode --format json, one JSON object per line) → lines:
 #   A<TAB>epoch<TAB>kind<TAB>text   activity (tool, text, error), ≤ 280 bytes, masked
 #   S<TAB>ses_…   the session · T<TAB>in out reasoning cache_read cache_write cost (step_finish sums)
-#   E<TAB>error · C<TAB>child session (output of the task tool) · P<TAB>a refused permission
+#   E<TAB>error · C<TAB>child session (output of the task tool) · P<TAB>the input of a refused
+#   tool_use · K<TAB>the context (the last step_finish with tokens) · X<TAB>bytes consumed; with
+#   SP_PARTIAL=1 the last record is left for later (the chunk does not end with a newline)
 # and the last text of the model (≤ 2 KB, masked) into the file ENVIRON["SP_LAST"]. JSON by
 # regular expressions on the line; unknown events are skipped (a new format loses the view,
 # not the work).
@@ -8630,9 +8635,9 @@ function cut(s, n) {
   return s
 }
 function act(ep, kind, text) { print "A\t" ep "\t" kind "\t" cut(mask(text), 280) }
-BEGIN { split("command filePath path pattern description url", K, " ") }
-{
-  line = $0; t = jstr(line, "type")
+function proc(line,   t, ts, ep, x, tool, st, p, inp, what, i, lab, r, m, tx, tk, ck, a, b, c, d, e, er) {
+  used += length(line) + 1
+  t = jstr(line, "type")
   ts = jnum(line, "timestamp"); ep = ts > 0 ? int(ts / 1000) : now
   if (sid == "") { x = jstr(line, "sessionID"); if (x ~ /^ses_[A-Za-z0-9_-]+$/) sid = x }
   if (t == "tool_use") {
@@ -8643,7 +8648,7 @@ BEGIN { split("command filePath path pattern description url", K, " ") }
     if (length(what) > 4000) what = substr(what, 1, 4000)
     lab = tool (what != "" ? ": " what : "")
     act(ep, "tool", lab (st == "error" ? " — ошибка" : ""))
-    if (st == "error" && index(line, "request was rejected")) print "P\t" cut(mask(lab), 200)
+    if (st == "error" && index(line, "request was rejected")) print "P\t" cut(mask(what != "" ? what : tool), 300)
     if (tool == "task") {
       r = line
       while (match(r, /(task_id|sessionID): ses_[A-Za-z0-9_-]+/)) {
@@ -8656,9 +8661,11 @@ BEGIN { split("command filePath path pattern description url", K, " ") }
     if (tx != "") { last = tx; act(ep, "text", substr(tx, 1, 4000)) }
   } else if (t == "step_finish") {
     p = index(line, "\"tokens\":{"); tk = p ? substr(line, p) : ""
-    tin += jnum(tk, "input"); tout += jnum(tk, "output"); trs += jnum(tk, "reasoning")
+    a = jnum(tk, "input"); b = jnum(tk, "output"); c = jnum(tk, "reasoning")
     p = index(tk, "\"cache\":{"); ck = p ? substr(tk, p) : ""
-    tcr += jnum(ck, "read"); tcw += jnum(ck, "write")
+    d = jnum(ck, "read"); e = jnum(ck, "write")
+    tin += a; tout += b; trs += c; tcr += d; tcw += e
+    if (a + b + c + d + e > 0) ctx = a + b + c + d + e # a failed step with zeros keeps the context
     cost += jnum(line, "cost")
   } else if (t == "error") {
     p = index(line, "\"error\":{"); er = p ? substr(line, p) : line
@@ -8666,16 +8673,38 @@ BEGIN { split("command filePath path pattern description url", K, " ") }
     err = cut(mask(m), 280); act(ep, "error", m)
   }
 }
+BEGIN { split("command filePath path pattern description url", K, " "); used = 0; have = 0 }
+{ if (have) proc(prev); prev = $0; have = 1 }
 END {
+  # a chunk that does not end with a newline (SP_PARTIAL=1): its last record is not complete yet
+  if (have && ENVIRON["SP_PARTIAL"] != "1") proc(prev)
   if (sid != "") print "S\t" sid
   printf "T\t%d\t%d\t%d\t%d\t%d\t%.6f\n", tin, tout, trs, tcr, tcw, cost
+  if (ctx > 0) print "K\t" ctx
   if (err != "") print "E\t" err
+  print "X\t" used
   if (last != "" && ENVIRON["SP_LAST"] != "") {
     last = mask(last)
     if (length(last) > 2048) { last = substr(last, 1, 2048); sub(/[\300-\377][\200-\277]*$/, "", last); last = last "…" }
     printf "%s\n", last > ENVIRON["SP_LAST"]
   }
 }'
+# The lines of stderr.log (only complete ones, as above): OpenCode prints for any session, a
+# subagent's too, "permission requested: <action> (<resources>); auto-rejecting" → "E<TAB>…"
+# (escape sequences dropped, the key masked); "X<TAB>bytes consumed"
+AWK_SPERR='
+function proc(l,   s) {
+  used += length(l) + 1
+  gsub(/\033\[[0-9;?]*[A-Za-z]/, "", l)
+  if (l ~ /permission requested:/ && l ~ /auto-rejecting/) {
+    s = l; sub(/.*permission requested: */, "", s); sub(/; *auto-rejecting.*/, "", s)
+    gsub(/[\001-\037\177]/, " ", s)
+    print "E\t" mask(s)
+  }
+}
+BEGIN { used = 0; have = 0 }
+{ if (have) proc(prev); prev = $0; have = 1 }
+END { if (have && ENVIRON["SP_PARTIAL"] != "1") proc(prev); print "X\t" used }'
 # The head of `session export` (whitespace dropped): info.cost and info.tokens → "in out reasoning
 # cache_read cache_write cost"; nothing if there are no tokens
 AWK_EXPORT='
@@ -8817,6 +8846,7 @@ sv_tick() {
     exit 0
   fi
   [ -d "$SD" ] || exit 0
+  [ ! -e "$SD/rights" ] || sv_rights_check
 }
 # sv_pause SECS — sleep in steps, beating
 sv_pause() {
@@ -8829,7 +8859,7 @@ sv_pause() {
   done
 }
 sv_tail() {
-  tail -n 30 "$SD/activity.log" >"$SD/.activity.tail.$$" 2>/dev/null && mv -f "$SD/.activity.tail.$$" "$SD/activity.tail" 2>/dev/null
+  tail -n 50 "$SD/activity.log" >"$SD/.activity.tail.$$" 2>/dev/null && mv -f "$SD/.activity.tail.$$" "$SD/activity.tail" 2>/dev/null
 }
 # sv_act KIND TEXT — a line of the activity (written by the supervisor itself)
 sv_act() {
@@ -8838,6 +8868,14 @@ sv_act() {
   mask_v x "${2//[[:cntrl:]]/ }"
   utf8_cut_v x "$x" 280
   printf '%s\t%s\t%s\n' "$NOW" "$1" "$x" >>"$SD/activity.log"
+  # the state of the parse of the current turn counts this line too (append, then the state):
+  # else the next parse — or the recovery — would cut it off as a leftover of a kill -9
+  if is_uint "$SP_Turn" && [ -f "$SD/turn.$SP_Turn.parse" ]; then
+    pz_load "$SP_Turn"
+    PZ_ASIZE=$(wc -c <"$SD/activity.log")
+    PZ_ASIZE=${PZ_ASIZE//[!0-9]/}
+    pz_save "$SP_Turn"
+  fi
   sv_tail
 }
 sv_stopped_now() { [ -e "$RUN/stopped" ] || [ -e "$RUN/stopped.$AGENT" ]; }
@@ -8853,22 +8891,26 @@ BRG_FP
   cat "$SD/join.out" 2>/dev/null
 }
 
-# sv_apply_rights — a flag "rights" (full|project): the new value goes into the record; 1 if
-# there was nothing valid
-sv_apply_rights() {
+# spawn_rights_note_v VAR full|project — the line on a change of rights that comes with every
+# wake-up until a good turn has seen it (Rights-Note, DESIGN §5.5)
+spawn_rights_note_v() {
+  case $2 in
+    full) eval "$1='── человек расширил права до full (вне каталога проекта и чтение .env — теперь можно): если тебе или твоему подагенту отказывали — можно повторить'" ;;
+    *) eval "$1='── человек изменил права на project: вне каталога проекта и чтение .env — отказ'" ;;
+  esac
+}
+# sv_rights_check — a flag "rights" (full|project) is applied at once, in any wait of the
+# supervisor and during a turn (0.9.1): it does not wake; the new rights act from the next turn
+sv_rights_check() {
   local v=
-  [ -f "$SD/rights" ] && IFS= read -r v <"$SD/rights"
+  [ -e "$SD/rights" ] || return 0
+  IFS= read -r v <"$SD/rights"
   rm -f "$SD/rights"
-  case $v in full | project) ;; *) return 1 ;; esac
-  SP_Rights=$v SP_Perm_Denied=
+  case $v in full | project) ;; *) return 0 ;; esac
+  SP_Rights=$v SP_Perm_Denied= SP_Rights_Note_Turn=
+  spawn_rights_note_v SP_Rights_Note "$v"
   sp_write "$SD"
-  sv_act turn "права: $v (со следующего хода)"
-  if [ "$v" = full ]; then
-    SV_REASON="$SV_REASON$NL── человек расширил права (full): повтори действие, в котором тебе отказали, если оно ещё нужно"
-  else
-    SV_REASON="$SV_REASON$NL── человек изменил права (project): вне каталога проекта и чтение .env — отказ"
-  fi
-  return 0
+  sv_act turn "права: $v — со следующего хода"
 }
 
 # sv_removed WHY — the end: removed (rm, or the agent left)
@@ -8975,16 +9017,6 @@ sv_notify_lead() {
   MSG_EXTRA=
 }
 
-# sv_stream_tokens — the record's tokens from the sum of step_finish of the main session
-sv_stream_tokens() {
-  local a b c d e f n=0 x
-  [ -f "$SD/stream.tok" ] || return 0
-  read -r a b c d e f <"$SD/stream.tok"
-  [ -f "$SD/children" ] && n=$(awk 'END { print NR }' "$SD/children")
-  SP_Tokens_In=$a SP_Tokens_Out=$b SP_Tokens_Reasoning=$c SP_Tokens_Cache_Read=$d SP_Tokens_Cache_Write=$e SP_Cost=$f
-  SP_Tokens_Source=stream SP_Sub_Sessions=${n//[!0-9]/}
-}
-
 # sv_export_one ID → EX ("in out reasoning cache_read cache_write cost"); 1 on failure.
 # `session export` is our own child (not a pipeline: the timeout must stop it, not head);
 # only the head of its output is read.
@@ -9017,14 +9049,14 @@ sv_export_one() {
 }
 # sv_export_run — (a background subshell) the main session and every child; a child whose
 # total has not changed for 2 turns in a row and whose id was not seen again this turn is
-# not exported again. → tokens.res: "in out reasoning cache_read cache_write cost subs" | fail
+# not exported again. → tokens.res: "main six-tuple · subagents six-tuple · subs" | fail
 sv_export_run() {
-  local id ids= a b c d e f k line tot="0 0 0 0 0 0" subs=0 out=
+  local id ids= a b c d e f k line tot="0 0 0 0 0 0" subs=0 out= main
   if ! sv_export_one "$SP_Session"; then
     printf 'fail\n' >"$SD/tokens.res.tmp" && mv -f "$SD/tokens.res.tmp" "$SD/tokens.res"
     return 0
   fi
-  tot=$EX
+  main=$EX
   [ -f "$SD/children" ] && ids=$(cat "$SD/children")
   for id in $ids; do
     case $id in ses_*) ;; *) continue ;; esac
@@ -9057,7 +9089,7 @@ sv_export_run() {
     fi
   done
   printf '%s' "$out" >"$SD/children.tok.tmp" && mv -f "$SD/children.tok.tmp" "$SD/children.tok"
-  printf '%s %s\n' "$tot" "$subs" >"$SD/tokens.res.tmp" && mv -f "$SD/tokens.res.tmp" "$SD/tokens.res"
+  printf '%s %s %s\n' "$main" "$tot" "$subs" >"$SD/tokens.res.tmp" && mv -f "$SD/tokens.res.tmp" "$SD/tokens.res"
 }
 SV_EXP_PID=
 sv_export_start() {
@@ -9065,49 +9097,298 @@ sv_export_start() {
   [ -n "$SP_Session" ] || return 0
   [ -z "$SV_EXP_PID" ] || return 0
   rm -f "$SD/tokens.res"
+  # the stream as it is when the export starts: the main session = the export + what came after
+  SV_EXP_ST=
+  [ -f "$SD/stream.tok" ] && IFS= read -r SV_EXP_ST <"$SD/stream.tok"
   set -m # not a plain background list: that would ignore SIGINT, and so would the export
   (sv_export_run) </dev/null >/dev/null 2>>"$SD/supervisor.log" &
   SV_EXP_PID=$!
   set +m
 }
-# sv_export_check — the export finished: its totals into the record (only the supervisor writes it)
+# sv_export_check — the export finished: the main session (expmain.tok, with the stream as it
+# was then) and the subagents (sub.tok) separately; failed — the stream (only the supervisor
+# writes the record)
 sv_export_check() {
-  local a b c d e f g
+  local x st=
   [ -n "$SV_EXP_PID" ] || return 0
   kill -0 "$SV_EXP_PID" 2>/dev/null && return 0
   wait "$SV_EXP_PID" 2>/dev/null
   SV_EXP_PID=
   [ -f "$SD/tokens.res" ] || return 0
-  read -r a b c d e f g <"$SD/tokens.res"
+  IFS= read -r x <"$SD/tokens.res"
   rm -f "$SD/tokens.res"
-  if [ "$a" = fail ] || ! is_uint "$a"; then
-    sv_stream_tokens
+  set -- $x
+  if [ $# -ne 13 ] || ! is_uint "$1"; then
+    rm -f "$SD/expmain.tok" "$SD/sub.tok"
   else
-    SP_Tokens_In=$a SP_Tokens_Out=$b SP_Tokens_Reasoning=$c SP_Tokens_Cache_Read=$d SP_Tokens_Cache_Write=$e SP_Cost=$f
-    SP_Tokens_Source=export SP_Sub_Sessions=$g
+    st=$SV_EXP_ST # taken when the export started (a turn may have passed since)
+    set -- $st
+    [ $# -eq 7 ] || st="0 0 0 0 0 0 0.000000"
+    set -- $x
+    printf '%s %s %s %s %s %s %s %s\n' "${st%% *}" "$1" "$2" "$3" "$4" "$5" "$6" "${st#* }" >"$SD/.expmain.$$" && mv -f "$SD/.expmain.$$" "$SD/expmain.tok"
+    printf '%s %s %s %s %s %s %s\n' "$7" "$8" "$9" "${10}" "${11}" "${12}" "${13}" >"$SD/.sub.$$" && mv -f "$SD/.sub.$$" "$SD/sub.tok"
   fi
+  sv_tokens_now
   sp_write "$SD"
 }
 
-# sv_turn_files — carry what the wrapper saw into the record: the last growth of the
-# stream (Last-Event) and the session id (the "subagent" check works from the first turn)
-sv_turn_files() {
-  local x= ch=
+# sv_turn_files_mem — what the wrapper saw (the last growth of the stream — Last-Event, the
+# session id: the "subagent" check works from the first turn) into SP_*; SV_TF_CH=1 if changed
+sv_turn_files_mem() {
+  local x=
+  SV_TF_CH=
   [ -f "$SD/turn.event" ] && IFS= read -r x <"$SD/turn.event"
   if is_uint "$x" && [ "$x" != "$SP_Last_Event" ]; then
     SP_Last_Event=$x
-    ch=1
+    SV_TF_CH=1
   fi
   if [ -z "$SP_Session" ] && [ -f "$SD/turn.session" ]; then
     x=
     IFS= read -r x <"$SD/turn.session"
     case $x in ses_*[!A-Za-z0-9_-]* | '') ;; ses_*)
       SP_Session=$x
-      ch=1
+      SV_TF_CH=1
       ;;
     esac
   fi
-  [ -z "$ch" ] || sp_write "$SD"
+}
+sv_turn_files() {
+  sv_turn_files_mem
+  [ -z "$SV_TF_CH" ] || sp_write "$SD"
+}
+
+# ── the parse of a turn as it goes (DESIGN §5.5, 0.9.1) ──
+# turn.N.parse — what of turn N is parsed already, one record (tmp + mv), lines "Key value":
+# Events-Off, Stderr-Off (absolute offsets parsed up to), In Out Reasoning Cache-Read Cache-Write
+# Cost (sums of step_finish), Context, Activity-Size (activity.log after the lines of this parse),
+# Error <text>, and repeated PM <input of a refused tool_use of the main session>, PE <a refusal
+# from stderr>. The last text — turn.N.text. Order of writes: the lines into activity.log, then
+# turn.N.parse; a parse first cuts activity.log back to Activity-Size (kill -9 in between).
+pz_load() { # N
+  local n=$1 f=$SD/turn.$1.parse k v e x
+  PZ_EOFF= PZ_SOFF= PZ_IN=0 PZ_OUT=0 PZ_RS=0 PZ_CR=0 PZ_CW=0 PZ_COST=0 PZ_CTX= PZ_ASIZE= PZ_ERR= PZ_PM= PZ_PE=
+  if [ -f "$f" ]; then
+    while IFS= read -r x || [ -n "$x" ]; do
+      k=${x%% *}
+      v=${x#* }
+      [ "$v" != "$x" ] || v=
+      case $k in
+        Events-Off) PZ_EOFF=$v ;;
+        Stderr-Off) PZ_SOFF=$v ;;
+        In) PZ_IN=$v ;;
+        Out) PZ_OUT=$v ;;
+        Reasoning) PZ_RS=$v ;;
+        Cache-Read) PZ_CR=$v ;;
+        Cache-Write) PZ_CW=$v ;;
+        Cost) PZ_COST=$v ;;
+        Context) PZ_CTX=$v ;;
+        Activity-Size) PZ_ASIZE=$v ;;
+        Error) PZ_ERR=$v ;;
+        PM) PZ_PM="$PZ_PM$v$NL" ;;
+        PE) PZ_PE="$PZ_PE$v$NL" ;;
+      esac
+    done <"$f"
+  fi
+  if ! is_uint "$PZ_EOFF" || ! is_uint "$PZ_SOFF"; then
+    e=0 x=0
+    [ -f "$SD/turn.$n.off" ] && read -r e x <"$SD/turn.$n.off"
+    is_uint "$e" || e=0
+    is_uint "$x" || x=0
+    PZ_EOFF=$e PZ_SOFF=$x
+  fi
+  if ! is_uint "$PZ_ASIZE"; then
+    PZ_ASIZE=0
+    [ -f "$SD/activity.log" ] && PZ_ASIZE=$(wc -c <"$SD/activity.log")
+    PZ_ASIZE=${PZ_ASIZE//[!0-9]/}
+  fi
+}
+pz_save() { # N
+  local x
+  {
+    printf 'Events-Off %s\nStderr-Off %s\nIn %s\nOut %s\nReasoning %s\nCache-Read %s\nCache-Write %s\nCost %s\nContext %s\nActivity-Size %s\n' \
+      "$PZ_EOFF" "$PZ_SOFF" "$PZ_IN" "$PZ_OUT" "$PZ_RS" "$PZ_CR" "$PZ_CW" "$PZ_COST" "$PZ_CTX" "$PZ_ASIZE"
+    [ -z "$PZ_ERR" ] || printf 'Error %s\n' "${PZ_ERR//$NL/ }"
+    printf '%s' "$PZ_PM" | while IFS= read -r x; do [ -z "$x" ] || printf 'PM %s\n' "$x"; done
+    printf '%s' "$PZ_PE" | while IFS= read -r x; do [ -z "$x" ] || printf 'PE %s\n' "$x"; done
+  } >"$SD/.turn.parse.$$" && mv -f "$SD/.turn.parse.$$" "$SD/turn.$1.parse"
+}
+# sv_chunk FILE OFF FINAL → CH_SIZE, CH_PART: the size now and whether the bytes after OFF end
+# without a newline (then the last record is not complete — unless FINAL: the turn is over)
+sv_chunk() {
+  local x
+  CH_SIZE=0 CH_PART=
+  [ -f "$1" ] || return 1
+  CH_SIZE=$(wc -c <"$1")
+  CH_SIZE=${CH_SIZE//[!0-9]/}
+  [ "${CH_SIZE:-0}" -gt "$2" ] || return 1
+  if [ -z "$3" ]; then
+    x=$(tail -c +"$CH_SIZE" "$1" 2>/dev/null | head -c 1)
+    [ -z "$x" ] || CH_PART=1
+  fi
+  return 0
+}
+# sv_parse N [final] — parse what turn N added to events.log and stderr.log since turn.N.parse;
+# PZ_NEWTEXT=1 if a new last text came (turn.N.text)
+SV_CHILDREN_NEW=
+sv_parse() {
+  local n=$1 fin=${2:-} out line acts= sz x used last=$SD/.last.$$
+  PZ_NEWTEXT=
+  pz_load "$n"
+  sz=0
+  [ -f "$SD/activity.log" ] && sz=$(wc -c <"$SD/activity.log")
+  sz=${sz//[!0-9]/}
+  if [ "${sz:-0}" -gt "$PZ_ASIZE" ]; then # lines of a parse whose state was never saved (kill -9)
+    head -c "$PZ_ASIZE" "$SD/activity.log" >"$SD/.activity.cut.$$" && mv -f "$SD/.activity.cut.$$" "$SD/activity.log"
+  fi
+  get_now
+  if sv_chunk "$SD/events.log" "$PZ_EOFF" "$fin"; then
+    rm -f "$last"
+    out=$(tail -c +$((PZ_EOFF + 1)) "$SD/events.log" 2>/dev/null | head -c $((CH_SIZE - PZ_EOFF)) |
+      SP_PARTIAL=$CH_PART SP_LAST=$last awk -v now="$NOW" "$AWK_MASK$AWK_SPEV")
+    used=0
+    while IFS= read -r line; do
+      case $line in
+        A"$TAB"*) acts="$acts${line#A"$TAB"}$NL" ;;
+        S"$TAB"*)
+          x=${line#S"$TAB"}
+          [ -n "$SP_Session" ] || SP_Session=$x
+          ;;
+        T"$TAB"*)
+          set -- $line
+          PZ_IN=$((PZ_IN + $2)) PZ_OUT=$((PZ_OUT + $3)) PZ_RS=$((PZ_RS + $4)) PZ_CR=$((PZ_CR + $5)) PZ_CW=$((PZ_CW + $6))
+          PZ_COST=$(awk -v a="$PZ_COST" -v b="$7" 'BEGIN { printf "%.6f", a + b }')
+          ;;
+        K"$TAB"*) PZ_CTX=${line#K"$TAB"} ;;
+        E"$TAB"*) PZ_ERR=${line#E"$TAB"} ;;
+        X"$TAB"*) used=${line#X"$TAB"} ;;
+        C"$TAB"*)
+          x=${line#C"$TAB"}
+          SV_CHILDREN_NEW="$SV_CHILDREN_NEW $x"
+          if [ ! -f "$SD/children" ] || ! awk -v id="$x" '$1 == id { f = 1 } END { exit !f }' "$SD/children"; then
+            printf '%s\n' "$x" >>"$SD/children"
+          fi
+          ;;
+        P"$TAB"*) PZ_PM="$PZ_PM${line#P"$TAB"}$NL" ;;
+      esac
+    done <<BRG_EV
+$out
+BRG_EV
+    is_uint "$used" && PZ_EOFF=$((PZ_EOFF + used))
+    if [ -s "$last" ]; then
+      mv -f "$last" "$SD/turn.$n.text"
+      PZ_NEWTEXT=1
+    fi
+    rm -f "$last"
+  fi
+  if sv_chunk "$SD/stderr.log" "$PZ_SOFF" "$fin"; then
+    out=$(tail -c +$((PZ_SOFF + 1)) "$SD/stderr.log" 2>/dev/null | head -c $((CH_SIZE - PZ_SOFF)) |
+      SP_PARTIAL=$CH_PART awk "$AWK_MASK$AWK_SPERR")
+    used=0
+    while IFS= read -r line; do
+      case $line in
+        E"$TAB"*)
+          x=${line#E"$TAB"}
+          PZ_PE="$PZ_PE$x$NL"
+          acts="$acts$NOW${TAB}permission${TAB}отказ в правах: $x$NL"
+          ;;
+        X"$TAB"*) used=${line#X"$TAB"} ;;
+      esac
+    done <<BRG_ER
+$out
+BRG_ER
+    is_uint "$used" && PZ_SOFF=$((PZ_SOFF + used))
+  fi
+  if [ -n "$acts" ]; then
+    printf '%s' "$acts" >>"$SD/activity.log"
+    PZ_ASIZE=$(wc -c <"$SD/activity.log")
+    PZ_ASIZE=${PZ_ASIZE//[!0-9]/}
+  fi
+  # a test hook: kill -9 between the lines of the activity and the state of the parse
+  [ -z "${BRG_SPAWN_TEST_DELAY_PARSE:-}" ] || sleep "$BRG_SPAWN_TEST_DELAY_PARSE"
+  pz_save "$n"
+  [ -z "$acts" ] || sv_tail
+}
+
+# sv_tokens_now [N] — Tokens-* of the record: the main session — the last export (expmain.tok:
+# "TURN six-tuple stream-at-export") plus the stream since it, else the stream (stream.tok:
+# "TURN six-tuple", TURN — the last turn counted); N — the running turn: its parse is added
+# (live tokens); subagents — sub.tok of the last export ("six-tuple count"), else unknown
+sv_tokens_now() {
+  local st= em= sb= pz=0 r
+  [ -f "$SD/stream.tok" ] && IFS= read -r st <"$SD/stream.tok"
+  [ -f "$SD/expmain.tok" ] && IFS= read -r em <"$SD/expmain.tok"
+  [ -f "$SD/sub.tok" ] && IFS= read -r sb <"$SD/sub.tok"
+  [ -z "${1:-}" ] || pz="$1 $PZ_IN $PZ_OUT $PZ_RS $PZ_CR $PZ_CW $PZ_COST"
+  r=$(awk -v st="$st" -v em="$em" -v sb="$sb" -v pz="$pz" 'BEGIN {
+    n = split(st, S, " "); if (n == 6) { for (i = 6; i >= 1; i--) S[i + 1] = S[i]; S[1] = 0 } else if (n != 7) for (i = 1; i <= 7; i++) S[i] = 0
+    for (i = 1; i <= 6; i++) M[i] = S[i + 1]
+    if (split(em, E, " ") == 13) for (i = 1; i <= 6; i++) M[i] = E[i + 1] + (S[i + 1] - E[i + 7])
+    if (split(pz, P, " ") == 7 && P[1] > S[1]) for (i = 1; i <= 6; i++) M[i] += P[i + 1]
+    k = split(sb, B, " ") == 7
+    for (i = 1; i <= 6; i++) T[i] = M[i] + (k ? B[i] : 0)
+    printf "%d %d %d %d %d %.6f %d %d %d %d %s %d %s\n", T[1], T[2], T[3], T[4], T[5], T[6], M[1], M[2], (k ? B[1] : 0), (k ? B[2] : 0), (k ? 1 : 0), (k ? B[7] : 0), (split(em, E, " ") == 13 ? "export" : "stream") }')
+  set -- $r
+  SP_Tokens_In=$1 SP_Tokens_Out=$2 SP_Tokens_Reasoning=$3 SP_Tokens_Cache_Read=$4 SP_Tokens_Cache_Write=$5 SP_Cost=$6
+  SP_Tokens_Main_In=$7 SP_Tokens_Main_Out=$8 SP_Tokens_Source=${13}
+  if [ "${11}" = 1 ] && [ "${13}" = export ]; then
+    SP_Tokens_Sub_In=$9 SP_Tokens_Sub_Out=${10} SP_Sub_Sessions=${12}
+  else
+    SP_Tokens_Sub_In= SP_Tokens_Sub_Out=
+    SP_Sub_Sessions=0
+    [ -f "$SD/children" ] && SP_Sub_Sessions=$(awk 'END { print NR }' "$SD/children")
+  fi
+}
+
+# sv_live N — during turn N (and in the recovery): parse the new bytes (≥ 3 s apart, only if the
+# logs grew), carry the context, live tokens, the last text into the record if they changed
+SV_PZ_AT=0
+SV_PZ_SIZES=
+sv_live() {
+  local n=$1 x e=0 r=0 before after
+  [ $((NOW - SV_PZ_AT)) -ge 3 ] || return 0
+  SV_PZ_AT=$NOW
+  [ -f "$SD/events.log" ] && e=$(wc -c <"$SD/events.log")
+  [ -f "$SD/stderr.log" ] && r=$(wc -c <"$SD/stderr.log")
+  x="${e//[!0-9]/} ${r//[!0-9]/}"
+  [ "$x" != "$SV_PZ_SIZES" ] || return 0
+  SV_PZ_SIZES=$x
+  sv_parse "$n"
+  before="$SP_Session|$SP_Context|$SP_Tokens_In|$SP_Tokens_Out|$SP_Cost|$SP_Last_Text_Turn|$SP_Last_Event"
+  [ -z "$PZ_CTX" ] || SP_Context=$PZ_CTX
+  sv_tokens_now "$n"
+  if [ -n "$PZ_NEWTEXT" ] && [ -s "$SD/turn.$n.text" ]; then
+    SP_BODY=$(cat "$SD/turn.$n.text")
+    SP_Last_Text_Turn=$n
+    before="$before|text"
+  fi
+  sv_turn_files_mem
+  after="$SP_Session|$SP_Context|$SP_Tokens_In|$SP_Tokens_Out|$SP_Cost|$SP_Last_Text_Turn|$SP_Last_Event"
+  [ "$before" = "$after" ] || sp_write "$SD"
+}
+
+# perm_classify — whose are the refusals of the turn (PZ_PM: inputs of refused tool_use of the
+# main session; PZ_PE: stderr lines "<action> (<resources>)", printed for any session): a line whose
+# resource (without a trailing /*) is part of a refused input, or the other way round, is the
+# agent's, each input closing one line; the lines left — by count: as many as inputs are left —
+# the agent's, the rest — a subagent's. → PERM_ALL: one line per refusal, "… (подагент)" if a
+# subagent's; PERM: the last of them
+perm_classify() {
+  PERM_ALL=$(printf '%s\n' "$PZ_PM" | PE=$PZ_PE awk '
+    NF { pm[++m] = $0 }
+    END {
+      n = split(ENVIRON["PE"], E, "\n"); k = 0
+      for (i = 1; i <= n; i++) if (E[i] != "") L[++k] = E[i]
+      if (!k) { for (j = 1; j <= m; j++) print pm[j]; exit }
+      for (i = 1; i <= k; i++) {
+        r = L[i]; if (match(r, /\([^()]*\)$/)) r = substr(r, RSTART + 1, RLENGTH - 2); sub(/\/\*$/, "", r)
+        who[i] = ""
+        for (j = 1; j <= m; j++) if (!used[j] && r != "" && (index(pm[j], r) || index(r, pm[j]))) { used[j] = 1; who[i] = "a"; break }
+      }
+      left = 0; for (j = 1; j <= m; j++) if (!used[j]) left++
+      for (i = 1; i <= k; i++) if (who[i] == "") { if (left > 0) { who[i] = "a"; left-- } else who[i] = "s" }
+      for (i = 1; i <= k; i++) print L[i] (who[i] == "s" ? " (подагент)" : "")
+    }')
+  PERM=${PERM_ALL##*"$NL"}
 }
 
 # sv_turn — one turn: the prompt ($SD/prompt.new) to the harness through the wrapper
@@ -9123,17 +9404,24 @@ sv_turn() {
   off=${off//[!0-9]/} eoff=${eoff//[!0-9]/}
   printf '%s %s\n' "${off:-0}" "${eoff:-0}" >"$SD/turn.$n.off"
   mv -f "$SD/prompt.new" "$SD/prompt.$n"
-  rm -f "$SD/prompt.$((n - 5))" "$SD/turn.$((n - 5)).off" "$SD/turn.$((n - 5)).exit" "$SD/turn.$((n - 5)).idle"
+  rm -f "$SD/prompt.$((n - 5))" "$SD/turn.$((n - 5)).off" "$SD/turn.$((n - 5)).exit" "$SD/turn.$((n - 5)).idle" \
+    "$SD/turn.$((n - 5)).parse" "$SD/turn.$((n - 5)).text" "$SD/turn.$((n - 5)).ended" "$SD/turn.$((n - 5)).notified"
   head -n 8 "$SD/prompt.$n" 2>/dev/null | awk "$AWK_MASK"'
 { print mask($0) }' >"$SD/.prompt.head.$$" && mv -f "$SD/.prompt.head.$$" "$SD/prompt.head"
-  rm -f "$SD/turn.stop" "$SD/turn.pid" "$SD/turn.hb" "$SD/turn.event" "$SD/turn.session" "$SD/turn.$n.exit" "$SD/turn.marker"
+  rm -f "$SD/turn.stop" "$SD/turn.pid" "$SD/turn.hb" "$SD/turn.event" "$SD/turn.session" "$SD/turn.$n.exit" "$SD/turn.marker" \
+    "$SD/turn.$n.parse" "$SD/turn.$n.text" "$SD/turn.$n.ended" "$SD/turn.$n.notified"
   SV_L0=
   [ -f "$RUN/wait/$AGENT.last" ] && IFS= read -r SV_L0 <"$RUN/wait/$AGENT.last"
   get_now
   SP_Turn=$n SP_Turn_Start=$NOW SP_Turn_End= SP_Turn_Result= SP_Turn_Stopped= SP_Last_Event= SP_State=running
   sp_write "$SD"
   sv_act turn "ход $n начат${SP_Session:+ · сессия $SP_Session}"
-  SV_STOPREQ= SV_PEND_RM=
+  # the state of the parse from the first moment: the offsets and the size of activity.log
+  # (a kill -9 during the first parse must not leave its lines twice)
+  rm -f "$SD/turn.$n.parse"
+  pz_load "$n"
+  pz_save "$n"
+  SV_STOPREQ= SV_PEND_RM= SV_CHILDREN_NEW= SV_PZ_AT=0 SV_PZ_SIZES=
   set -m
   bash "$BRG_SELF" __turn "$SV_S" "$n" </dev/null >/dev/null 2>>"$SD/supervisor.log" &
   wp=$!
@@ -9146,6 +9434,7 @@ sv_turn() {
       seen_at=$NOW
     fi
     sv_turn_files
+    sv_live "$n" # the activity as it goes (0.9.1)
     if [ -e "$SD/rm" ] && [ -z "$SV_STOPREQ" ]; then
       : >"$SD/turn.stop"
       SV_STOPREQ=1 SV_PEND_RM=1
@@ -9157,44 +9446,28 @@ sv_turn() {
   sv_turn_end "$n"
 }
 
-# sv_turn_end N — the outcome of turn N: activity, tokens, the result, the rollback, HOLD
+# sv_turn_end N — the outcome of turn N from turn.N.parse and the rest of the logs: activity,
+# tokens, the result, whose refusal, the rollback, HOLD. A repeat after kill -9 (the recovery)
+# counts nothing twice: the turn in stream.tok, the end line and the note to the lead by markers.
 sv_turn_end() {
-  local n=$1 code= ep= off=0 eoff=0 x line k res err= perm= last=$SD/.last.$$ tl= tin=0 tout=0 trs=0 tcr=0 tcw=0 tcost=0 sid=
+  local n=$1 code= ep= x res err perm= st=
   [ -f "$SD/turn.$n.exit" ] && { IFS= read -r code && IFS= read -r ep; } <"$SD/turn.$n.exit"
   get_now
   is_uint "$ep" || ep=$NOW
-  [ -f "$SD/turn.$n.off" ] && read -r off eoff <"$SD/turn.$n.off"
-  is_uint "$off" || off=0
-  is_uint "$eoff" || eoff=0
-  sv_turn_files
-  SV_CHILDREN_NEW=
-  rm -f "$last"
-  [ -f "$SD/events.log" ] &&
-    tl=$(tail -c +$((off + 1)) "$SD/events.log" 2>/dev/null | SP_LAST=$last awk -v now="$NOW" "$AWK_MASK$AWK_SPEV")
-  while IFS= read -r line; do
-    case $line in
-      A"$TAB"*) printf '%s\n' "${line#A"$TAB"}" >>"$SD/activity.log" ;;
-      S"$TAB"*) sid=${line#S"$TAB"} ;;
-      T"$TAB"*)
-        set -- $line
-        tin=$2 tout=$3 trs=$4 tcr=$5 tcw=$6 tcost=$7
-        ;;
-      E"$TAB"*) err=${line#E"$TAB"} ;;
-      C"$TAB"*) SV_CHILDREN_NEW="$SV_CHILDREN_NEW ${line#C"$TAB"}" ;;
-      P"$TAB"*) [ -n "$perm" ] || perm=${line#P"$TAB"} ;;
-    esac
-  done <<BRG_EV
-$tl
-BRG_EV
-  # a refused permission: the stderr line of OpenCode (escape sequences dropped)
-  if [ -f "$SD/stderr.log" ]; then
-    x=$(tail -c +$((eoff + 1)) "$SD/stderr.log" 2>/dev/null | sed "s/$ESC\[[0-9;?]*[A-Za-z]//g" |
-      awk '/permission requested:/ && /auto-rejecting/ { s = $0; sub(/.*permission requested: */, "", s); sub(/; *auto-rejecting.*/, "", s); print s; exit }')
-    if [ -n "$x" ]; then
-      mask_v x "$x"
-      perm=$x
-    fi
+  sv_turn_files_mem
+  sv_parse "$n" final
+  err=$PZ_ERR
+  [ -z "$PZ_CTX" ] || SP_Context=$PZ_CTX
+  if [ -s "$SD/turn.$n.text" ]; then
+    SP_BODY=$(cat "$SD/turn.$n.text")
+    SP_Last_Text_Turn=$n
   fi
+  if [ -n "$PZ_PM$PZ_PE" ]; then # whose refusal: classified once the whole turn is known
+    perm_classify
+    perm=$PERM
+  fi
+  local perms=
+  [ -z "$perm" ] || perms=$(printf '%s\n' "$PERM_ALL" | while IFS= read -r x; do [ -z "$x" ] || { spawn_perm_words_v x "$x"; printf '%s; ' "$x"; }; done)
   if [ -n "$SV_STOPREQ" ]; then
     res=interrupted
   elif [ "$code" = 0 ] && [ -z "$err" ]; then
@@ -9208,18 +9481,19 @@ BRG_EV
   SP_Turn_End=$ep SP_Turn_Result=$res
   SP_Turn_Stopped=
   sv_stopped_now && SP_Turn_Stopped=1
-  [ -n "$SP_Session" ] || [ -z "$sid" ] || SP_Session=$sid
-  if [ -s "$last" ]; then SP_BODY=$(cat "$last"); fi
-  rm -f "$last"
-  # the stream: the main session only, summed over the turns
-  x=$(printf '%s %s %s %s %s %s\n' "$tin" "$tout" "$trs" "$tcr" "$tcw" "$tcost" | cat - "$SD/stream.tok" 2>/dev/null |
-    awk '{ for (i = 1; i <= 6; i++) s[i] += $i } END { printf "%d %d %d %d %d %.6f", s[1], s[2], s[3], s[4], s[5], s[6] }')
-  printf '%s\n' "$x" >"$SD/stream.tok.tmp" && mv -f "$SD/stream.tok.tmp" "$SD/stream.tok"
-  for x in $SV_CHILDREN_NEW; do
-    [ -f "$SD/children" ] && awk -v id="$x" '$1 == id { f = 1 } END { exit !f }' "$SD/children" && continue
-    printf '%s\n' "$x" >>"$SD/children"
-  done
-  if [ "$SP_Tokens_Source" != export ] || [ "${CFG_spawn_opencode_export:-1}" != 1 ]; then sv_stream_tokens; fi
+  # the stream: the main session only, summed over the turns; a turn is counted once
+  [ -f "$SD/stream.tok" ] && IFS= read -r st <"$SD/stream.tok"
+  x=$(awk -v st="$st" -v n="$n" -v pz="$PZ_IN $PZ_OUT $PZ_RS $PZ_CR $PZ_CW $PZ_COST" 'BEGIN {
+    k = split(st, S, " "); if (k == 6) { for (i = 6; i >= 1; i--) S[i + 1] = S[i]; S[1] = 0 } else if (k != 7) for (i = 1; i <= 7; i++) S[i] = 0
+    split(pz, P, " ")
+    if (n > S[1]) { S[1] = n; for (i = 1; i <= 6; i++) S[i + 1] += P[i] }
+    printf "%d %d %d %d %d %d %.6f", S[1], S[2], S[3], S[4], S[5], S[6], S[7] }')
+  if [ "$x" != "$st" ]; then
+    printf '%s\n' "$x" >"$SD/stream.tok.tmp" && mv -f "$SD/stream.tok.tmp" "$SD/stream.tok"
+  fi
+  # a test hook: kill -9 between the count of the tokens and the outcome in the record
+  [ -z "${BRG_SPAWN_TEST_DELAY_TOK:-}" ] || sleep "$BRG_SPAWN_TEST_DELAY_TOK"
+  sv_tokens_now
   # what to deliver again: only by the result, not by the stop; a tail wait — always
   case $res in crash | interrupted) SV_ROLL=1 ;; esac
   get_now
@@ -9234,12 +9508,12 @@ BRG_EV
   if [ -n "$perm" ]; then
     SP_Last_Error="отказ в правах: $perm"
     SP_Perm_Denied=$perm # stays on the board until the rights change (a good turn does not clear it)
-    sv_act permission "отказ в правах: $perm"
   fi
   case $res in
     crash)
       [ -n "$perm" ] || SP_Last_Error=$err
-      [ "$SP_Hold" = 1 ] || sv_notify_lead "$n" "$err" # one message per series
+      # one message per series, once per turn (a repeat after kill -9 does not send it again)
+      if [ "$SP_Hold" != 1 ] && dl_claim "$SD/turn.$n.notified"; then sv_notify_lead "$n" "$err"; fi
       SP_Hold=1
       # HOLD (DESIGN §5.5): the marks are what the crashed turn saw — the Pending of each channel
       # before the rollback; whatever it did not see (even what came during the turn) wakes
@@ -9249,11 +9523,19 @@ BRG_EV
     ok)
       [ -n "$perm" ] || SP_Last_Error=
       SP_Hold=
+      # the line on the rights went with this turn's prompt and the turn went well: it is done
+      if [ "$SP_Rights_Note_Turn" = "$n" ]; then SP_Rights_Note= SP_Rights_Note_Turn=; fi
       ;;
   esac
   if [ "$SP_Hold" = 1 ]; then SP_State=crashed; else SP_State=frozen; fi
+  if dl_claim "$SD/turn.$n.ended"; then
+    x=
+    [ -z "$perms" ] || x=" · ${perms%; }"
+    sv_act end "ход $n: $res${err:+ — $err}$x"
+  fi
+  # a test hook: kill -9 between the end line of the activity and the outcome in the record
+  [ -z "${BRG_SPAWN_TEST_DELAY_END:-}" ] || sleep "$BRG_SPAWN_TEST_DELAY_END"
   sp_write "$SD"
-  sv_act end "ход $n: $res${err:+ — $err}"
   rm -f "$SD/turn.stop"
   SV_EXPORT=1
   [ -z "$SV_PEND_RM" ] || sv_do_rm
@@ -9305,6 +9587,7 @@ sv_recover() {
       SV_STOPREQ=1 SV_PEND_RM=1
     fi
     sv_turn_files
+    sv_live "$n"
     sv_sleep
     sv_tick
   done
@@ -9390,10 +9673,18 @@ sv_prompt_compose() {
       echo
     fi
     printf '── brg разбудил тебя (%s, ход %s) — ты %s\n' "$SV_S" "$n" "$AGENT.$SV_KEY"
+    [ -z "$SP_Rights_Note" ] || printf '%s\n' "$SP_Rights_Note"
     [ -z "$SV_REASON" ] || printf '%s\n' "${SV_REASON#"$NL"}"
     cat "$SD/prompt.next.tmp" 2>/dev/null
   } >"$SD/prompt.new"
   SV_REASON=
+  sv_note_sent "$n"
+}
+# sv_note_sent N — the Rights-Note went into the prompt of turn N: a good turn N takes it off
+sv_note_sent() {
+  [ -n "$SP_Rights_Note" ] || return 0
+  SP_Rights_Note_Turn=$1
+  sp_write "$SD"
 }
 
 # sv_wait_phase — the agent is free: the supervisor's wait until something wakes it
@@ -9408,7 +9699,7 @@ sv_wait_phase() {
       SV_FORCE=1 SP_Hold=
       SV_REASON="$SV_REASON$NL── человек попросил продолжить: проверь status; есть работа — продолжай, нет — заверши ход"
     fi
-    [ ! -e "$SD/rights" ] || { sv_apply_rights && SV_FORCE=1; }
+    sv_rights_check
     sv_maybe_exec
     if [ -z "$SV_CONFLICT" ]; then
       if [ "$SP_Hold" = 1 ]; then x=crashed; else x=frozen; fi
@@ -9461,7 +9752,7 @@ sv_wait_phase() {
             ;;
           esac
         fi
-        [ ! -e "$SD/rights" ] || sv_apply_rights
+        sv_rights_check
         sv_prompt_compose
         return 0
         ;;
@@ -9518,11 +9809,15 @@ sv_first_turn() {
   [ ! -e "$SD/rm" ] || sv_do_rm
   [ ! -e "$SD/detach" ] || sv_do_detach
   rm -f "$SD/wake"
-  [ ! -e "$SD/rights" ] || sv_apply_rights
+  sv_rights_check
   SV_REASON=
   profile_read "$ROOT/agents/$AGENT"
   SV_KEY=$P_KEY
-  spawn_first_prompt "$AGENT.$SV_KEY" >"$SD/prompt.new"
+  {
+    spawn_first_prompt "$AGENT.$SV_KEY"
+    [ -z "$SP_Rights_Note" ] || printf '%s\n' "$SP_Rights_Note"
+  } >"$SD/prompt.new"
+  sv_note_sent 1
   sv_turn
 }
 
@@ -9958,19 +10253,47 @@ spawn_ctl() {
       ;;
     rights)
       spawn_rights_v m "$v"
+      # does not wake (0.9.1): the new rights act from the next turn; the line on them comes with it
       if spawn_lock_try "$s" 0; then
         sp_read "$d"
-        SP_Rights=$v SP_Perm_Denied=
+        SP_Rights=$v SP_Perm_Denied= SP_Rights_Note_Turn=
+        spawn_rights_note_v SP_Rights_Note "$v"
         sp_write "$d"
         lock_release "spawn.$s"
-        echo "── $s ($SP_Agent): права $v — $m. Со следующего хода (его разбудит сообщение или brg spawn wake $s)."
       else
         printf '%s\n' "$v" >"$d/.rights.$$" && mv -f "$d/.rights.$$" "$d/rights"
-        echo "── $s ($SP_Agent): права $v — $m. Со следующего хода; агент ждёт — надзор разбудит его сейчас."
-        [ "$SL_WHY" != silent ] || spawn_silent_restart "$s"
       fi
+      echo "── права $s: $v — со следующего хода; разбудить сейчас — «Разбудить» (brg spawn wake $s)"
+      echo "$v — $m."
+      [ "$SL_WHY" != silent ] || spawn_silent_restart "$s"
       metric spawn.rights id="$s" rights="$v"
       ;;
+  esac
+}
+
+# spawn_tok_words_v VAR — tokens, context and cost of the loaded record (SQ_*) for people: the
+# main session and subagents apart (export), the cost only if > 0 (0.9.1)
+spawn_tok_words_v() {
+  local _tw_r
+  _tw_r="токены: вход ${SQ_Tokens_In:-0}, выход ${SQ_Tokens_Out:-0}, кэш ${SQ_Tokens_Cache_Read:-0}/${SQ_Tokens_Cache_Write:-0}"
+  if [ -n "$SQ_Tokens_Sub_In" ]; then
+    _tw_r="$_tw_r (основная ${SQ_Tokens_Main_In:-0}/${SQ_Tokens_Main_Out:-0}, подагенты $SQ_Tokens_Sub_In/${SQ_Tokens_Sub_Out:-0})"
+  else
+    _tw_r="$_tw_r (без подагентов)"
+  fi
+  [ -z "$SQ_Context" ] || _tw_r="$_tw_r · контекст $SQ_Context"
+  case $SQ_Cost in '' | 0 | 0.0 | 0.00* | -*) ;; *)
+    case $SQ_Cost in *[1-9]*) _tw_r="$_tw_r · стоимость \$$SQ_Cost" ;; esac
+    ;;
+  esac
+  eval "$1=\$_tw_r"
+}
+# spawn_perm_words_v VAR VALUE — "отказ в правах: X" | "отказ в правах (подагент): X"
+spawn_perm_words_v() {
+  local _pw_v=$2
+  case $_pw_v in
+    *" (подагент)") eval "$1=\"отказ в правах (подагент): \${_pw_v% (подагент)}\"" ;;
+    *) eval "$1=\"отказ в правах: \$_pw_v\"" ;;
   esac
 }
 
@@ -9999,7 +10322,7 @@ spawn_state_words_v() {
 }
 
 spawn_list() {
-  local d n=0 st src
+  local d n=0 st src x
   while [ $# -gt 0 ]; do
     case $1 in
       --as)
@@ -10021,7 +10344,8 @@ spawn_list() {
     spawn_state_words_v st
     src="с подагентами"
     [ "$SQ_Tokens_Source" = export ] || src="без подагентов"
-    echo "$SQ_Id · ${SQ_Agent:-?} · $SQ_Harness/$SQ_Model · права $SQ_Rights · $st · ход ${SQ_Turn:-0}${SQ_Turn_Result:+ ($SQ_Turn_Result)} · токены: вход ${SQ_Tokens_In:-0}, выход ${SQ_Tokens_Out:-0}, кэш ${SQ_Tokens_Cache_Read:-0}/${SQ_Tokens_Cache_Write:-0} · стоимость ${SQ_Cost:-0} ($src)${SQ_Last_Error:+ · ошибка: $SQ_Last_Error}"
+    spawn_tok_words_v x
+    echo "$SQ_Id · ${SQ_Agent:-?} · $SQ_Harness/$SQ_Model · права $SQ_Rights · $st · ход ${SQ_Turn:-0}${SQ_Turn_Result:+ ($SQ_Turn_Result)} · $x${SQ_Last_Error:+ · ошибка: $SQ_Last_Error}"
     n=$((n + 1))
   done
   [ "$n" -gt 0 ] || echo "── запусков нет. Запустить агента (человеку): brg spawn opencode --model <провайдер/модель>"
@@ -10059,9 +10383,16 @@ spawn_show() {
   for f in $SP_FIELDS; do
     eval "x=\${SQ_${f//-/_}-}"
     [ -n "$x" ] || continue
+    if [ "$f" = Cost ]; then case $x in *[1-9]*) ;; *) continue ;; esac; fi # no "$0" without prices
     mask_v x "$x"
     echo "$f: $x"
   done
+  spawn_tok_words_v x
+  echo "── $x"
+  if [ -n "$SQ_Perm_Denied" ]; then
+    spawn_perm_words_v x "$SQ_Perm_Denied"
+    echo "── $x"
+  fi
   if [ -n "$SQ_BODY" ]; then
     echo "── последний ответ модели:"
     printf '%s\n' "$SQ_BODY"
@@ -10577,6 +10908,9 @@ board_spawn() {
   bjn last_event "$SQ_Last_Event"
   bjs last_error "$SQ_Last_Error"
   bjs perm_denied "$SQ_Perm_Denied"
+  bjs rights_note "$SQ_Rights_Note"
+  bjn context "$SQ_Context"
+  bjn last_text_turn "$SQ_Last_Text_Turn"
   bjx last_text "$SQ_BODY"
   bjk tokens
   bjo "{"
@@ -10585,6 +10919,10 @@ board_spawn() {
   bjn reasoning "$SQ_Tokens_Reasoning"
   bjn cache_read "$SQ_Tokens_Cache_Read"
   bjn cache_write "$SQ_Tokens_Cache_Write"
+  bjn main_in "$SQ_Tokens_Main_In"
+  bjn main_out "$SQ_Tokens_Main_Out"
+  bjn sub_in "$SQ_Tokens_Sub_In"
+  bjn sub_out "$SQ_Tokens_Sub_Out"
   bjo "}"
   bjs cost "$SQ_Cost"
   bjs tokens_source "$SQ_Tokens_Source"
