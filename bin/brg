@@ -19,7 +19,7 @@ _brg_crlf=x
 case ${#_brg_crlf} in 1) ;; *) printf '%s\n' "brg: ОШИБКА: у файла $0 окончания строк CRLF (Windows) — bash его не выполнит." "Причина — git с core.autocrlf=true. Это .brigada/bin/brg — переустанови: bash <brigada>/bin/brg init <проект>. Это сам репозиторий brigada — удали bin/brg и восстанови: git checkout -- bin/brg (по .gitattributes он запишется с LF) или скачай brigada заново. Проверка: bash <brigada>/bin/brg doctor <проект>." >&2; exit 2 ;; esac #
 unset _brg_crlf
 
-BRG_VERSION=0.9.1
+BRG_VERSION=0.9.2
 # the caller's locale, restored for commands started by `brg run`
 _brg_lc_set=${LC_ALL+1}
 _brg_lc=${LC_ALL-}
@@ -60,6 +60,21 @@ case $ROOT in */.brigada) RROOT=.brigada ;; *) RROOT=$ROOT ;; esac
 # ── small helpers ──────────────────────────────────────────────────────────
 is_uint() {
   case $1 in '' | *[!0-9]*) return 1 ;; esac
+  return 0
+}
+
+# ipv4_ok X — a decimal IPv4 address: four octets 0–255, no leading zeros (010 is ambiguous), no
+# empty octets (checked before the split: "1.2.3.4." and "1..2.3" give four fields too)
+ipv4_ok() {
+  local v=$1 d o a b c e
+  case $v in '' | *[!0-9.]*) return 1 ;; .* | *. | *..*) return 1 ;; esac
+  d=${v//[!.]/}
+  [ ${#d} -eq 3 ] || return 1
+  IFS=. read -r a b c e <<<"$v"
+  for o in "$a" "$b" "$c" "$e"; do
+    case $o in '' | 0?*) return 1 ;; esac
+    [ ${#o} -le 3 ] && [ "$o" -le 255 ] || return 1
+  done
   return 0
 }
 
@@ -1984,7 +1999,7 @@ usage_line_v() { # VAR CMD
     item) _ul_u="$BRG item add --as <имя> --title \"…\" [--desc \"описание\" | --file F | <<'BRG_EOF' описание BRG_EOF] [--paths \"предлагаемые пути\"] [--no-review] | item claim I00N --as <имя> [--paths \"src/a,tests/a\"|none] | item done I00N --as <имя> [--note \"итог\"] [--result <путь>] [--no-review] | item release I00N --as <имя> | item reassign I00N --to <имя> --as <lead> | item review I00N --as <имя> --start | item review I00N --as <имя> --verdict ok|changes [--comment \"…\" | --file F | <<'BRG_EOF' комментарий BRG_EOF] | item review I00N --as <имя> --verdict skip [--comment \"почему\" | --file F] | item cancel I00N --as <имя> [--comment \"почему\" | --file F] | item list [--as <имя> --mine] [--status todo,claimed,done,cancelled] | item show I00N" ;;
     run) _ul_u="$BRG run --as <имя> [--sync] [--timeout 10m] [--item I00N] -- <команда> [аргументы…]  |  run list · run show R00N · run cancel R00N --as <имя>" ;;
     doctor) _ul_u="$BRG doctor  |  из репозитория brigada: bash /путь/к/brigada/bin/brg doctor [каталог_проекта]" ;;
-    board) _ul_u="$BRG board [--interval S] [--port P] [--static] [--once]" ;;
+    board) _ul_u="$BRG board [--interval S] [--port P] [--bind ADDR] [--static] [--once]" ;;
     spawn) _ul_u="$BRG spawn opencode --model <провайдер/модель> [--rights full|project] [--count N] [--note \"…\"]  |  spawn list · spawn show <S|имя> · spawn wake|rm|detach <S|имя> · spawn rights <S|имя> full|project  (только человек)" ;;
     *) _ul_u="$BRG help" ;;
   esac
@@ -2043,7 +2058,7 @@ usage_print() {
       ;;
     board)
       echo "Доска для человека в браузере. Раз в --interval с (по умолчанию 2, минимум 1) пишет снимок в .brigada/run/board/: задача и статус, бригада, подзадачи с ревью, прогоны, переписка, постановка, план, итог, прошлые задачи."
-      echo "Найден Python 3.8+ — brg board сам поднимает сервер (только 127.0.0.1) и первой строкой печатает адрес http://127.0.0.1:ПОРТ/?t=ТОКЕН: открой его в браузере — на странице можно писать бригаде, отвечать на вопросы, давать задачу, назначать lead'а, ставить паузу и стоп (каждое действие — вызов brg от имени человека; в терминале строка «── с доски: …»). Адрес держи при себе: токен — доступ к управлению (постоянный, лежит в .brigada/run/board/token; сменить — удалить файл и перезапустить brg board). Порт: --port P, иначе прошлый, иначе свободный (занят — новый адрес). Python нет, сервер не поднялся или --static — доска как файл: адрес file://…/.brigada/board.html, только просмотр (отвечать — brg say …)."
+      echo "Найден Python 3.8+ — brg board сам поднимает сервер (по умолчанию только 127.0.0.1) и первой строкой печатает адрес http://127.0.0.1:ПОРТ/?t=ТОКЕН: открой его в браузере — на странице можно писать бригаде, отвечать на вопросы, давать задачу, назначать lead'а, ставить паузу и стоп (каждое действие — вызов brg от имени человека; в терминале строка «── с доски: …»). Адрес держи при себе: токен — доступ к управлению (постоянный, лежит в .brigada/run/board/token; сменить — удалить файл и перезапустить brg board). Порт: --port P, иначе прошлый, иначе свободный (занят — новый адрес). С другой машины (виртуалка): лучше SSH-туннель с тем же номером порта (ssh -N -L ПОРТ:127.0.0.1:ПОРТ <машина>), либо --bind ADDR — слушать этот IPv4-адрес машины (десятичный, например 192.168.64.5) или 0.0.0.0 (все адреса); только на этот запуск (следующий brg board без --bind снова слушает 127.0.0.1) и только для доверенной сети: HTTP без шифрования, токен и переписка идут открытым текстом, с доски можно управлять бригадой и запускать агентов с полными правами. Открывай доску по IP-адресу, не по имени. Python нет, сервер не поднялся или --static — доска как файл: адрес file://…/.brigada/board.html, только просмотр (отвечать — brg say …)."
       echo "Работает до Ctrl+C (сервер останавливается вместе с ним); --once — один снимок и выход, без сервера. Снимок только читает: никого не будит, ничего в бригаде не меняет."
       ;;
     spawn)
@@ -2088,7 +2103,7 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
   leave --as <имя>                   отключиться
 Человеку:
   init [--no-agents-md] [каталог]    (из репозитория brigada) создать/обновить .brigada/ и блок в AGENTS.md
-  board [--interval S] [--port P] [--static] [--once]   доска в браузере (с Python — с управлением): задача, бригада, подзадачи, прогоны, переписка
+  board [--interval S] [--port P] [--bind ADDR] [--static] [--once]   доска в браузере (с Python — с управлением; по умолчанию только 127.0.0.1): задача, бригада, подзадачи, прогоны, переписка
   say [--to …] [--re N] [текст]      сообщение от human (снимает стоп); --re N — ответ на вопрос #N
   tail [-f] [-n N] [канал]           переписка (по умолчанию lobby + активная задача)
   who                                кто подключён; «возможно выпал» — напиши агенту в его чат «продолжай»
@@ -11080,7 +11095,9 @@ board_tick() {
 B_SRV= # pid of the server, if it runs
 B_NOTE=
 B_PORT= # --port P
+B_BIND= # --bind ADDR (this run only)
 B_URL=
+B_PRE= # lines after the address (--bind: warnings)
 
 board_alive() { # the heartbeat of the server (one file per brg board: two boards in a project)
   printf '1\n' >"$BD/.tmp.alive.$$" 2>/dev/null && mv -f "$BD/.tmp.alive.$$" "$BD/alive.$$" 2>/dev/null
@@ -11103,8 +11120,10 @@ board_srv_stop() {
 # board_serve_start — start the server; on success B_URL is the address. 1 and B_NOTE (why
 # the board is view-only) otherwise.
 board_serve_start() {
-  local py nroot port x i=0 rc retry= tok
+  local py nroot port x i=0 rc retry= tok bindopt= shown
   B_NOTE=
+  B_PRE=
+  case $B_BIND in 127.0.0.1) ;; *) bindopt=$B_BIND ;; esac # the default address: no flag to the server
   py_find_v py
   if [ -z "$py" ]; then
     B_NOTE="── Python 3.8+ не найден — доска только для просмотра (отвечать — brg say …); Python необязателен: с ним brg board сам поднимает сервер с управлением"
@@ -11129,7 +11148,7 @@ board_serve_start() {
   fi
   rm -f "$BD/ready"
   board_alive
-  BRG_SERVE_BASH=$BASH BRG_CMD_LC_SET=$_brg_lc_set BRG_CMD_LC=$_brg_lc "$py" -I -X utf8 "$nroot/bin/brg-serve.py" --root "$nroot" --port "$port" ${retry:+"$retry"} --interval "$B_INT" --alive "alive.$$" </dev/null &
+  BRG_SERVE_BASH=$BASH BRG_CMD_LC_SET=$_brg_lc_set BRG_CMD_LC=$_brg_lc "$py" -I -X utf8 "$nroot/bin/brg-serve.py" --root "$nroot" --port "$port" ${retry:+"$retry"} ${bindopt:+--bind} ${bindopt:+"$bindopt"} --interval "$B_INT" --alive "alive.$$" </dev/null &
   B_SRV=$!
   while [ ! -f "$BD/ready" ]; do
     if ! kill -0 "$B_SRV" 2>/dev/null; then
@@ -11137,7 +11156,9 @@ board_serve_start() {
       rc=$?
       B_SRV=
       if [ "$rc" = 3 ]; then
-        B_NOTE="── сервер доски не запустился: порт занят — доска только для просмотра (другой порт: --port P; любой свободный: --port 0)"
+        B_NOTE="── сервер доски не запустился: порт занят или недоступен — доска только для просмотра (другой порт: --port P; любой свободный: --port 0)"
+      elif [ "$rc" = 5 ]; then
+        B_NOTE="── сервер доски не запустился: адрес $B_BIND не на этой машине — доска только для просмотра (адреса машины: ifconfig / ip addr; все адреса: --bind 0.0.0.0)"
       else
         B_NOTE="── сервер доски не запустился (код $rc) — доска только для просмотра"
       fi
@@ -11158,7 +11179,22 @@ board_serve_start() {
     IFS= read -r x # the saved port that was taken, if so
   } <"$BD/ready"
   IFS= read -r tok <"$BD/token"
-  B_URL="http://127.0.0.1:$port/?t=$tok"
+  shown=127.0.0.1 # the address that surely works on this machine
+  case $bindopt in '' | 0.0.0.0) ;; *) shown=$bindopt ;; esac
+  B_URL="http://$shown:$port/?t=$tok"
+  case $bindopt in
+    0.0.0.0)
+      B_PRE="── доска слушает все адреса машины: с другой машины открой тот же адрес, заменив 127.0.0.1 на IP этой машины (Linux: ip -4 addr; macOS: ipconfig getifaddr en0), порт $port и токен те же"
+      ;;
+  esac
+  case $bindopt in
+    '' | 127.*) ;;
+    *)
+      B_PRE="${B_PRE:+$B_PRE
+}── ВНИМАНИЕ: доска открыта по сети без шифрования (HTTP): токен и вся переписка идут открытым текстом, а с доски можно управлять бригадой и запускать агентов с полными правами — это выполнение команд на этой машине. Только доверенная сеть (VM, домашняя LAN); иначе — SSH-туннель: ssh -N -L $port:127.0.0.1:$port <машина>
+── после работы по сети смени токен (rm $RROOT/run/board/token и перезапусти brg board); брандмауэр macOS/Windows может спросить разрешение для Python"
+      ;;
+  esac
   [ -z "$x" ] || B_NOTE="── порт $x занят — новый адрес"
   return 0
 }
@@ -11211,6 +11247,20 @@ cmd_board() {
         B_PORT=$((10#$x))
         shift 2
         ;;
+      --bind)
+        x=${2:-}
+        if ! ipv4_ok "$x"; then
+          usage_line_v u board
+          case $x in
+            localhost) x=": localhost не принимается (по умолчанию и так слушается 127.0.0.1)" ;;
+            *) x="${2+: $2}" ;;
+          esac
+          say_err "── ОШИБКА: --bind — IPv4-адрес машины в десятичной записи (192.168.64.5) или 0.0.0.0 (все адреса); имена и IPv6 не поддерживаются${x}" "Использование: $u"
+          exit 1
+        fi
+        B_BIND=$x
+        shift 2
+        ;;
       --static)
         static=1
         shift
@@ -11255,6 +11305,7 @@ cmd_board() {
   # with Python: the server and its address; without it (or --static, --once) the page is a file
   if [ -z "$once" ] && [ -z "$static" ] && board_serve_start; then
     printf '%s\n' "$B_URL"
+    [ -z "$B_PRE" ] || printf '%s\n' "$B_PRE"
     [ -z "$B_NOTE" ] || echo "$B_NOTE"
   else
     if board_url_v url "$ROOT" "$PLATFORM"; then

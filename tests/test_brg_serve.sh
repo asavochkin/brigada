@@ -67,7 +67,8 @@ serve_need() {
   }
 }
 
-# start_board [args…] — brg board --interval 1 --port 0 in the background; sets BP BOUT URL PORT TOK SPID
+# start_board [args…] — brg board --interval 1 --port 0 in the background; sets BP BOUT URL PORT TOK SPID.
+# BADDR (default 127.0.0.1) is the address expected in the first line (--bind IP: that IP)
 start_board() {
   BOUT=$(mk_tmpdir)/out
   bash "$BRG" board --interval 1 --port 0 "$@" >"$BOUT" 2>&1 &
@@ -76,14 +77,14 @@ start_board() {
   wait_for 10 first_is_url || fail "board did not print an http address:
 $(cat "$BOUT")"
   URL=$(head -n 1 "$BOUT")
-  PORT=${URL#http://127.0.0.1:}
+  PORT=${URL#http://${BADDR:-127.0.0.1}:}
   PORT=${PORT%%/*}
   TOK=${URL##*\?t=}
   SPID=$(sed -n 2p "$B/run/board/ready")
   track_pid "$SPID"
   COOKIE="brg_$PORT=$TOK"
 }
-first_is_url() { case $(head -n 1 "$BOUT" 2>/dev/null) in http://127.0.0.1:*/\?t=*) return 0 ;; esac; return 1; }
+first_is_url() { case $(head -n 1 "$BOUT" 2>/dev/null) in http://${BADDR:-127.0.0.1}:*/\?t=*) return 0 ;; esac; return 1; }
 
 # stop_board — TERM, wait for the end of both
 stop_board() {
@@ -745,4 +746,314 @@ XEOF
   wait_state S001 removed
   stop_board
   sp_assert_clean
+}
+
+# ── --bind (DESIGN §9.1, "Адрес и порт" / "Защита") ──────────────────────────
+# The tests never listen on a non-loopback address: BRG_SERVE_TEST_LISTEN=127.0.0.1 makes the
+# server listen on loopback while the rules (Host, Origin, the lines of brg) follow --bind.
+
+# bpost HOST [ORIGIN] — POST /api/say text=hi with the cookie, the token, this Host and Origin
+bpost() {
+  local h=$1 o=${2:-}
+  if [ -n "$o" ]; then
+    http POST /api/say -H "Cookie: $COOKIE" -H "X-Brg-Token: $TOK" -H "Content-Type: application/json" -H "Host: $h" -H "Origin: $o" -j text=hi
+  else
+    http POST /api/say -H "Cookie: $COOKIE" -H "X-Brg-Token: $TOK" -H "Content-Type: application/json" -H "Host: $h" -j text=hi
+  fi
+}
+
+test_serve_bind_validation() {
+  local out rc v
+  new_proj
+  for v in localhost myvm.local ::1 256.1.1.1 1.2.3 1.2.3.4.5 01.2.3.4 "1.2.3.4 " 1.2.3.4. .1.2.3.4 1..2.3 0x7f.0.0.1 +1.2.3.4 1.2.3.04 "" 999.0.0.0 1.2.3.4/24; do
+    out=$(brg board --bind "$v" 2>&1)
+    rc=$?
+    assert_eq 1 "$rc" "--bind [$v]: exit code"
+    assert_contains "$out" "Использование" "--bind [$v]"
+    assert_contains "$out" "--bind" "--bind [$v]"
+  done
+  out=$(brg board --bind 2>&1)
+  assert_eq 1 "$?" "--bind without a value"
+  assert_contains "$out" "Использование"
+  out=$(brg board --bind localhost 2>&1)
+  assert_contains "$out" "127.0.0.1" "localhost: the hint"
+  # a wrong value is an error also without a server; a right one is silent there (like --port)
+  out=$(brg board --once --bind 1.2.3 2>&1)
+  assert_eq 1 "$?" "--once --bind 1.2.3"
+  assert_file_not_exists "$B/run/board/data.js" "a refused board wrote its snapshot"
+  out=$(brg board --once --bind 192.168.1.7 2>&1) || fail "--once --bind 192.168.1.7"
+  assert_eq "file://$B/board.html" "$(printf '%s\n' "$out" | head -n 1)"
+  assert_not_contains "$out" "ВНИМАНИЕ"
+  assert_not_contains "$out" "--bind"
+  # help and the usage line
+  out=$(brg board --help) || fail "board --help"
+  assert_contains "$out" "--bind ADDR"
+  assert_contains "$out" "0.0.0.0"
+  assert_contains "$out" "SSH-туннель"
+  assert_contains "$(brg help)" "[--bind ADDR]"
+}
+
+test_serve_bind_ip_host_and_origin() {
+  local p1 n
+  serve_need || return 0
+  new_proj
+  join_as claude >/dev/null
+  export BRG_SERVE_TEST_LISTEN=127.0.0.1
+  BADDR=10.11.12.13
+  start_board --bind 10.11.12.13
+  assert_eq "http://10.11.12.13:$PORT/?t=$TOK" "$URL" "the first line"
+  assert_contains "$(sed -n 2p "$BOUT")" "── ВНИМАНИЕ: доска открыта по сети без шифрования"
+  assert_contains "$(sed -n 2p "$BOUT")" "ssh -N -L $PORT:127.0.0.1:$PORT"
+  assert_contains "$(sed -n 2p "$BOUT")" "запускать агентов с полными правами"
+  assert_contains "$(sed -n 3p "$BOUT")" "смени токен"
+  assert_contains "$(sed -n 3p "$BOUT")" "rm .brigada/run/board/token"
+  assert_contains "$(sed -n 4p "$BOUT")" "доска обновляется"
+  assert_not_contains "$(cat "$BOUT")" "слушает все адреса"
+  assert_eq 1 "$(grep -c "$TOK" "$BOUT")" "the token in the terminal output"
+  # Host
+  http GET / -H "Cookie: $COOKIE" -H "Host: 10.11.12.13:$PORT"
+  assert_eq 200 "$HTTP_ST" "Host = the bound address"
+  assert_contains "$HTTP_BODY" "<meta name=\"brg-token\" content=\"$TOK\">"
+  assert_contains "$HTTP_BODY" '"&k=" + encodeURIComponent(TOKEN)' "the page adds k to the snapshot"
+  http GET / -H "Cookie: $COOKIE" -H "Host: 127.0.0.1:$PORT"
+  assert_eq 200 "$HTTP_ST" "Host 127.0.0.1 (a tunnel)"
+  http GET / -H "Cookie: $COOKIE" -H "Host: LOCALHOST:$PORT"
+  assert_eq 200 "$HTTP_ST" "Host localhost, any case"
+  http GET / -H "Cookie: $COOKIE" -H "Host: 10.11.12.14:$PORT"
+  assert_eq 403 "$HTTP_ST" "another address"
+  assert_contains "$HTTP_BODY" "IP-адрес, не имя"
+  http GET / -H "Cookie: $COOKIE" -H "Host: evil.example:$PORT"
+  assert_eq 403 "$HTTP_ST" "a name"
+  assert_contains "$HTTP_BODY" "IP-адрес, не имя"
+  http GET / -H "Cookie: $COOKIE" -H "Host: 10.11.12.13:$((PORT + 1))"
+  assert_eq 403 "$HTTP_ST" "another port"
+  assert_contains "$HTTP_BODY" "порт в адресе должен быть $PORT"
+  assert_contains "$HTTP_BODY" "тот же номер порта с обеих сторон"
+  for n in "10.11.12.13" "0.0.0.0:$PORT" "[::1]:$PORT" "10.11.12.13:$PORT:1"; do
+    http GET / -H "Cookie: $COOKIE" -H "Host: $n"
+    assert_eq 403 "$HTTP_ST" "Host [$n]"
+  done
+  http GET "/?t=$TOK" -H "Host: 10.11.12.13:$PORT"
+  assert_eq 303 "$HTTP_ST" "the address with the token"
+  assert_eq "$COOKIE; HttpOnly; SameSite=Strict; Path=/" "$(hdr_of Set-Cookie)" "the cookie: no Secure, HTTP"
+  http GET "/?t=$TOK" -H "Host: 10.11.12.14:$PORT"
+  assert_eq 403 "$HTTP_ST" "the token at another address"
+  # the snapshot at a network address: the token in the address of the script (k), because
+  # browsers send Sec-Fetch-Site only to loopback/https
+  http GET /run/board/data.js -H "Cookie: $COOKIE" -H "Host: 10.11.12.13:$PORT"
+  assert_eq 403 "$HTTP_ST" "data.js at the network address without k"
+  http GET "/run/board/data.js?123" -H "Cookie: $COOKIE" -H "Host: 10.11.12.13:$PORT"
+  assert_eq 403 "$HTTP_ST" "data.js with a query, without k"
+  http GET "/run/board/data.js?123&k=0123456789abcdef0123456789abcdef" -H "Cookie: $COOKIE" -H "Host: 10.11.12.13:$PORT"
+  assert_eq 403 "$HTTP_ST" "data.js with a wrong k"
+  http GET "/run/board/data.js?123&k=$TOK" -H "Cookie: $COOKIE" -H "Host: 10.11.12.13:$PORT"
+  assert_eq 200 "$HTTP_ST" "data.js with k"
+  assert_contains "$HTTP_BODY" "window.BRG_BOARD = "
+  http GET "/run/board/data.js?123&k=$TOK" -H "Cookie: $COOKIE" -H "Host: 10.11.12.13:$PORT" -H "Sec-Fetch-Site: cross-site"
+  assert_eq 403 "$HTTP_ST" "k does not replace Sec-Fetch-Site when it is sent"
+  http GET "/run/board/T001.js?1" -H "Cookie: $COOKIE" -H "Host: 10.11.12.13:$PORT"
+  assert_eq 403 "$HTTP_ST" "a task cache without k"
+  http GET "/run/board/T001.js?1&k=$TOK" -H "Cookie: $COOKIE" -H "Host: 10.11.12.13:$PORT"
+  assert_eq 404 "$HTTP_ST" "a task cache with k (no such file)"
+  http GET "/run/board/data.js?k=$TOK" -H "Host: 10.11.12.13:$PORT"
+  assert_eq 403 "$HTTP_ST" "k without the cookie"
+  # loopback (a tunnel): as before — no k needed, but if given it must be right
+  http GET /run/board/data.js -H "Cookie: $COOKIE"
+  assert_eq 200 "$HTTP_ST" "data.js on loopback without k"
+  http GET "/run/board/data.js?1&k=$TOK" -H "Cookie: $COOKIE"
+  assert_eq 200 "$HTTP_ST" "data.js on loopback with k"
+  http GET "/run/board/data.js?1&k=0123456789abcdef0123456789abcdef" -H "Cookie: $COOKIE"
+  assert_eq 403 "$HTTP_ST" "data.js on loopback with a wrong k"
+  http GET /run/board/data.js -H "Cookie: $COOKIE" -H "Host: localhost:$PORT"
+  assert_eq 200 "$HTTP_ST" "data.js with Host localhost without k"
+  http GET "/run/board/data.js?1&k=" -H "Cookie: $COOKIE"
+  assert_eq 403 "$HTTP_ST" "data.js on loopback with an empty k"
+  # POST: Origin = the Host of the request
+  bpost "10.11.12.13:$PORT" "http://10.11.12.13:$PORT"
+  assert_eq 200 "$HTTP_ST" "POST: Host and Origin = the bound address"
+  assert_contains "$HTTP_BODY" '"ok": true'
+  bpost "10.11.12.13:$PORT"
+  assert_eq 200 "$HTTP_ST" "POST without Origin"
+  bpost "10.11.12.13:$PORT" "http://127.0.0.1:$PORT"
+  assert_eq 403 "$HTTP_ST" "POST: Origin of another allowed address"
+  bpost "10.11.12.13:$PORT" "http://evil.example"
+  assert_eq 403 "$HTTP_ST" "POST: a foreign Origin"
+  bpost "10.11.12.13:$PORT" "null"
+  assert_eq 403 "$HTTP_ST" "POST: Origin null"
+  bpost "10.11.12.13:$PORT" "https://10.11.12.13:$PORT"
+  assert_eq 403 "$HTTP_ST" "POST: Origin https"
+  bpost "10.11.12.14:$PORT" "http://10.11.12.14:$PORT"
+  assert_eq 403 "$HTTP_ST" "POST: another Host with its own Origin"
+  bpost "127.0.0.1:$PORT" "http://127.0.0.1:$PORT"
+  assert_eq 200 "$HTTP_ST" "POST on loopback"
+  # the terminal: an action that came to a network address says from where
+  wait_for 5 grep -q "── с доски: say → all (#[0-9]*) (с 127.0.0.1)" "$BOUT" || fail "no client address in the log:
+$(cat "$BOUT")"
+  # (two calls came to the network address, one to loopback)
+  assert_eq 2 "$(grep -c "(с 127.0.0.1)" "$BOUT" | tr -d ' ')" "only the calls to the network address say where from"
+  stop_board
+}
+
+test_serve_bind_any() {
+  local n
+  serve_need || return 0
+  new_proj
+  join_as claude >/dev/null
+  export BRG_SERVE_TEST_LISTEN=127.0.0.1
+  start_board --bind 0.0.0.0
+  assert_eq "http://127.0.0.1:$PORT/?t=$TOK" "$URL" "the first line: an address that works here"
+  assert_contains "$(sed -n 2p "$BOUT")" "── доска слушает все адреса машины"
+  assert_contains "$(sed -n 3p "$BOUT")" "── ВНИМАНИЕ"
+  assert_eq 1 "$(grep -c "$TOK" "$BOUT")" "the token in the terminal output"
+  for n in 192.168.1.7 10.0.0.1 172.16.5.5 127.0.0.1; do
+    http GET / -H "Cookie: $COOKIE" -H "Host: $n:$PORT"
+    assert_eq 200 "$HTTP_ST" "Host $n"
+  done
+  http GET / -H "Cookie: $COOKIE" -H "Host: localhost:$PORT"
+  assert_eq 200 "$HTTP_ST" "Host localhost"
+  for n in myvm.local 1.2.3 0.0.0.0 256.1.1.1 010.1.1.1 1.2.3.4.5 "[::1]" 192.168.1.7.nip.io; do
+    http GET / -H "Cookie: $COOKIE" -H "Host: $n:$PORT"
+    assert_eq 403 "$HTTP_ST" "Host $n"
+    assert_contains "$HTTP_BODY" "IP-адрес, не имя"
+  done
+  http GET / -H "Cookie: $COOKIE" -H "Host: 192.168.1.7:$((PORT + 1))"
+  assert_eq 403 "$HTTP_ST" "another port"
+  # k is needed at any address that is not loopback
+  http GET "/run/board/data.js?1" -H "Cookie: $COOKIE" -H "Host: 192.168.1.7:$PORT"
+  assert_eq 403 "$HTTP_ST" "data.js without k"
+  http GET "/run/board/data.js?1&k=$TOK" -H "Cookie: $COOKIE" -H "Host: 192.168.1.7:$PORT"
+  assert_eq 200 "$HTTP_ST" "data.js with k"
+  # Origin: the Host of the request
+  bpost "192.168.1.7:$PORT" "http://192.168.1.7:$PORT"
+  assert_eq 200 "$HTTP_ST" "POST: Origin = Host"
+  bpost "192.168.1.7:$PORT" "http://192.168.1.8:$PORT"
+  assert_eq 403 "$HTTP_ST" "POST: Origin of another address"
+  bpost "192.168.1.7:$PORT" "http://127.0.0.1:$PORT"
+  assert_eq 403 "$HTTP_ST" "POST: Origin of loopback at a network Host"
+  bpost "myvm.local:$PORT" "http://myvm.local:$PORT"
+  assert_eq 403 "$HTTP_ST" "POST: a name"
+  stop_board
+}
+
+# an address inside 127.0.0.0/8 is loopback: no warning, no k
+test_serve_bind_loopback_range() {
+  serve_need || return 0
+  new_proj
+  export BRG_SERVE_TEST_LISTEN=127.0.0.1
+  BADDR=127.0.0.5
+  start_board --bind 127.0.0.5
+  assert_eq "http://127.0.0.5:$PORT/?t=$TOK" "$URL"
+  assert_not_contains "$(cat "$BOUT")" "ВНИМАНИЕ"
+  http GET / -H "Cookie: $COOKIE" -H "Host: 127.0.0.5:$PORT"
+  assert_eq 200 "$HTTP_ST" "Host = the bound address"
+  http GET /run/board/data.js -H "Cookie: $COOKIE" -H "Host: 127.0.0.5:$PORT"
+  assert_eq 200 "$HTTP_ST" "data.js on loopback without k"
+  http GET / -H "Cookie: $COOKIE" -H "Host: 127.0.0.6:$PORT"
+  assert_eq 403 "$HTTP_ST" "another address of the range"
+  stop_board
+  # an explicit 127.0.0.1 is the same as no flag: the server gets no --bind, no lines
+  BADDR=127.0.0.1
+  start_board --bind 127.0.0.1
+  assert_contains "$(sed -n 2p "$BOUT")" "доска обновляется"
+  http GET / -H "Cookie: $COOKIE" -H "Host: localhost:$PORT"
+  assert_eq 200 "$HTTP_ST"
+  stop_board
+}
+
+# Origin = the Host of the request also by default (DESIGN §9.1: tighter than before)
+test_serve_origin_is_the_host() {
+  serve_need || return 0
+  new_proj
+  join_as claude >/dev/null
+  start_board
+  bpost "localhost:$PORT" "http://localhost:$PORT"
+  assert_eq 200 "$HTTP_ST" "localhost with its own Origin"
+  bpost "127.0.0.1:$PORT" "http://127.0.0.1:$PORT"
+  assert_eq 200 "$HTTP_ST" "127.0.0.1 with its own Origin"
+  bpost "localhost:$PORT" "http://127.0.0.1:$PORT"
+  assert_eq 403 "$HTTP_ST" "Host localhost, Origin 127.0.0.1"
+  bpost "127.0.0.1:$PORT" "http://localhost:$PORT"
+  assert_eq 403 "$HTTP_ST" "Host 127.0.0.1, Origin localhost"
+  stop_board
+}
+
+# --bind is for this run only; the test hook can only narrow what is listened on
+test_serve_bind_not_saved_and_hook_narrows() {
+  local p1 l
+  serve_need || return 0
+  new_proj
+  export BRG_SERVE_TEST_LISTEN=127.0.0.1
+  BADDR=10.11.12.13
+  start_board --bind 10.11.12.13
+  p1=$PORT
+  stop_board
+  assert_eq "$p1" "$(cat "$B/run/board/port")" "the port is saved"
+  assert_not_contains "$(grep -r "10.11.12.13" "$B/run/board" "$B/config" 2>/dev/null)" "10.11.12.13" "the address is not saved"
+  # the next run without --bind: loopback only, the saved port, no warning
+  BOUT=$(mk_tmpdir)/out
+  bash "$BRG" board --interval 1 >"$BOUT" 2>&1 &
+  BP=$!
+  track_pid $BP
+  BADDR=127.0.0.1
+  wait_for 10 first_is_url || fail "no address:
+$(cat "$BOUT")"
+  SPID=$(sed -n 2p "$B/run/board/ready")
+  track_pid "$SPID"
+  assert_contains "$(head -n 1 "$BOUT")" "http://127.0.0.1:$p1/"
+  assert_not_contains "$(cat "$BOUT")" "ВНИМАНИЕ"
+  PORT=$p1 TOK=$(cat "$B/run/board/token")
+  http GET / -H "Cookie: brg_$PORT=$TOK" -H "Host: 10.11.12.13:$PORT"
+  assert_eq 403 "$HTTP_ST" "the old address is not accepted"
+  stop_board
+  # the hook cannot widen: 0.0.0.0 in it is ignored, the server stays on loopback
+  export BRG_SERVE_TEST_LISTEN=0.0.0.0
+  start_board
+  assert_contains "$(head -n 1 "$BOUT")" "http://127.0.0.1:"
+  http GET / -H "Cookie: $COOKIE"
+  assert_eq 200 "$HTTP_ST"
+  if command -v lsof >/dev/null 2>&1; then
+    l=$(lsof -nP -a -p "$SPID" -iTCP -sTCP:LISTEN 2>/dev/null)
+    assert_contains "$l" "127.0.0.1:$PORT" "listens on loopback"
+    assert_not_contains "$l" "*:$PORT" "not on all addresses"
+  fi
+  stop_board
+}
+
+# an address that is not on this machine (192.0.2.1 is TEST-NET-1): exit 5 of the server, not
+# "the port is busy", also with a saved port (no retry on another port helps)
+test_serve_bind_unavailable() {
+  local saved
+  serve_need || return 0
+  new_proj
+  "$PYX" -I -c 'import socket
+s = socket.socket()
+s.bind(("192.0.2.1", 0))' 2>/dev/null && {
+    echo "SKIP: 192.0.2.1 есть на этой машине"
+    return 0
+  }
+  for saved in "" 51234; do
+    rm -f "$B/run/board/port" "$B/run/board/ready"
+    [ -z "$saved" ] || printf '%s\n' "$saved" >"$B/run/board/port"
+    BOUT=$(mk_tmpdir)/out
+    bash "$BRG" board --interval 1 --bind 192.0.2.1 >"$BOUT" 2>&1 &
+    BP=$!
+    track_pid $BP
+    wait_for 10 grep -q "не на этой машине" "$BOUT" || fail "no word about the address (saved port [$saved]):
+$(cat "$BOUT")"
+    # (the server's own line about the reason comes first, as with a busy port)
+    assert_eq "file://$B/board.html" "$(grep '^file://' "$BOUT")" "the file address"
+    assert_contains "$(cat "$BOUT")" "адрес 192.0.2.1 не на этой машине"
+    assert_contains "$(cat "$BOUT")" "доска только для просмотра"
+    assert_contains "$(cat "$BOUT")" "--bind 0.0.0.0"
+    assert_not_contains "$(cat "$BOUT")" "порт занят"
+    assert_not_contains "$(cat "$BOUT")" "ВНИМАНИЕ"
+    assert_file_not_exists "$B/run/board/ready"
+    # brg board goes on without the server, as with a busy port
+    wait_for 10 test -f "$B/run/board/data.js" || fail "no snapshot"
+    is_alive "$BP" || fail "brg board exited"
+    kill -TERM "$BP"
+    wait_pid "$BP" 8 || fail "board did not exit on TERM"
+    assert_file_not_exists "$B/run/board/ready"
+    rm -f "$B/run/board/data.js"
+  done
 }

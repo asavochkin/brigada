@@ -496,6 +496,9 @@ pre {
     return m ? m.getAttribute("content") || "" : "";
   })();
   var CTL = !!TOKEN && /^https?:$/.test(location.protocol);
+  // the server wants the token on the snapshot too: browsers send Sec-Fetch-Site only to
+  // loopback/https, so at a network address it is the only proof that our own page asks
+  var KQ = TOKEN ? "&k=" + encodeURIComponent(TOKEN) : "";
 
   // ── helpers ──
   function $(id) { return document.getElementById(id); }
@@ -1001,7 +1004,7 @@ pre {
     var s = document.createElement("script");
     s.id = "brg-data";
     s.charset = "utf-8";
-    s.src = "run/board/data.js?" + Date.now();
+    s.src = "run/board/data.js?" + Date.now() + KQ;
     s.onload = function () {
       var b = window.BRG_BOARD;
       if (b && b.meta && Array.isArray(b.agents)) { S.data = b; S.err = ""; } else { S.err = "parse"; }
@@ -1017,7 +1020,7 @@ pre {
     S.tload[id] = "loading";
     var s = document.createElement("script");
     s.charset = "utf-8";
-    s.src = "run/board/" + id + ".js?" + Date.now();
+    s.src = "run/board/" + id + ".js?" + Date.now() + KQ;
     s.onload = function () { S.tload[id] = window.BRG_TASKS && window.BRG_TASKS[id] ? "ok" : now(); if (s.parentNode) s.parentNode.removeChild(s); render(); };
     s.onerror = function () { S.tload[id] = now(); if (s.parentNode) s.parentNode.removeChild(s); render(); };
     document.head.appendChild(s);

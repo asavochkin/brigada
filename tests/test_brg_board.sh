@@ -332,7 +332,8 @@ test_board_cli_errors_and_init() {
   assert_contains "$out" "--once"
   assert_contains "$out" "--port"
   assert_contains "$out" "--static"
-  assert_contains "$(brg help)" "board [--interval S] [--port P] [--static] [--once]"
+  assert_contains "$out" "--bind"
+  assert_contains "$(brg help)" "board [--interval S] [--port P] [--bind ADDR] [--static] [--once]"
   out=$(brg board --port 70000 2>&1)
   assert_eq 1 "$?" "--port 70000"
   assert_contains "$out" "--port"

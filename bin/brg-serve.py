@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # brg-serve — the optional server of the human's board (DESIGN §9.1, §4). Python >= 3.8,
 # stdlib only. Started by `brg board` (bash is the parent, this is its child); nothing else
-# runs it. It serves the board page and the snapshot of run/board/ over 127.0.0.1, and
+# runs it. It serves the board page and the snapshot of run/board/ over 127.0.0.1 (--bind: an
+# IPv4 address of this machine or 0.0.0.0, for a trusted network only), and
 # turns the buttons of the page into brg calls made on behalf of the human. It writes no
 # brigade state itself: every action is a `brg …` call (say, task new --as human, …);
 # its own files are run/board/token|port|ready and temp files of the message texts.
+import errno
 import hmac
 import http.server
 import json
@@ -12,6 +14,7 @@ import os
 import re
 import secrets
 import signal
+import socketserver
 import subprocess
 import sys
 import tempfile
@@ -26,8 +29,22 @@ CHAN_RE = re.compile(r'lobby|T[0-9]{3,6}')
 TASKJS_RE = re.compile(r'/run/board/(T[0-9]{3,6})\.js')
 TMP_PREFIX = '.srv.tmp.'
 WIN = sys.platform == 'win32'
+# a decimal IPv4 literal without leading zeros (our own check: ipaddress of Python < 3.8.12 /
+# 3.9.5 takes them; [0-9], not \d: \d matches other Unicode digits)
+IPV4_RE = re.compile(r'(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}')
+# EADDRNOTAVAIL (Windows: WSAEADDRNOTAVAIL): the address is not on this machine
+ADDRNOTAVAIL = (errno.EADDRNOTAVAIL, 10049)
 
-CFG = {}  # root, proj, bd, port, token, bash, interval
+CFG = {}  # root, proj, bd, port, token, bash, interval, bind (the address the board is open at)
+
+
+def is_ipv4(s):
+    return bool(IPV4_RE.fullmatch(s)) and all(int(o) <= 255 for o in s.split('.'))
+
+
+def is_loopback(host):
+    # host without the port: 127.0.0.0/8 or localhost
+    return host == 'localhost' or (is_ipv4(host) and host.startswith('127.'))
 
 
 def say(text, err=False):
@@ -348,10 +365,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     do_OPTIONS = do_HEAD = do_PUT = do_DELETE = do_PATCH = method_not_allowed
 
-    def host_ok(self):
+    def host_check(self):
+        # None if the Host is ours, else why not. The port is ours always (a tunnel keeps the
+        # same number on both sides). 127.0.0.1 and localhost are always fine (also through an SSH
+        # tunnel); --bind IP adds IP; --bind 0.0.0.0 adds any IPv4 literal but not a name: a name in
+        # Host is what a DNS-rebinding page has, and 0.0.0.0 is not an address to connect to.
         h = (self.headers.get('Host') or '').lower()
         p = CFG['port']
-        return h in ('127.0.0.1:%d' % p, 'localhost:%d' % p)
+        name, sep, port = h.rpartition(':')
+        if not sep or port != str(p):
+            return 'Host не тот: порт в адресе должен быть %d (SSH-туннель — тот же номер порта с обеих сторон)' % p
+        b = CFG['bind']
+        if name in ('127.0.0.1', 'localhost') or (b != '0.0.0.0' and name == b) \
+                or (b == '0.0.0.0' and name != '0.0.0.0' and is_ipv4(name)):
+            return None
+        return 'Host не тот: открой доску по адресу из вывода brg board (IP-адрес, не имя)'
+
+    def host_ok(self):
+        return self.host_check() is None
+
+    def remote(self):
+        # the request came to an address that is not loopback: no Sec-Fetch-*, the snapshot needs k
+        name = (self.headers.get('Host') or '').lower().rpartition(':')[0]
+        return not is_loopback(name)
 
     def cookie_ok(self):
         name = 'brg_%d=' % CFG['port']
@@ -370,15 +406,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return False
 
     def origin_ok(self):
+        # same origin as the page: http:// + the Host of this very request (already checked)
         o = self.headers.get('Origin')
         if o is None:
             return True
-        p = CFG['port']
-        return o in ('http://127.0.0.1:%d' % p, 'http://localhost:%d' % p)
+        return o == 'http://' + (self.headers.get('Host') or '').lower()
 
     def do_GET(self):
-        if not self.host_ok():
-            return self.reply(403, 'Host не тот')
+        why = self.host_check()
+        if why:
+            return self.reply(403, why)
         u = urllib.parse.urlsplit(self.path)
         if u.path == '/' and 't' in urllib.parse.parse_qs(u.query):
             # the address from `brg board`: the token goes into a cookie and out of the address bar
@@ -393,10 +430,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if u.path == '/':
             return self.page()
         if u.path == '/run/board/data.js' or TASKJS_RE.fullmatch(u.path):
-            # a script tag of a page from another localhost port is the same site for SameSite
-            # and would carry the cookie: the snapshot is read only by our own page
+            # a script tag of a page from another port of this host is the same site for SameSite
+            # and would carry the cookie: the snapshot is read only by our own page. Fetch Metadata
+            # (Sec-Fetch-Site) is sent only to potentially trustworthy URLs (loopback, https), so
+            # at any other address the page adds the token to the address of the script (k)
             if self.headers.get('Sec-Fetch-Site') not in (None, 'same-origin'):
                 return self.reply(403, 'снимок читает только страница доски')
+            k = urllib.parse.parse_qs(u.query, keep_blank_values=True).get('k')
+            if k is None and self.remote():
+                return self.reply(403, 'снимок читает только страница доски (нужен k)')
+            if k is not None and not self.token_eq(k[0]):
+                return self.reply(403, 'снимок читает только страница доски (k не тот)')
             return self.static(os.path.join(CFG['bd'], u.path.rsplit('/', 1)[1]), 'application/javascript; charset=utf-8')
         self.reply(404, 'нет такого пути')
 
@@ -427,8 +471,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         cl = self.headers.get('Content-Length')
         n = int(cl) if cl is not None and cl.isascii() and cl.isdigit() and not self.headers.get('Transfer-Encoding') else -1
         raw = self.rfile.read(n) if 0 <= n <= MAX_BODY else b''
-        if not self.host_ok():
-            return self.reply(403, 'Host не тот')
+        why = self.host_check()
+        if why:
+            return self.reply(403, why)
         if not self.cookie_ok() or not self.token_eq(self.headers.get('X-Brg-Token') or ''):
             return self.reply(403, 'нужны cookie и X-Brg-Token')
         if not self.origin_ok():
@@ -453,7 +498,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             code, out, note = fn(d)
         except Refuse as e:
             return self.reply_json(400, {'ok': False, 'code': -1, 'out': str(e)})
-        say('── с доски: %s%s' % (note, '' if code == 0 else ' — ОШИБКА (код %d)' % code))
+        who = ' (с %s)' % self.client_address[0] if self.remote() else ''  # not from this machine
+        say('── с доски: %s%s%s' % (note, who, '' if code == 0 else ' — ОШИБКА (код %d)' % code))
         self.reply_json(200, {'ok': code == 0, 'code': code, 'out': out})
 
 
@@ -461,16 +507,28 @@ class Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = not WIN  # on Windows SO_REUSEADDR lets a second process take the port
 
+    def server_bind(self):
+        # HTTPServer's own one asks DNS for the name of the address (getfqdn): a slow answer
+        # would eat the 5 s of the handshake with brg
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
 
 # ── main ───────────────────────────────────────────────────────────────────
 def main(argv):
-    opt = {'root': None, 'port': 0, 'retry': False, 'interval': 2, 'alive': 'alive'}
+    opt = {'root': None, 'port': 0, 'retry': False, 'interval': 2, 'alive': 'alive', 'bind': '127.0.0.1'}
     i = 0
     while i < len(argv):
         a = argv[i]
         if a == '--retry-any':
             opt['retry'] = True
             i += 1
+        elif a == '--bind' and i + 1 < len(argv):
+            if not is_ipv4(argv[i + 1]):
+                say('brg-serve: --bind — IPv4-адрес вида 192.168.0.5 или 0.0.0.0', True)
+                return 2
+            opt['bind'] = argv[i + 1]
+            i += 2
         elif a in ('--root', '--port', '--interval', '--alive') and i + 1 < len(argv):
             try:
                 opt[a[2:]] = argv[i + 1] if a in ('--root', '--alive') else int(argv[i + 1])
@@ -488,21 +546,33 @@ def main(argv):
     bd = os.path.join(root, 'run', 'board')
     os.makedirs(bd, exist_ok=True)
     CFG.update(root=root, proj=os.path.dirname(root.rstrip('/\\')) or root, bd=bd,
-               bash=os.environ.get('BRG_SERVE_BASH') or 'bash', interval=max(1, opt['interval']))
+               bash=os.environ.get('BRG_SERVE_BASH') or 'bash', interval=max(1, opt['interval']),
+               bind=opt['bind'])
     clean_tmp(bd)
+    # test hook: really listen on loopback while the rules (Host, Origin) follow --bind; it can
+    # only narrow what is listened on, any other value is ignored
+    listen = '127.0.0.1' if os.environ.get('BRG_SERVE_TEST_LISTEN') == '127.0.0.1' else opt['bind']
+    # 0.0.0.0 without SO_REUSEADDR: on macOS it would bind over a busy 127.0.0.1:P of another process
+    Server.allow_reuse_address = not WIN and opt['bind'] != '0.0.0.0'
     busy = 0  # the saved port was taken: ready tells brg, which says so after the address
     try:
-        srv = Server(('127.0.0.1', opt['port']), Handler)
+        srv = Server((listen, opt['port']), Handler)
     except OSError as e:
+        if e.errno in ADDRNOTAVAIL:  # before the retry: another port does not help
+            say('── brg-serve: адрес %s не на этой машине: %s' % (opt['bind'], e), True)
+            return 5
         if opt['port'] and opt['retry']:
             busy = opt['port']
             try:
-                srv = Server(('127.0.0.1', 0), Handler)
+                srv = Server((listen, 0), Handler)
             except OSError as e2:
+                if e2.errno in ADDRNOTAVAIL:
+                    say('── brg-serve: адрес %s не на этой машине: %s' % (opt['bind'], e2), True)
+                    return 5
                 say('── brg-serve: не удалось занять порт: %s' % e2, True)
                 return 3
         else:
-            say('── brg-serve: порт %d занят: %s' % (opt['port'], e), True)
+            say('── brg-serve: порт %d занят или недоступен: %s' % (opt['port'], e), True)
             return 3
     CFG['port'] = srv.server_address[1]
     CFG['token'] = load_token(bd)
