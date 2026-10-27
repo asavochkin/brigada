@@ -380,3 +380,66 @@ test_board_reviews_numeric_only() {
     *) fail "reviews not in numeric order" ;;
   esac
 }
+
+# The stage of an item (DESIGN §7.1.1) is computed twice: item_stage_v in bash and
+# stageOf in board.html. Every combination of status × Review × Done-Reviews × the number
+# of verdicts × the newest verdict × Reviewing, odd values included, must give the same
+# stage on both sides. Both are mapped to the board's columns and marks:
+# bash work/rework and fix → work+fix, review again|after → review+again|after,
+# accepted noreview → done+noReview, an unknown status → other.
+test_board_stage_rule_matches_bash() {
+  local html cases f
+  has_node || {
+    echo "SKIP: нет node"
+    return 0
+  }
+  html=$ROOT/template/board.html
+  cases=$(BRG_SOURCE_ONLY=1 bash -c '
+    . "$1"
+    for st in todo claimed done cancelled weird ""; do
+      for rv in "" no yes NO; do
+        for dr in 0 1 2 08 x ""; do
+          for nv in "0:" 1:ok 1:changes 1:skip 1: 1:odd 2:ok 2:changes 2:skip 2: 2:odd 3:ok 3:changes 3:skip 3:odd; do
+            n=${nv%%:*} v=${nv#*:}
+            for ri in "" claude-2; do
+              item_stage_v s "$st" "$rv" "$dr" "$n" "$v" "$ri"
+              case $s in
+                todo) c=todo ;;
+                cancelled) c=cancelled ;;
+                work) c=work; [ "$IS_NOTE" = rework ] && c="work fix" ;;
+                fix) c="work fix" ;;
+                review) c=review; [ -n "$IS_NOTE" ] && c="review $IS_NOTE" ;;
+                accepted) c=done; [ "$IS_NOTE" = noreview ] && c="done noReview" ;;
+                *) c=other ;;
+              esac
+              printf "%s|%s|%s|%s|%s|%s|%s\n" "$st" "$rv" "$dr" "$n" "$v" "$ri" "$c"
+            done
+          done
+        done
+      done
+    done' _ "$BRG_SRC") || fail "bash side"
+  assert_eq 4320 "$(printf '%s\n' "$cases" | wc -l | tr -d ' ')" "the number of combinations"
+  f=$(mk_tmpdir)/stage-cases
+  printf '%s\n' "$cases" >"$f"
+  node -e '
+    const fs = require("fs");
+    const html = fs.readFileSync(process.argv[1], "utf8");
+    const a = html.indexOf("  function stageOf(it) {"), b = html.indexOf("\n  }\n", a);
+    if (a < 0 || b < 0) throw new Error("stageOf not found in board.html");
+    const num = s => /^\d+$/.test(String(s)) ? parseInt(s, 10) : 0;
+    const stageOf = new Function(html.slice(a, b + 4) + "; return stageOf;")();
+    let bad = 0;
+    for (const line of fs.readFileSync(process.argv[2], "utf8").split("\n")) {
+      if (!line) continue;
+      const [st, rv, dr, n, v, ri, want] = line.split("|");
+      const reviews = [];
+      for (let i = 1; i <= +n; i++) reviews.push({ n: i, verdict: i === +n ? v : "ok" });
+      const it = { status: st, reviewFlag: rv, doneRevs: num(dr), reviewingRaw: ri, reviews: reviews,
+        last: reviews.length ? reviews[reviews.length - 1] : null };
+      const s = stageOf(it);
+      const got = [s.col].concat(["fix", "again", "after", "noReview"].filter(k => s[k])).join(" ");
+      if (got !== want) { bad++; if (bad <= 10) console.log("mismatch: " + line + " → board: " + got); }
+    }
+    if (bad) { console.log(bad + " mismatches"); process.exit(1); }
+  ' "$html" "$f" || fail "item_stage_v and stageOf disagree"
+}
