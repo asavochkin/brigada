@@ -320,6 +320,7 @@ test_busy_command() {
   busy_setup
   out=$(brg busy --as "$Bn" "два слова")
   assert_contains "$out" "── отмечено: работает: два слова."
+  assert_contains "$out" "или busy --off. Подагент блокирует тебя — вызывай wait, когда он вернётся"
   assert_eq busy "$(mk "$Bn" Via)"
   assert_eq "два слова" "$(mk "$Bn" Note)"
   assert_contains "$(last_line "$out")" "── NEXT: поручи работу подагенту; он блокирует тебя — вернувшись, bash $BRG wait --as $Bn (подагент закончил: ты свободен)"

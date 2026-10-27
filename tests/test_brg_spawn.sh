@@ -349,6 +349,10 @@ EOF
   assert_not_contains "$o" "жди (wait)"
   assert_contains "$(cat "$FK/run.1/tool.1.out")" "wait --as $k --busy \"I001\""
   assert_contains "$(cat "$FK/run.1/tool.2.out")" "── NEXT: поручи работу подагенту; он блокирует тебя — вернувшись, заверши ход"
+  # the busy line of a launched agent: its own advice, no supervisor id glued in (C14)
+  assert_contains "$(cat "$FK/run.1/tool.2.out")" "или busy --off. Подагент блокирует тебя — вернувшись, заверши ход"
+  assert_not_contains "$(cat "$FK/run.1/tool.2.out")" "S001Подагент"
+  assert_not_contains "$(cat "$FK/run.1/tool.2.out")" "вызывай wait, когда он вернётся"
   assert_contains "$(cat "$FK/run.1/tool.4.out")" "заверши ход — brg разбудит тебя"
   assert_contains "$(cat "$FK/run.1/tool.6.out")" "Ты запущен brg (S001, ход 1): свободен — заверши ход"
   assert_contains "$(cat "$FK/run.1/tool.8.out")" "── ПАУЗА: человек поставил на паузу бригаду. Новую работу не начинай; сдай сделанное и заверши ход — brg разбудит тебя"
