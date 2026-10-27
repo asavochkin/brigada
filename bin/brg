@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# brg — brigada: message transport between coding agents from different harnesses.
-# Spec: DESIGN.md §3–§9. One file, bash 3.2+; utilities: mkdir mv rm cat sed awk
-# date sleep kill ls head tail wc sort tr printf cp uname nohup. No jq/python/node.
+# brg — brigada: the tool of a brigade of coding agents from different harnesses: messages,
+# waiting, tasks and the lead, items with path reservations, the run queue, the human's
+# board, agents launched by brg. Spec: DESIGN.md. One file, bash 3.2+; utilities: mkdir mv
+# rm cat sed awk date sleep kill ls head tail wc sort tr printf cp uname nohup. No jq/node.
 #
 # Agents (from the project root):  bash .brigada/bin/brg <command> --as <name> …
 # Human:                            init (from the brigada repo), board, say, tail, who, stop, pause,
-#                                   resume, task new|cancel --as human, lead give --as human.
+#                                   resume, task new|cancel --as human, lead give --as human,
+#                                   spawn, doctor. `brg help` lists everything.
 # Python (3.8+) is optional and only for the human's board server, bin/brg-serve.py: brg
 # calls it in `board` and `doctor` and nowhere else; the agents' tool is bash.
 #
@@ -382,11 +384,6 @@ cfg_parse() {
     esac
     "$2" "$k" "$v"
   done <"$1"
-}
-cfg_set() {
-  local k=${1//./_}
-  k=${k//-/_}
-  eval "CFG_$k=\$2"
 }
 CFGL_VARS=
 CFGL_KEYS= # " PREFIX:key …" — the keys read from the files (doctor checks numbers)
@@ -998,11 +995,11 @@ busy_task_v() { # VAR — id of the active task ("" if none); ACT_* are not touc
   [ -n "$_bt_r" ] && [ -f "$ROOT/tasks/$_bt_r/task" ] && _bt_i=${_bt_r%%-*}
   eval "$1=\$_bt_i"
 }
-# busy_read NAME [TASK] → BZ_ON (1 = a valid mark), BZ_NOTE, BZ_SINCE, BZ_ITEM, BZ_VIA;
+# busy_read NAME [TASK] → status 0 = a valid mark; BZ_NOTE, BZ_SINCE, BZ_ITEM, BZ_VIA;
 # TASK — the active task if the caller knows it ("" = none), else it is looked up
 busy_read() {
   local line t= cur f=$RUN/busy/$1
-  BZ_ON= BZ_NOTE= BZ_SINCE= BZ_ITEM= BZ_VIA=
+  BZ_NOTE= BZ_SINCE= BZ_ITEM= BZ_VIA=
   [ -f "$f" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     case $line in
@@ -1019,7 +1016,6 @@ busy_read() {
     BZ_NOTE= BZ_SINCE= BZ_ITEM= BZ_VIA=
     return 1
   fi
-  BZ_ON=1
 }
 # busy_text_v VAR RAW — the caption of a mark: cut, not refused (DESIGN §4.2). Control
 # characters and " ' \ $ ` % (cmd.exe expands %…% even inside quotes; the caption goes
@@ -1178,7 +1174,7 @@ agent_state() {
 
 # state_v VAR [NAME] — right after agent_state: the state for people (who, status, join; the
 # board has its own words). «ждёт» = free (a live wait, no mark) — the human's decision
-# (DESIGN §5.2); «работает[: подпись][, N мин]» — a mark (N мин — how long) or a recent
+# (DESIGN §5.2); «работает[: подпись][, N мин]» — a mark («N мин» — how long) or a recent
 # brg call without a wait; asleep, gone as they are; waiting/working under the human's stop (general or NAME's) — «остановлен».
 state_v() {
   local _sv_r _sv_d
@@ -1393,7 +1389,7 @@ task_write() { # DIR — TK_* → DIR/task (tmp + mv)
   fi
 }
 
-# role_v VAR NAME — role of NAME in the loaded task (TK_*): lead | участник
+# role_v VAR NAME — role of NAME in the loaded task (TK_*): lead | «участник»
 role_v() {
   local _ro_r=участник
   [ -n "$2" ] && [ "$2" = "$TK_LEAD" ] && _ro_r=lead
@@ -1670,7 +1666,7 @@ ask_chopt_v() {
   fi
   eval "$1=\$_ac_o"
 }
-# asks_scan — the open questions to the human (DESIGN §9.2): markers run/asks/<канал>.<N>
+# asks_scan — the open questions to the human (DESIGN §9.2): markers `run/asks/<канал>.<N>`
 # whose message is there (in lobby or the active task) → AK_N, AK_CH[], AK_ID[],
 # AK_FROM[], AK_EP[], AK_FILE[] (the message). No processes: who, status and every
 # tick of the board read it.
@@ -2055,7 +2051,7 @@ usage_line_v() { # VAR CMD
     busy) _ul_u="$BRG busy --as <имя> [\"подпись\"]  |  $BRG busy --as <имя> --off" ;;
     read) _ul_u="$BRG read --as <имя> [--channel lobby|T00N] [--since N] [--all]" ;;
     who) _ul_u="$BRG who" ;;
-    tail) _ul_u="$BRG tail [-f] [-n N] [канал]" ;;
+    tail) _ul_u="$BRG tail [-n N] [--follow] [канал]" ;;
     say) _ul_u="$BRG say [--to all|<имя>[,<имя>]] [--channel C] [--re N] [--file F] [текст…]  (без текста — stdin)" ;;
     status) _ul_u="$BRG status --as <имя>" ;;
     stop) _ul_u="$BRG stop [<имя>]" ;;
@@ -2063,11 +2059,11 @@ usage_line_v() { # VAR CMD
     resume) _ul_u="$BRG resume [<имя>]" ;;
     task) _ul_u="$BRG task new --as <имя> --title \"…\" [--cancel-current] [--file F] <<'BRG_EOF' постановка BRG_EOF | task new --as human --title \"…\" [--cancel-current] [--file F] (человек) | task close --as <lead> [--force] | task cancel --as <lead|human> | task show [T00N] | task list" ;;
     lead) _ul_u="$BRG lead give <имя> --as <lead> | lead take --as <имя> | lead give <имя> --as human (человек)" ;;
-    item) _ul_u="$BRG item add --as <имя> --title \"…\" [--desc \"описание\" | --file F | <<'BRG_EOF' описание BRG_EOF] [--paths \"предлагаемые пути\"] [--no-review] | item claim I00N --as <имя> [--paths \"src/a,tests/a\"|none] | item done I00N --as <имя> [--note \"итог\"] [--result <путь>] [--no-review] | item release I00N --as <имя> | item reassign I00N --to <имя> --as <lead> | item review I00N --as <имя> --start | item review I00N --as <имя> --verdict ok|changes [--comment \"…\" | --file F | <<'BRG_EOF' комментарий BRG_EOF] | item review I00N --as <имя> --verdict skip [--comment \"почему\" | --file F] | item cancel I00N --as <имя> [--comment \"почему\" | --file F] | item list [--as <имя> --mine] [--status todo,claimed,done,cancelled] | item show I00N" ;;
+    item) _ul_u="$BRG item add --as <имя> --title \"…\" [--desc \"описание\" | --file F | <<'BRG_EOF' описание BRG_EOF] [--paths \"предлагаемые пути\"] [--no-review] | item claim I00N --as <имя> [--paths \"src/a,tests/a\"|none] | item done I00N --as <имя> [--note \"итог\"] [--result <путь>] [--no-review] | item release I00N --as <имя> | item reassign I00N --to <имя> --as <lead> | item review I00N --as <имя> --start | item review I00N --as <имя> --verdict ok|changes [--comment \"…\" | --file F | <<'BRG_EOF' комментарий BRG_EOF] | item review I00N --as <имя> --verdict skip [--comment \"почему\" | --file F] | item cancel I00N --as <имя> [--comment \"почему\" | --file F] | item list [--as <имя>] [--mine] [--status todo,claimed,done,cancelled] | item show I00N" ;;
     run) _ul_u="$BRG run --as <имя> [--sync] [--timeout 10m] [--item I00N] -- <команда> [аргументы…]  |  run list · run show R00N · run cancel R00N --as <имя>" ;;
     doctor) _ul_u="$BRG doctor  |  из репозитория brigada: bash /путь/к/brigada/bin/brg doctor [каталог_проекта]" ;;
     board) _ul_u="$BRG board [--interval S] [--port P] [--bind ADDR] [--static] [--once]" ;;
-    spawn) _ul_u="$BRG spawn opencode --model <провайдер/модель> [--rights full|project] [--count N] [--note \"…\"]  |  spawn list · spawn show <S|имя> · spawn wake|rm|detach <S|имя> · spawn rights <S|имя> full|project  (только человек)" ;;
+    spawn) _ul_u="$BRG spawn opencode --model <провайдер/модель> [--rights full|project] [--count N] [--note \"…\"]  |  spawn list · spawn show <S|имя> · spawn wake|rm|detach <S|имя> · spawn rights <S|имя> full|project  (запуск и управление — только человек; list/show — всем)" ;;
     *) _ul_u="$BRG help" ;;
   esac
   eval "$1=\$_ul_u"
@@ -2081,7 +2077,7 @@ usage_print() {
     leave) echo "Отключиться (тихое системное сообщение в lobby). Живой wait агента завершится на ближайшем тике." ;;
     send) echo "Отправить сообщение (тело — stdin или --file; CRLF→LF; лимит msg_max_bytes). По умолчанию --to all, канал — активная задача (нет задачи — lobby). --reply-by: по сроку твой wait вернёт сводку, кто ответил. --ask (с --to human): вопрос человеку — открыт на доске, в who и в терминале brg board, пока его автор (переслав ответ человека) или человек не ответит с --re на него (задай его и текстом в своём чате; ответ получил — перешли суть бригаде с --re N; уточнить — новым --ask)." ;;
     wait)
-      echo "Ждать сообщений (последнее действие каждого шага). Слушает lobby и активную задачу. Всегда код 0, последняя строка — NEXT (кроме STOP/SUPERSEDED)."
+      echo "Ждать сообщений (последнее действие каждого шага). Слушает lobby и активную задачу. Всегда код 0, последняя строка — NEXT, кроме STOP, SUPERSEDED (твой wait сменил новый), LEFT (агент отключён: leave) и сироты (процесс, запустивший wait, умер — wait выходит молча)."
       echo "--timeout S — секунды (десятичное число; по умолчанию — таймаут твоего харнесса из config). 0 возвращается сразу — не используй: NEXT повторит его, и цикл wait станет горячим."
       echo "На паузе (brg pause) wait просыпается только от сообщений человека и снятия паузы (тогда выводит «пауза снята» и накопленное); таймаут на паузе — строка «── пауза · нет новых от человека»."
       echo "wait без --busy значит «я свободен» (в списках — «ждёт»). --busy [\"подпись\"] — «мой подагент работает»: в who, status и на доске ты «работает: подпись» (подпись — до 2 слов, лишнее и кавычки, \$, \`, %, \\ обрезаются с предупреждением; без подписи — просто «работает»). Пометка действует в активной задаче; NEXT повторяет --busy, пока она стоит, поэтому копируй NEXT дословно. item claim и item review --start ставят её сами. Подагент закончил — следующий wait без --busy."
@@ -2090,9 +2086,9 @@ usage_print() {
       echo "Пометка «работает» без ожидания: для харнесса, где вызов подагента блокирует участника (он не может сидеть в wait --busy), и для работы вне подзадач. busy --off — снять. Пометка стоит, пока ты не вызовешь wait без --busy, busy --off, leave или join; подзадача, по которой она поставлена (claim, review --start), снимает её, когда уходит от тебя: done, release, cancel, reassign, твой вердикт. Подпись — до 2 слов (как у wait --busy). Это изменяющая команда: имя с ключом."
       ;;
     read) echo "Показать сообщения повторно: по умолчанию — после подтверждённых во всех слушаемых каналах (включая выданное последним wait). Курсор не двигает. --since N — в одном канале (по умолчанию — задача). --all — включая чужие личные." ;;
-    who) echo "Кто подключён: имя · харнесс · модель · состояние · когда был активен; активная задача. Состояние: «ждёт» — свободен (идёт его wait, пометки «работает» нет); «работает[: подпись][, N мин]» — его подагент работает (пометка, wait --busy) или он недавно вызывал brg; asleep, gone. «не на связи N мин» — wait не идёт дольше таймаута wait + 60 с; «возможно выпал» — ни wait, ни вызовов brg дольше dropout_after (по умолчанию 5 мин): модель могла завершить ход — человеку: напиши агенту в его чат «продолжай». «ждут ответа человека» — открытые вопросы агентов (send --ask): ответь в чате агента или say --to <имя> --re N." ;;
-    tail) echo "Переписка в читаемом виде: без канала — lobby и активная задача (следит за сменой задачи); -f — следить (Ctrl-C — выход)." ;;
-    say) echo "Сообщение от human (по умолчанию всем, в канал активной задачи); снимает общий стоп и стоп названных агентов (паузу не снимает — она будится человеком, но остаётся: resume). --re N — ответ на сообщение #N (на вопрос агента: закрывает его на доске)." ;;
+    who) echo "Кто подключён: имя · харнесс · модель · состояние · когда был активен; активная задача. Состояние: «ждёт» — свободен (идёт его wait, пометки «работает» нет); «работает[: подпись][, N мин]» — его подагент работает (пометка, wait --busy) или он недавно вызывал brg; asleep, gone. «не на связи N мин» — wait не идёт дольше таймаута wait + 60 с; «возможно выпал» — ни wait, ни вызовов brg дольше max(таймаут wait + 60 с, dropout_after) (dropout_after по умолчанию 5 мин): модель могла завершить ход — человеку: напиши агенту в его чат «продолжай». «ждут ответа человека» — открытые вопросы агентов (send --ask): ответь в чате агента или say --to <имя> --re N." ;;
+    tail) echo "Переписка в читаемом виде: без канала — lobby и активная задача (следит за сменой задачи); -n N — последние N сообщений; --follow (или -f) — следить (Ctrl-C — выход)." ;;
+    say) echo "Сообщение от human (по умолчанию всем, в канал активной задачи); снимает общий стоп и стоп названных агентов; паузу не снимает: агент на паузе просыпается от сообщения человека, но пауза стоит до resume. --re N — ответ на сообщение #N (на вопрос агента: закрывает его на доске)." ;;
     status) echo "Кто я, задача и моя роль, непрочитанное (без сдвига курсора), мои дедлайны, жив ли мой wait, NEXT. С именем без ключа — только просмотр (не подтверждает, что ты этот агент)." ;;
     stop) echo "Остановить бригаду (или одного агента): wait возвращает STOP сразу и на ближайшем тике; любая команда агента печатает STOP первой строкой; item add|claim|reassign, item review --start, запуск run и task new агента отказывают. Снять: resume, say (общий и адресатов), task new --as human (общий)." ;;
     pause)
@@ -2102,7 +2098,7 @@ usage_print() {
     resume) echo "Снять стоп и паузу: без имени — общие и все личные, с именем — только этого агента (общая пауза стоит, пока не вызван resume без имени). Остановленные агенты завершили ход — напиши им «продолжай»; агенты на паузе вернутся из wait сами." ;;
     init) echo "Создать/обновить <проект>/.brigada: bin/brg, bin/brg.cmd, brg-serve.py, README.md, PROTOCOL.md, board.html, config.default, VERSION; состояние и config не трогает (новый config — все настройки закомментированы, значения по умолчанию — из config.default). В корне проекта дописывает (или обновляет) короткий блок brigada в AGENTS.md (нет — создаёт и исключает из git) и в CLAUDE.md, если он есть и не импортирует AGENTS.md: тогда агенту достаточно сказать «подключись к бригаде». --no-agents-md — эти файлы не трогать." ;;
     task)
-      echo "Задачи (одна активная): new — создать (ты lead; постановка человека дословно → brief.md; при стопе или паузе — общих или твоих — отказ: снимает их только человек; человек сам даёт задачу с --as human: lead выбирает brg — прежний lead, если на связи, иначе первый подключившийся; так снимаются общие стоп и пауза); close — закрыть (lead; нужен непустой summary.md); cancel — отменить (lead или человек: --as human); show/list — посмотреть."
+      echo "Задачи (одна активная): new — создать (ты lead; постановка человека дословно → brief.md; при стопе или паузе — общих или твоих — отказ: снимает их только человек; человек сам даёт задачу с --as human: lead выбирает brg — прежний lead, если на связи, иначе агент на связи (сначала свободные, раньше подключившийся); так снимаются общие стоп и пауза); close — закрыть (lead; нужен непустой summary.md); cancel — отменить (lead или человек: --as human); show/list — посмотреть."
       echo "close отказывает, пока есть подзадачи в работе или идут прогоны (--force — отменить и остановить их). Есть непрочитанное для lead'а (то, что разбудило бы его wait) — close показывает его (оно считается доставленным) и отказывает: учти и повтори close."
       ;;
     lead) echo "Роль lead в активной задаче (фасилитатор и связь с человеком; lead есть всегда): give — передать (только текущий lead; человек — в любой момент: lead give <имя> --as human); take — взять, если текущий lead asleep/gone или lead нет." ;;
@@ -2121,7 +2117,7 @@ usage_print() {
       echo "Задача отменяется — её прогоны останавливаются; task close при идущих прогонах отказывает (--force — остановить их). Результат прогона закрытой задачи приходит в lobby."
       ;;
     doctor)
-      echo "Проверка среды и состояния (ничего не меняет): bash и платформа (и совпадение с агентами), CRLF в bin/brg и шаблонах, атомарность mkdir, mv поверх открытого файла, утилиты, запись в .brigada, .git/info/exclude, протухшие блокировки, мёртвые раннеры и очередь brg run, зависшие wait, таймауты wait в config."
+      echo "Проверка среды и состояния (ничего не меняет): bash, установка .brigada и её версия, платформа (и совпадение с агентами), CRLF в bin/brg, bin/brg.cmd, документах и config, Python для сервера доски, утилиты, видимость процессов (песочница), запись в .brigada, атомарность mkdir, mv поверх открытого файла, .git/info/exclude, блок brigada в AGENTS.md и CLAUDE.md, протухшие блокировки, мёртвые раннеры и очередь brg run, зависшие wait, запуски brg spawn (надзор, бинарь харнесса), стоп и пауза, таймауты wait и числа в config."
       echo "Сводка ✓/⚠/✗ с подсказками; код выхода 0 — ошибок (✗) нет, 1 — есть. Сломанную установку (например, bin/brg с CRLF) проверяй копией из репозитория brigada: bash /путь/к/brigada/bin/brg doctor <проект>."
       ;;
     board)
@@ -2130,10 +2126,10 @@ usage_print() {
       echo "Работает до Ctrl+C (сервер останавливается вместе с ним); --once — один снимок и выход, без сервера. Снимок только читает: никого не будит, ничего в бригаде не меняет."
       ;;
     spawn)
-      echo "Агенты, запущенные brg (только человек; с доски — «Добавить агента»). brg сам подключает агента (join), запускает надзор и ходы харнесса без окна: свободный агент завершает ход, надзор ждёт за него и продолжает его сессию, когда есть будящее (сообщение передаётся прямо в промпт). Пока — только OpenCode, macOS и Linux."
+      echo "Агенты, запущенные brg (запускает и управляет только человек, в том числе с доски — «Добавить агента»; spawn list и spawn show — всем). brg сам подключает агента (join), запускает надзор и ходы харнесса без окна: свободный агент завершает ход, надзор ждёт за него и продолжает его сессию, когда есть будящее (сообщение передаётся прямо в промпт). Пока — только OpenCode, macOS и Linux."
       echo "--rights full (по умолчанию) — агент может всё, что можешь ты, в том числе вне каталога проекта и чтение .env; project — правила OpenCode по умолчанию: в проекте можно всё — любые команды, правки, сеть, git push; вне проекта и .env — отказ. --count — сколько агентов (1–9); --note — подпись человека (одна строка ≤ 200 байт, войдёт в первый промпт)."
       echo "list — запуски: состояние, ход, токены и стоимость, последняя ошибка; show — запись, активность, логи (ключ замаскирован). wake — разбудить (ход со всем непрочитанным; надзор не отвечает — перезапустить его); rm — убрать (идущий ход остановится, агент отключится); detach — забрать в окно (покажет команду открыть сессию; дальше это обычный агент); rights — сменить права со следующего хода."
-      echo "Настройки (config): spawn.opencode.bin, spawn.opencode.args (--standalone), spawn.opencode.export (1 — токены с подагентами через session export), spawn.wait_timeout. Агентам эта команда не доступна: попроси человека."
+      echo "Настройки (config): spawn.opencode.bin, spawn.opencode.args (--standalone), spawn.opencode.export (1 — токены с подагентами через session export), spawn.wait_timeout, spawn_stale (надзор, молчащий дольше стольких секунд, считается мёртвым; по умолчанию 30). Агенту нужен запуск — попроси человека."
       ;;
   esac
 }
@@ -2144,7 +2140,8 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
 
 Агентам:
   <имя> — полное имя из своего join, с ключом (claude-1.k7f3q9); без ключа команды, меняющие
-  состояние, отказывают; команды чтения (read, status, who, task/item/run show|list) — принимают
+  состояние, отказывают; команды чтения (read, status, who, task/item/run show|list) принимают
+  и имя без ключа
   join --harness <h> --model <m>     подключиться, получить имя (--as <имя> — вернуться под старым)
   wait --as <имя> [--timeout S] [--busy ["подпись"]]   ждать сообщений — последнее действие каждого шага;
                                      --busy — мой подагент работает (иначе wait = «я свободен»)
@@ -2164,7 +2161,7 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
   item reassign I00N --to <имя> --as <lead>
   item review I00N --as <имя> --start · --verdict ok|changes [--comment "…"] < комментарий
   item review I00N --as <имя> --verdict skip [--comment "почему"]   проверка не нужна
-  item list [--mine] [--status todo] · item show I00N
+  item list [--as <имя>] [--mine] [--status todo] · item show I00N
   run --as <имя> [--sync] [--timeout 10m] [--item I00N] -- <команда>   тесты/сборка по очереди;
                                      результат придёт сообщением · run list · run show|cancel R00N
   who                                кто подключён
@@ -2173,7 +2170,7 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
   init [--no-agents-md] [каталог]    (из репозитория brigada) создать/обновить .brigada/ и блок в AGENTS.md
   board [--interval S] [--port P] [--bind ADDR] [--static] [--once]   доска в браузере (с Python — с управлением; по умолчанию только 127.0.0.1): задача, бригада, подзадачи, прогоны, переписка
   say [--to …] [--re N] [текст]      сообщение от human (снимает стоп); --re N — ответ на вопрос #N
-  tail [-f] [-n N] [канал]           переписка (по умолчанию lobby + активная задача)
+  tail [-n N] [--follow] [канал]     переписка (по умолчанию lobby + активная задача)
   who                                кто подключён; «возможно выпал» — напиши агенту в его чат «продолжай»
   task new --as human --title "…" [--file F] < постановка   дать задачу (lead выберет brg) · task cancel --as human   отменить
   lead give <имя> --as human         назначить lead'а
@@ -2182,6 +2179,8 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
   doctor [каталог_проекта]           проверить среду и состояние (Windows, блокировки, раннеры)
   spawn opencode --model <м> [--rights full|project] [--count N]   запустить агентов без окна (надзор brg)
   spawn list · spawn show|wake|rm|detach <S|имя> · spawn rights <S|имя> full|project
+Всем:
+  version (или --version)            версия brg
 
 Подробнее: brg <команда> --help. Инструкция агента: .brigada/README.md, правила: .brigada/PROTOCOL.md
 BRG_HELP
@@ -2985,7 +2984,6 @@ roles_note_v() {
 }
 
 cmd_leave() {
-  local f note take= newlead= lead_chan= lead_chan_body
   NEXT_ON_ERR=
   while [ $# -gt 0 ]; do
     case $1 in
@@ -3030,7 +3028,7 @@ leave_core() {
       task_write "$ACT_DIR"
     fi
     if [ -n "$newlead" ]; then
-      take="lead теперь $newlead (назначен brg: первый на связи; $newlead — начни с PROTOCOL.md, раздел 4)"
+      take="lead теперь $newlead (выбран brg из тех, кто на связи; $newlead — начни с PROTOCOL.md, раздел 4)"
     else
       take="lead назначится первому, кто выйдет на связь (или $BRG lead take --as <имя>)"
     fi
@@ -3058,7 +3056,7 @@ leave_core() {
   return 0
 }
 
-# busy [текст] | --off: the busy mark without a wait (DESIGN §5.4) — for a harness
+# `busy [текст]` | `--off`: the busy mark without a wait (DESIGN §5.4) — for a harness
 # where a subagent call blocks the participant (it cannot sit in wait --busy) and for
 # work that is not an item. Not starting work: allowed while stopped (need_agent prints
 # the STOP banner first; NEXT is then "end the turn").
@@ -3106,7 +3104,13 @@ cmd_busy() {
       busy_clear
       w=free
     elif busy_set busy "$words"; then
-      echo "── отмечено: работает${words:+: $words}. Бригада и человек видят тебя занятым, пока ты не вызовешь wait без --busy (подагент закончил) или busy --off. ${sp:-Подагент блокирует тебя — вызывай wait, когда он вернётся; идёт в фоне — сразу wait --busy.}${sp:+Подагент блокирует тебя — вернувшись, заверши ход (подагент закончил: ты свободен); идёт в фоне — сразу wait --busy.}"
+      # a launched agent ends its turn when the subagent is back; one connected by hand calls wait
+      if [ -n "$sp" ]; then
+        x="Подагент блокирует тебя — вернувшись, заверши ход (подагент закончил: ты свободен); идёт в фоне — сразу wait --busy."
+      else
+        x="Подагент блокирует тебя — вызывай wait, когда он вернётся; идёт в фоне — сразу wait --busy."
+      fi
+      echo "── отмечено: работает${words:+: $words}. Бригада и человек видят тебя занятым, пока ты не вызовешь wait без --busy (подагент закончил) или busy --off. $x"
       w=set
     else
       echo "Задачи нет — пометка «работает» не ставится."
@@ -4033,7 +4037,7 @@ dr_platform() {
 }
 
 dr_files() {
-  local f x crlf= tot cr na
+  local f x crlf=
   f=$ROOT/bin/brg
   if [ -f "$f" ]; then
     cr_count_v x "$f"
@@ -4117,7 +4121,7 @@ dr_group_kill() {
   return 0
 }
 dr_env() {
-  local x missing= bad= notes=
+  local x missing= bad=
   for x in mkdir mv rm cat sed awk date sleep kill ls head tail wc sort tr printf cp uname; do
     command -v "$x" >/dev/null 2>&1 || missing="$missing $x"
   done
@@ -4143,7 +4147,7 @@ dr_env() {
 
 # dr_procs — does kill -0 see other processes and their death? A sandbox (Codex)
 # may answer EPERM for processes outside it: pid_alive calls them alive. A pid
-# namespace that hides live processes (ESRCH) is not detected (DESIGN §12 п. 3).
+# namespace that hides live processes (ESRCH) is not detected (DESIGN §12 item 3).
 dr_procs() {
   local c x bad=
   if [ "$PPID" != 1 ] && pid_alive "$PPID" && [ "$PA_WHY" = eperm ]; then
@@ -4268,7 +4272,7 @@ dr_agents_md() {
 # (1 s apart) is in normal use.
 DR_PIDS=" " # runner pids already reported (no duplicate lines for runs)
 dr_lock_problem_v() { # VAR LOCKDIR — the problem with that lock ("" if none)
-  local _lp_o _lp_r= _lp_f _lp_x=
+  local _lp_o _lp_r= _lp_f
   lock_owner_v _lp_o "$2"
   if [ -z "$_lp_o" ]; then
     [ -d "$2" ] && _lp_r=noowner
@@ -4352,7 +4356,7 @@ dr_locks() {
 
 # dr_runs — the queue of brg run and runs in progress whose runner is dead or silent
 dr_runs() {
-  local f line a x hf tn bad=0
+  local f line a x hf bad=0
   for f in "$RUN"/execq/[0-9]*; do
     [ -f "$f" ] || continue
     case ${f##*/} in *.*) continue ;; esac
@@ -4538,10 +4542,10 @@ dr_config() {
   [ -z "$fail" ] || dr_fail "wait_timeout ($pk) больше 540 с: $fail — харнесс прервёт wait (лимит команды — до 600 с)" \
     "Уменьши в $RROOT/config (ключи wait_timeout.<харнесс> и wait_timeout.<харнесс>.<платформа>)."
   [ -z "$high" ] || dr_warn "wait_timeout ($pk) выше рекомендованного: $high" \
-    "Больше 110 с — только если агенты стабильно передают таймаут инструмента ≥ wait_timeout + 60 с, иначе харнесс прервёт wait на 120 с (DESIGN §5.1)." \
+    "Больше 110 с — только если агенты стабильно передают таймаут инструмента ≥ wait_timeout + 60 с, иначе харнесс прервёт wait на 120 с." \
     "Codex вне Windows паркует команду через 10–30 с: wait дольше 25 с стоит опросов (write_stdin)."
   [ -z "$low" ] || dr_warn "wait_timeout ($pk) меньше 5 с: $low" "Каждый возврат wait — вызов модели: слишком частые пробуждения дорого стоят."
-  [ -n "$fail$high$low" ] || dr_ok "wait_timeout ($pk): $line — ниже лимитов команд харнессов (DESIGN §5.1)"
+  [ -n "$fail$high$low" ] || dr_ok "wait_timeout ($pk): $line — ниже лимитов команд харнессов (120 с по умолчанию, до 600 с с таймаутом инструмента)"
   dr_cfg_nums
   if [ "$RUNNER_STALE" -le "$LOCK_STALE" ]; then
     dr_warn "runner_stale ($RUNNER_STALE) не больше lock_stale ($LOCK_STALE)" "Раннер, ждущий блокировку runs до lock_stale, могут счесть зависшим: сделай runner_stale больше lock_stale."
@@ -5535,7 +5539,7 @@ paths_parse() {
 #             paths; the agent `me` and the item `skip` are not others)
 #   own:      the same fields, overlaps with `me`'s own other items (not `skip`)
 # Paths compare without case (DESIGN §7.2): tolower folds ASCII A-Z (LC_ALL=C); fold() also
-# folds Russian Cyrillic А-Я, Ё (two-byte literals, 33 pairs). Other letters and NFC/NFD
+# folds Russian Cyrillic «А–Я», «Ё» (two-byte literals, 33 pairs). Other letters and NFC/NFD
 # forms are not folded (a known limit, DESIGN §12).
 AWK_RES='
 function fold(s,   i) {
@@ -5587,7 +5591,7 @@ res_awk() { # DIR MODE MINE ME SKIP → RES_OUT
 }
 # res_conflicts DIR PATHS AGENT ITEM → RC_LINES (human-readable, one per conflict; "" if none)
 res_conflicts() {
-  local mine ag id path st t
+  local mine ag id path t
   RC_LINES=
   [ "$2" = none ] && return 0
   res_awk "$1" conflict "$2" "$3" "$4"
@@ -6043,7 +6047,7 @@ item_opt_body() {
 }
 
 item_add() {
-  local title id gist w hint= hshown= norev=
+  local title id gist hint= hshown= norev=
   item_opts "title file desc paths no-review" "$@"
   [ -z "$IO_ID" ] || usage_die "лишний аргумент: $IO_ID"
   one_line_v title "$IO_TITLE" 100000
@@ -6631,7 +6635,7 @@ item_cancel() {
 }
 
 item_list() {
-  local id st as ti pa ce cr no re hi rv dr ri rn rvv rvr line shown age ok cnt=0 x rest s sd
+  local id st as ti pa ce cr no re hi rv dr ri rn rvv rvr line shown age cnt=0 x rest s sd
   local ct=0 cw=0 cf=0 cr_=0 ca=0 cx=0
   item_opts "mine status" "$@"
   [ -z "$IO_ID" ] || usage_die "лишний аргумент: $IO_ID (одну подзадачу покажет item show)"
@@ -8508,7 +8512,6 @@ cmd_wait() {
 SPAWN_IDLE="заверши ход — brg разбудит тебя, когда будет новое"
 SPAWN_SUPPORTED=opencode
 TAB=$'\t'
-ESC=$'\033'
 SP_FIELDS="Id Agent Harness Model Rights Session State Note Created Created-Epoch Supervisor Turn Turn-Start Turn-End Turn-Result Turn-Stopped Last-Error Perm-Denied Rights-Note Rights-Note-Turn Last-Event Hold Context Tokens-In Tokens-Out Tokens-Reasoning Tokens-Cache-Read Tokens-Cache-Write Tokens-Main-In Tokens-Main-Out Tokens-Sub-In Tokens-Sub-Out Cost Tokens-Source Sub-Sessions Last-Text-Turn Locale-Set Locale"
 
 # hdr_v VAR FILE KEY — one header of a record ("" if none)
@@ -9211,7 +9214,7 @@ sv_export_one() {
 # total has not changed for 2 turns in a row and whose id was not seen again this turn is
 # not exported again. → tokens.res: "main six-tuple · subagents six-tuple · subs" | fail
 sv_export_run() {
-  local id ids= a b c d e f k line tot="0 0 0 0 0 0" subs=0 out= main
+  local id ids= d f k line tot="0 0 0 0 0 0" subs=0 out= main
   if ! sv_export_one "$SP_Session"; then
     printf 'fail\n' >"$SD/tokens.res.tmp" && mv -f "$SD/tokens.res.tmp" "$SD/tokens.res"
     return 0

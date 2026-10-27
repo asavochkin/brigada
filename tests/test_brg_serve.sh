@@ -62,7 +62,7 @@ PYEOF
 serve_need() {
   PYX=$(BRG_SOURCE_ONLY=1 bash -c '. "$1"; detect_platform; py_find_v p; printf "%s" "$p"' _ "$BRG_SRC")
   [ -n "$PYX" ] || {
-    echo "SKIP: нет Python 3.8+"
+    echo "SKIP: no Python 3.8+"
     return 1
   }
 }
@@ -1157,7 +1157,7 @@ test_serve_bind_unavailable() {
   "$PYX" -I -c 'import socket
 s = socket.socket()
 s.bind(("192.0.2.1", 0))' 2>/dev/null && {
-    echo "SKIP: 192.0.2.1 есть на этой машине"
+    echo "SKIP: 192.0.2.1 is on this machine"
     return 0
   }
   for saved in "" 51234; do

@@ -7,7 +7,7 @@ GITC="-c user.name=t -c user.email=t@t"
 
 inst_need() {
   git --version >/dev/null 2>&1 || {
-    echo "SKIP: нет git"
+    echo "SKIP: no git"
     return 1
   }
   export GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0

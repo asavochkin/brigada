@@ -15,7 +15,7 @@ while [ $# -gt 0 ]; do
     -n) N=$2; shift 2 ;;
     -t) WT=$2; shift 2 ;;
     --keep) KEEP=1; shift ;;
-    *) echo "Использование: bash tests/pingpong.sh [-n N] [-t WAIT_TIMEOUT] [--keep]" >&2; exit 2 ;;
+    *) echo "Usage: bash tests/pingpong.sh [-n N] [-t WAIT_TIMEOUT] [--keep]" >&2; exit 2 ;;
   esac
 done
 case ${BASH_SOURCE[0]} in */*) _here=${BASH_SOURCE[0]%/*} ;; *) _here=. ;; esac
@@ -41,7 +41,7 @@ cleanup() {
   [ -d "$B/run" ] && : >"$B/run/stopped" # any wait left exits on its next tick
   sleep 0.3
   for p in $PIDS; do kill -KILL "$p" 2>/dev/null; done
-  if [ -n "$KEEP" ]; then echo "каталог прогона сохранён: $P"; else rm -rf "$P"; fi
+  if [ -n "$KEEP" ]; then echo "the run directory is kept: $P"; else rm -rf "$P"; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
@@ -55,7 +55,7 @@ EOF
 join() { bash "$BRG" join --harness pp --model script | sed -n 's/^── подключён: \([^ ]*\) .*/\1/p'; }
 A1=$(join)
 A2=$(join)
-[ -n "$A1" ] && [ -n "$A2" ] || { echo "join не удался" >&2; exit 1; }
+[ -n "$A1" ] && [ -n "$A2" ] || { echo "join failed" >&2; exit 1; }
 # full names (base.key) for --as; output, tail and metrics show the base names
 N1=${A1%%.*}
 N2=${A2%%.*}
@@ -73,7 +73,7 @@ agent() {
         continue
       fi
       if [ "$n" -ne $((last + 1)) ]; then
-        echo "$me: дыра — получил $n после $last" >>"$P/errors"
+        echo "$me: a hole — got $n after $last" >>"$P/errors"
         continue
       fi
       if [ "$n" -ge "$N" ]; then
@@ -82,7 +82,7 @@ agent() {
       fi
       [ $((n % 37)) -eq 0 ] && sleep $((WT + 1)) && note slow "$n" # "work" longer than the other's wait
       printf '%s\n' $((n + 1)) | bash "$BRG" send --as "$me" --to "$other" >/dev/null ||
-        echo "$me: send $((n + 1)) не удался" >>"$P/errors"
+        echo "$me: send $((n + 1)) failed" >>"$P/errors"
       last=$((n + 1))
       if [ "$last" -ge "$N" ]; then
         : >"$P/done.$me"
@@ -134,7 +134,7 @@ while :; do
   for p in $PIDS; do kill -0 "$p" 2>/dev/null && alive=1; done
   [ -n "$alive" ] || break
   if [ $(($(date -u +%s) - T0)) -gt "$LIMIT" ]; then
-    echo "FAIL: не уложились в $LIMIT с (цикл встал?)"
+    echo "FAIL: not done in $LIMIT s (the loop stuck?)"
     ok=
     break
   fi
@@ -145,8 +145,8 @@ T1=$(date -u +%s)
 # 1. the conversation, as the human sees it in tail: 1..N, no holes or duplicates
 seqcheck=$(bash "$BRG" tail lobby | awk -v a="$N1" -v b="$N2" -v n="$N" '
   /^#[0-9]+ / { t = ($2 == a || $2 == b); next }
-  t && /^  [0-9]+$/ { k++; if ($1 + 0 != k) { print "позиция " k ": " $1; bad++ } }
-  END { if (k != n) print "сообщений " k ", ожидалось " n; else if (!bad) print "OK" }')
+  t && /^  [0-9]+$/ { k++; if ($1 + 0 != k) { print "position " k ": " $1; bad++ } }
+  END { if (k != n) print "messages " k ", expected " n; else if (!bad) print "OK" }')
 # 2. pauses end→start between waits of one agent (metrics.log)
 pauses=$(awk -v a="$N1" -v b="$N2" -v m="$MAX_PAUSE" '
   $2 != a && $2 != b { next }
@@ -154,22 +154,22 @@ pauses=$(awk -v a="$N1" -v b="$N2" -v m="$MAX_PAUSE" '
   $3 == "wait" { e[$2] = $1; ends[$2]++; for (i = 4; i <= NF; i++) if ($i ~ /^result=/) r[$2 " " substr($i, 8)]++ }
   END {
     for (x in starts) {
-      line = x ": wait " starts[x] ", завершилось " ends[x] ", макс. пауза end→start " mx[x] + 0 " с;"
+      line = x ": wait " starts[x] ", ended " ends[x] ", max pause end→start " mx[x] + 0 " s;"
       for (k in r) { split(k, q, " "); if (q[1] == x) line = line " " q[2] "=" r[k] }
       print line
     }
-    print (big ? "FAIL " big " пауз > " m " с" : "OK")
+    print (big ? "FAIL " big " pauses > " m " s" : "OK")
   }' "$B/run/metrics.log")
 ev() { cat "$P"/events.* 2>/dev/null | awk -v k="$1" '$1 == k' | wc -l | tr -d ' '; }
 
-echo "── pingpong: N=$N, wait_timeout=$WT с, тик ${BRG_TICK} с, прогон $((T1 - T0)) с"
+echo "── pingpong: N=$N, wait_timeout=$WT s, tick ${BRG_TICK} s, run $((T1 - T0)) s"
 printf '%s\n' "$pauses" | sed '$d'
 killed=$(awk -v a="$N1" -v b="$N2" '($2 == a || $2 == b) && $3 == "wait.start" { s++ } ($2 == a || $2 == b) && $3 == "wait" { e++ } END { print s - e }' "$B/run/metrics.log")
-echo "takeover (SUPERSEDED): $(ev superseded), SIGKILL: $(ev killed) (из них убито до записи end: $killed), дубликатов получено (at-least-once): $(ev dup), медленных шагов: $(ev slow)"
-echo "последовательность в tail: $seqcheck"
-echo "паузы > $MAX_PAUSE с: $(printf '%s\n' "$pauses" | tail -n 1)"
+echo "takeover (SUPERSEDED): $(ev superseded), SIGKILL: $(ev killed) (of them killed before writing the end: $killed), duplicates received (at-least-once): $(ev dup), slow steps: $(ev slow)"
+echo "sequence in tail: $seqcheck"
+echo "pauses > $MAX_PAUSE s: $(printf '%s\n' "$pauses" | tail -n 1)"
 if [ -s "$P/errors" ]; then
-  echo "ошибки агентов:"
+  echo "agent errors:"
   sed 's/^/  /' "$P/errors"
   ok=
 fi

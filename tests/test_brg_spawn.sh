@@ -349,6 +349,10 @@ EOF
   assert_not_contains "$o" "жди (wait)"
   assert_contains "$(cat "$FK/run.1/tool.1.out")" "wait --as $k --busy \"I001\""
   assert_contains "$(cat "$FK/run.1/tool.2.out")" "── NEXT: поручи работу подагенту; он блокирует тебя — вернувшись, заверши ход"
+  # the busy line of a launched agent: its own advice, no supervisor id glued in (C14)
+  assert_contains "$(cat "$FK/run.1/tool.2.out")" "или busy --off. Подагент блокирует тебя — вернувшись, заверши ход"
+  assert_not_contains "$(cat "$FK/run.1/tool.2.out")" "S001Подагент"
+  assert_not_contains "$(cat "$FK/run.1/tool.2.out")" "вызывай wait, когда он вернётся"
   assert_contains "$(cat "$FK/run.1/tool.4.out")" "заверши ход — brg разбудит тебя"
   assert_contains "$(cat "$FK/run.1/tool.6.out")" "Ты запущен brg (S001, ход 1): свободен — заверши ход"
   assert_contains "$(cat "$FK/run.1/tool.8.out")" "── ПАУЗА: человек поставил на паузу бригаду. Новую работу не начинай; сдай сделанное и заверши ход — brg разбудит тебя"
@@ -929,7 +933,7 @@ test_spawn_board_snapshot() {
 }
 
 
-# В1 (validation): the rollback owed after a crashed turn survives a STOP — the batch comes with
+# «В1» (validation): the rollback owed after a crashed turn survives a STOP — the batch comes with
 # the wake after resume; a detach during such a turn (live supervisor) and a detach after the
 # supervisor died mid-turn (the orphaned turn crashed) give the batch to the window agent
 test_spawn_rollback_survives_stop_and_detach() {
@@ -1002,7 +1006,7 @@ XEOF
   sp_assert_clean
 }
 
-# В2 (validation): a silent supervisor (its pid alive, no heartbeat: stopped here) — wake starts
+# «В2» (validation): a silent supervisor (its pid alive, no heartbeat: stopped here) — wake starts
 # a new one that takes the lock over once the silence is proven; the old one, woken, leaves
 test_spawn_silent_supervisor_replaced() {
   local sp o
@@ -1362,7 +1366,7 @@ EOF2
 test_spawn_old_supervisor_execs_the_current_code() {
   local old sp
   old=$(git -C "$ROOT" show 699e45e:bin/brg 2>/dev/null) || {
-    echo "SKIP: нет git или коммита 0.9.2"
+    echo "SKIP: no git or no 0.9.2 commit"
     return 0
   }
   sp_proj

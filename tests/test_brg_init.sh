@@ -17,7 +17,7 @@ test_init_creates_layout() {
   assert_file_not_exists "$p/CLAUDE.md"
   assert_contains "$out" "Дальше скажи агенту в новой сессии: «подключись к бригаде»"
   for d in bin agents lobby/messages lobby/cursors common tasks run/locks run/wait run/seen; do
-    [ -d "$p/.brigada/$d" ] || fail "нет каталога $d"
+    [ -d "$p/.brigada/$d" ] || fail "no directory $d"
   done
   for d in bin/brg README.md PROTOCOL.md config config.default VERSION lobby/seq common/project.md run/metrics.log; do
     assert_file_exists "$p/.brigada/$d"

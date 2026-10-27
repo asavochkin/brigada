@@ -45,6 +45,6 @@ done
 
 pass=$(awk '$1 == "PASS"' "$RESULTS" | wc -l | tr -d ' ')
 failed=$(awk '$1 == "FAIL"' "$RESULTS" | wc -l | tr -d ' ')
-echo "── итого: $pass прошло, $failed упало"
-[ "$((pass + failed))" -gt 0 ] || { echo "тесты не найдены${pattern:+ по шаблону '$pattern'}"; exit 1; }
+echo "── total: $pass passed, $failed failed"
+[ "$((pass + failed))" -gt 0 ] || { echo "no tests found${pattern:+ for the pattern '$pattern'}"; exit 1; }
 [ "$failed" -eq 0 ]

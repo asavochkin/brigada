@@ -29,7 +29,7 @@ BRG_EOF
   assert_eq "── NEXT: продолжай; закончив шаг — bash $BRG wait --as $A" "$(printf '%s\n' "$out" | tail -n 1)"
   d=$B/tasks/T001-auth-module
   for x in messages cursors items reservations shared; do
-    [ -d "$d/$x" ] || fail "нет $x"
+    [ -d "$d/$x" ] || fail "no $x"
   done
   assert_eq "$brief" "$(cat "$d/brief.md")" "brief verbatim"
   assert_eq 0 "$(cat "$d/seq")"
@@ -556,7 +556,7 @@ test_leave_of_role_holder_wakes() {
   assert_contains "$out" "Ты был lead задачи T001: lead теперь ${Bn%%.*}"
   f=$(msg_file 6)
   assert_eq "" "$(hdr "$f" Wake)" "role holder's leave wakes"
-  assert_contains "$(cat "$f")" "${A%%.*} отключился (был lead задачи T001 — lead теперь ${Bn%%.*} (назначен brg: первый на связи;"
+  assert_contains "$(cat "$f")" "${A%%.*} отключился (был lead задачи T001 — lead теперь ${Bn%%.*} (выбран brg из тех, кто на связи;"
   assert_eq "${Bn%%.*}" "$(hdr "$(tdir T001)/task" Lead)"
   wait_pid $pb 3 || fail "B's wait was not woken by the lead's leave"
   out=$(cat "$P/wb")
