@@ -400,8 +400,8 @@ cfg_set_layer() { # PREFIX KEY VALUE — into CFG_ and the layer PREFIX_
 cfg_set_d() { cfg_set_layer CFGD "$@"; } # config.default
 cfg_set_u() { cfg_set_layer CFGU "$@"; } # config
 # cfg_num VAR KEY DEFAULT — the first decimal value (dec_v) of config, config.default, DEFAULT;
-# a value that is not one is skipped (doctor names it). CFG_NUMK " key=VAR …" for doctor.
-CFG_NUMK=
+# a value that is not one is skipped (doctor names it). CFGN_KEYS " key=VAR …" for doctor.
+CFGN_KEYS=
 cfg_num() {
   local _cn_k=${2//./_} _cn_l _cn_v _cn_r=$3
   _cn_k=${_cn_k//-/_}
@@ -414,12 +414,12 @@ cfg_num() {
     fi
   done
   eval "$1=\$_cn_r"
-  CFG_NUMK="$CFG_NUMK $2=$1"
+  CFGN_KEYS="$CFGN_KEYS $2=$1"
 }
 cfg_load() {
   local v
   for v in $CFGL_VARS; do unset "$v"; done # a second load (doctor: another .brigada)
-  CFGL_VARS= CFGL_KEYS= CFG_NUMK=
+  CFGL_VARS= CFGL_KEYS= CFGN_KEYS=
   cfg_defaults
   cfg_parse "$ROOT/config.default" cfg_set_d
   cfg_parse "$ROOT/config" cfg_set_u
@@ -4486,7 +4486,7 @@ dr_cfg_nums() {
         case $r in *.*) p=${r#*.} ;; esac
         ;;
       *)
-        case "$CFG_NUMK " in *" $k="*) ;; *) continue ;; esac
+        case "$CFGN_KEYS " in *" $k="*) ;; *) continue ;; esac
         h= p=
         ;;
     esac
@@ -4497,7 +4497,7 @@ dr_cfg_nums() {
     if [ -n "$h" ]; then
       wait_timeout_v u "$h" "$p"
     else
-      r="$CFG_NUMK "
+      r="$CFGN_KEYS "
       r=${r#*" $k="}
       eval "u=\$${r%% *}"
     fi
