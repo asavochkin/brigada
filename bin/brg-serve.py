@@ -5,7 +5,7 @@
 # IPv4 address of this machine or 0.0.0.0, for a trusted network only), and
 # turns the buttons of the page into brg calls made on behalf of the human. It writes no
 # brigade state itself: every action is a `brg …` call (say, task new --as human, …);
-# its own files are run/board/token|port|ready and temp files of the message texts.
+# its own files are run/board/token|port|ready.<pid> and temp files of the message texts.
 import errno
 import hmac
 import http.server
@@ -75,18 +75,69 @@ def atomic_write(path, data, mode=None):
             time.sleep(0.1)
 
 
-def load_token(bd):
-    path = os.path.join(bd, 'token')
+TOKEN_RE = re.compile(r'[0-9a-f]{32}')
+
+
+def read_token(path):
     try:
         with open(path, 'r', encoding='ascii') as f:
             t = f.readline().strip()
-        if re.fullmatch(r'[0-9a-f]{32}', t):
+        if TOKEN_RE.fullmatch(t):
             return t
     except (OSError, UnicodeDecodeError):
         pass
+    return None
+
+
+def load_token(bd):
+    # The token is created once and never changed while it is valid. Two first starts at once
+    # must agree on it: the full value goes to a temp file, which is published by os.link
+    # (atomic, never overwrites); the loser reads the winner's complete file. Without hard
+    # links (SMB, exFAT): O_EXCL, and the loser waits up to ~2 s for the winner to write it.
+    path = os.path.join(bd, 'token')
+    t = read_token(path)
+    if t:
+        return t
     t = secrets.token_hex(16)
+    data = (t + '\n').encode('ascii')
+    hook = os.environ.get('BRG_SERVE_TEST_TOKEN') or ''  # test hook: nolink[,stall]
+    tmp = os.path.join(bd, TMP_PREFIX + 'token.' + str(os.getpid()))
+    linked = False
+    if 'nolink' not in hook:
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'wb') as f:
+                f.write(data)
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                pass
+            linked = True
+        except OSError:
+            pass  # no hard links here: O_EXCL below
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    if not linked:
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            fd = None
+        if fd is not None:
+            with os.fdopen(fd, 'wb') as f:
+                if 'stall' in hook:
+                    time.sleep(1.5)  # test hook: the winner stops between create and write
+                f.write(data)
+    for _ in range(20):
+        r = read_token(path)
+        if r:
+            return r
+        time.sleep(0.1)
+    # still no valid token (a broken file, or its writer died before writing): replace it
     atomic_write(path, t + '\n', 0o600)
-    return t
+    return read_token(path) or t
 
 
 def clean_tmp(bd):
@@ -97,11 +148,17 @@ def clean_tmp(bd):
     except OSError:
         return
     for n in names:
+        p = os.path.join(bd, n)
         if n.startswith(TMP_PREFIX) or n.startswith('alive.'):  # heartbeats of killed boards
-            p = os.path.join(bd, n)
             try:
                 if now - os.path.getmtime(p) > 60:
                     os.unlink(p)
+            except OSError:
+                pass
+        elif n.startswith('ready.') and not os.path.exists(os.path.join(bd, 'alive.' + n[6:])):
+            # the ready file of a killed server: its brg board writes no heartbeat any more
+            try:
+                os.unlink(p)
             except OSError:
                 pass
 
@@ -516,7 +573,8 @@ class Server(http.server.ThreadingHTTPServer):
 
 # ── main ───────────────────────────────────────────────────────────────────
 def main(argv):
-    opt = {'root': None, 'port': 0, 'retry': False, 'interval': 2, 'alive': 'alive', 'bind': '127.0.0.1'}
+    opt = {'root': None, 'port': 0, 'retry': False, 'interval': 2, 'alive': 'alive', 'ready': 'ready',
+           'bind': '127.0.0.1'}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -529,9 +587,9 @@ def main(argv):
                 return 2
             opt['bind'] = argv[i + 1]
             i += 2
-        elif a in ('--root', '--port', '--interval', '--alive') and i + 1 < len(argv):
+        elif a in ('--root', '--port', '--interval', '--alive', '--ready') and i + 1 < len(argv):
             try:
-                opt[a[2:]] = argv[i + 1] if a in ('--root', '--alive') else int(argv[i + 1])
+                opt[a[2:]] = argv[i + 1] if a in ('--root', '--alive', '--ready') else int(argv[i + 1])
             except ValueError:
                 say('brg-serve: %s — число' % a, True)
                 return 2
@@ -601,15 +659,17 @@ def main(argv):
                 stop()
                 return
 
+    # each brg board names its own ready file (ready.<its pid>): two boards in a project
+    ready = os.path.join(bd, os.path.basename(opt['ready']))
     for s in ('SIGTERM', 'SIGHUP'):
         if hasattr(signal, s):
             signal.signal(getattr(signal, s), stop)
     threading.Thread(target=watch, daemon=True).start()
     try:
         atomic_write(os.path.join(bd, 'port'), '%d\n' % CFG['port'])
-        atomic_write(os.path.join(bd, 'ready'), '%d\n%d\n%s' % (CFG['port'], os.getpid(), '%d\n' % busy if busy else ''))
+        atomic_write(ready, '%d\n%d\n%s' % (CFG['port'], os.getpid(), '%d\n' % busy if busy else ''))
     except OSError as e:
-        say('── brg-serve: не удалось записать run/board/ready: %s' % e, True)
+        say('── brg-serve: не удалось записать run/board/%s: %s' % (os.path.basename(ready), e), True)
         srv.server_close()
         return 4
     try:
@@ -618,7 +678,7 @@ def main(argv):
         pass
     finally:
         try:
-            os.unlink(os.path.join(bd, 'ready'))
+            os.unlink(ready)
         except OSError:
             pass
         srv.server_close()

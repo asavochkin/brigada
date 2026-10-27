@@ -11127,7 +11127,7 @@ board_srv_stop() {
 # board_serve_start — start the server; on success B_URL is the address. 1 and B_NOTE (why
 # the board is view-only) otherwise.
 board_serve_start() {
-  local py nroot port x i=0 rc retry= tok bindopt= shown
+  local py nroot port x i=0 rc retry= tok bindopt= shown rdy
   B_NOTE=
   B_PRE=
   case $B_BIND in 127.0.0.1) ;; *) bindopt=$B_BIND ;; esac # the default address: no flag to the server
@@ -11153,11 +11153,13 @@ board_serve_start() {
     [ -f "$BD/port" ] && IFS= read -r x <"$BD/port"
     if is_uint "$x" && [ ${#x} -le 5 ] && [ $((10#$x)) -ge 1 ] && [ $((10#$x)) -le 65535 ]; then port=$((10#$x)); fi
   fi
-  rm -f "$BD/ready"
+  # our own ready file (ready.<our pid>), named like alive: the pid of Python is not $! in MSYS
+  rdy=$BD/ready.$$
+  rm -f "$rdy"
   board_alive
-  BRG_SERVE_BASH=$BASH BRG_CMD_LC_SET=$_brg_lc_set BRG_CMD_LC=$_brg_lc "$py" -I -X utf8 "$nroot/bin/brg-serve.py" --root "$nroot" --port "$port" ${retry:+"$retry"} ${bindopt:+--bind} ${bindopt:+"$bindopt"} --interval "$B_INT" --alive "alive.$$" </dev/null &
+  BRG_SERVE_BASH=$BASH BRG_CMD_LC_SET=$_brg_lc_set BRG_CMD_LC=$_brg_lc "$py" -I -X utf8 "$nroot/bin/brg-serve.py" --root "$nroot" --port "$port" ${retry:+"$retry"} ${bindopt:+--bind} ${bindopt:+"$bindopt"} --interval "$B_INT" --alive "alive.$$" --ready "ready.$$" </dev/null &
   B_SRV=$!
-  while [ ! -f "$BD/ready" ]; do
+  while [ ! -f "$rdy" ]; do
     if ! kill -0 "$B_SRV" 2>/dev/null; then
       wait "$B_SRV" 2>/dev/null
       rc=$?
@@ -11184,7 +11186,7 @@ board_serve_start() {
     IFS= read -r x # pid of the server (for the tests)
     x=
     IFS= read -r x # the saved port that was taken, if so
-  } <"$BD/ready"
+  } <"$rdy"
   IFS= read -r tok <"$BD/token"
   shown=127.0.0.1 # the address that surely works on this machine
   case $bindopt in '' | 0.0.0.0) ;; *) shown=$bindopt ;; esac
@@ -11224,7 +11226,7 @@ board_srv_check() {
 board_quit() {
   [ -n "$B_SLEEP" ] && kill "$B_SLEEP" 2>/dev/null
   board_srv_stop
-  rm -f "$BD"/.tmp.*."$$" "$BD/alive.$$" 2>/dev/null
+  rm -f "$BD"/.tmp.*."$$" "$BD/alive.$$" "$BD/ready.$$" 2>/dev/null
   exit 0
 }
 
