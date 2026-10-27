@@ -1038,9 +1038,12 @@ s.bind(("192.0.2.1", 0))' 2>/dev/null && {
     bash "$BRG" board --interval 1 --bind 192.0.2.1 >"$BOUT" 2>&1 &
     BP=$!
     track_pid $BP
-    wait_for 10 grep -q "не на этой машине" "$BOUT" || fail "no word about the address (saved port [$saved]):
+    # the server's own line about the reason comes first; brg prints the file address
+    # and then its own note — wait for both, not for the server's line
+    wait_for 10 grep -q '^file://' "$BOUT" || fail "no file address (saved port [$saved]):
 $(cat "$BOUT")"
-    # (the server's own line about the reason comes first, as with a busy port)
+    wait_for 10 grep -q "не на этой машине — доска только для просмотра" "$BOUT" || fail "no word about the address (saved port [$saved]):
+$(cat "$BOUT")"
     assert_eq "file://$B/board.html" "$(grep '^file://' "$BOUT")" "the file address"
     assert_contains "$(cat "$BOUT")" "адрес 192.0.2.1 не на этой машине"
     assert_contains "$(cat "$BOUT")" "доска только для просмотра"
