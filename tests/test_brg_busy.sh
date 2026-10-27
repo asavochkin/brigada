@@ -26,7 +26,7 @@ set_since() {
 item_add_as() { printf '%s\n' "${3:-описание}" | brg item add --as "$1" --title "$2" >/dev/null || fail "item add as $1: $2"; }
 line_of() { printf '%s\n' "$1" | awk -v n="${2%%.*}" 'index($0, n " ") == 1'; } # the who line of an agent
 
-# Б1 (the mechanical check): wait commands of NEXT are built in one place
+# «Б1» (the mechanical check): wait commands of NEXT are built in one place
 test_next_wait_built_only_in_next_wait() {
   local out
   out=$(awk '/wait --as \$ASN|wait --as \$AS_HINT/ { print NR ": " $0 }' "$BRG_SRC")
@@ -122,7 +122,7 @@ test_busy_since_item_kept_only_for_the_same_valid_caption() {
   assert_eq wait "$(mk "$A" Via)" "wait --busy always writes Via: wait"
 }
 
-# Б1: every NEXT carries --busy while the mark stands, errors included
+# «Б1»: every NEXT carries --busy while the mark stands, errors included
 test_next_of_every_command_carries_busy() {
   local out n
   busy_setup
@@ -240,7 +240,7 @@ test_reassign_drops_the_old_mark_and_hints_the_new_assignee() {
   assert_contains "$(cat "$(tmsg T001 "$(cat "$D/seq")")")" "поручи её подагенту и wait --busy \"I001\""
 }
 
-# Б3: a mark with an empty Item is never dropped by item commands
+# «Б3»: a mark with an empty Item is never dropped by item commands
 test_mark_without_item_survives_item_commands() {
   local out
   busy_setup
@@ -276,7 +276,7 @@ test_leave_and_join_drop_the_mark() {
   assert_file_not_exists "$(mfile "$C")" "join --as: a new session, no subagent"
 }
 
-# Б2: a mark is valid for the active task alone
+# «Б2»: a mark is valid for the active task alone
 test_mark_valid_only_for_the_active_task() {
   local out
   busy_setup

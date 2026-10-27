@@ -29,7 +29,7 @@ BRG_EOF
   assert_eq "── NEXT: продолжай; закончив шаг — bash $BRG wait --as $A" "$(printf '%s\n' "$out" | tail -n 1)"
   d=$B/tasks/T001-auth-module
   for x in messages cursors items reservations shared; do
-    [ -d "$d/$x" ] || fail "нет $x"
+    [ -d "$d/$x" ] || fail "no $x"
   done
   assert_eq "$brief" "$(cat "$d/brief.md")" "brief verbatim"
   assert_eq 0 "$(cat "$d/seq")"

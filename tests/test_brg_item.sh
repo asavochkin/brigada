@@ -880,7 +880,7 @@ test_review_stages_and_rework() {
   item_add_as "$A" "Ок до сдачи"
   item_add_as "$A" "С правками"
   item_add_as "$A" "Соседняя"
-  # ok before handing in → on review (handed in after the review), then ok → готово
+  # ok before handing in → on review (handed in after the review), then ok → «готово»
   claim_ok "$Bn" I1 src/one
   brg item review I1 --as "$C" --verdict ok --comment "ок" >/dev/null || fail review1
   out=$(brg item done I1 --as "$Bn")
@@ -893,7 +893,7 @@ test_review_stages_and_rework() {
   out=$(brg item claim I1 --as "$C" --paths x 2>&1)
   assert_eq 1 "$?"
   assert_contains "$out" "I001 — сдана (${Bn%%.*}), стадия: готово; последний вердикт: #2 ok от ${A%%.*}. Вернуть её в работу может только исполнитель ${Bn%%.*}"
-  # handed in → на проверке; changes → правки
+  # handed in → «на проверке»; changes → «правки»
   claim_ok "$Bn" I2 "src/two,docs"
   brg item done I2 --as "$Bn" --note "первая сдача" >/dev/null || fail done2
   f=$D/items/I002
@@ -941,7 +941,7 @@ test_review_stages_and_rework() {
   # the reservation is real: others are refused
   out=$(brg item claim I3 --as "$C" --paths src/two 2>&1)
   assert_eq 1 "$?"
-  # hand in again → на проверке (handed in again), then ok → готово
+  # hand in again → «на проверке» (handed in again), then ok → «готово»
   out=$(brg item done I2 --as "$Bn" --note "тест добавлен")
   assert_contains "$out" "Стадия: на проверке (пересдана, ждёт проверяющего)"
   assert_eq 1 "$(hdr "$f" Done-Reviews)"
@@ -1383,8 +1383,8 @@ BRG_EOF
   [ $((t1 - t0)) -le 2 ] || fail "cancel waited for the pipe ($((t1 - t0)) s)"
 }
 
-# Reservations compare without case for ASCII and Russian Cyrillic (DESIGN §7.2): Данные and
-# данные are one directory on macOS/Windows; different words and other scripts do not clash
+# Reservations compare without case for ASCII and Russian Cyrillic (DESIGN §7.2): `Данные` and
+# `данные` are one directory on macOS/Windows; different words and other scripts do not clash
 test_cyrillic_paths_case_insensitive() {
   local out i=0 p
   item_setup

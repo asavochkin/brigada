@@ -1174,7 +1174,7 @@ agent_state() {
 
 # state_v VAR [NAME] — right after agent_state: the state for people (who, status, join; the
 # board has its own words). «ждёт» = free (a live wait, no mark) — the human's decision
-# (DESIGN §5.2); «работает[: подпись][, N мин]» — a mark (N мин — how long) or a recent
+# (DESIGN §5.2); «работает[: подпись][, N мин]» — a mark («N мин» — how long) or a recent
 # brg call without a wait; asleep, gone as they are; waiting/working under the human's stop (general or NAME's) — «остановлен».
 state_v() {
   local _sv_r _sv_d
@@ -1389,7 +1389,7 @@ task_write() { # DIR — TK_* → DIR/task (tmp + mv)
   fi
 }
 
-# role_v VAR NAME — role of NAME in the loaded task (TK_*): lead | участник
+# role_v VAR NAME — role of NAME in the loaded task (TK_*): lead | «участник»
 role_v() {
   local _ro_r=участник
   [ -n "$2" ] && [ "$2" = "$TK_LEAD" ] && _ro_r=lead
@@ -1666,7 +1666,7 @@ ask_chopt_v() {
   fi
   eval "$1=\$_ac_o"
 }
-# asks_scan — the open questions to the human (DESIGN §9.2): markers run/asks/<канал>.<N>
+# asks_scan — the open questions to the human (DESIGN §9.2): markers `run/asks/<канал>.<N>`
 # whose message is there (in lobby or the active task) → AK_N, AK_CH[], AK_ID[],
 # AK_FROM[], AK_EP[], AK_FILE[] (the message). No processes: who, status and every
 # tick of the board read it.
@@ -3056,7 +3056,7 @@ leave_core() {
   return 0
 }
 
-# busy [текст] | --off: the busy mark without a wait (DESIGN §5.4) — for a harness
+# `busy [текст]` | `--off`: the busy mark without a wait (DESIGN §5.4) — for a harness
 # where a subagent call blocks the participant (it cannot sit in wait --busy) and for
 # work that is not an item. Not starting work: allowed while stopped (need_agent prints
 # the STOP banner first; NEXT is then "end the turn").
@@ -4147,7 +4147,7 @@ dr_env() {
 
 # dr_procs — does kill -0 see other processes and their death? A sandbox (Codex)
 # may answer EPERM for processes outside it: pid_alive calls them alive. A pid
-# namespace that hides live processes (ESRCH) is not detected (DESIGN §12 п. 3).
+# namespace that hides live processes (ESRCH) is not detected (DESIGN §12 item 3).
 dr_procs() {
   local c x bad=
   if [ "$PPID" != 1 ] && pid_alive "$PPID" && [ "$PA_WHY" = eperm ]; then
@@ -5539,7 +5539,7 @@ paths_parse() {
 #             paths; the agent `me` and the item `skip` are not others)
 #   own:      the same fields, overlaps with `me`'s own other items (not `skip`)
 # Paths compare without case (DESIGN §7.2): tolower folds ASCII A-Z (LC_ALL=C); fold() also
-# folds Russian Cyrillic А-Я, Ё (two-byte literals, 33 pairs). Other letters and NFC/NFD
+# folds Russian Cyrillic «А–Я», «Ё» (two-byte literals, 33 pairs). Other letters and NFC/NFD
 # forms are not folded (a known limit, DESIGN §12).
 AWK_RES='
 function fold(s,   i) {

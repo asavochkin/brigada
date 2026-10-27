@@ -34,17 +34,17 @@ rec() { hdr "$B/run/spawn/$1/spawn" "$2"; }
 rec_is() { [ "$(rec "$1" "$2")" = "$3" ]; }
 # wait_state S STATE [SECS]
 wait_state() {
-  wait_for "${3:-25}" rec_is "$1" State "$2" || fail "$1: State $(rec "$1" State), ожидалось $2
+  wait_for "${3:-25}" rec_is "$1" State "$2" || fail "$1: State $(rec "$1" State), expected $2
 $(cat "$B/run/spawn/$1/supervisor.log" 2>/dev/null | tail -n 5)"
 }
 # runs — how many times the fake harness ran
 runs() { local n=0 d; for d in "$FK"/run.*; do [ -d "$d" ] && n=$((n + 1)); done; echo "$n"; }
 runs_ge() { [ "$(runs)" -ge "$1" ]; }
 # wait_run N [SECS] — run N of the fake started
-wait_run() { wait_for "${2:-25}" runs_ge "$1" || fail "харнесс не запускался $1-й раз (запусков: $(runs))"; }
+wait_run() { wait_for "${2:-25}" runs_ge "$1" || fail "the harness did not start run $1 (runs: $(runs))"; }
 # turn_done S N — turn N of S is over (the supervisor wrote its result)
 turn_done() { [ "$(rec "$1" Turn)" = "$2" ] && [ -n "$(rec "$1" Turn-Result)" ]; }
-wait_turn() { wait_for "${3:-30}" turn_done "$1" "$2" || fail "$1: ход $2 не закончился (Turn $(rec "$1" Turn), State $(rec "$1" State))"; }
+wait_turn() { wait_for "${3:-30}" turn_done "$1" "$2" || fail "$1: turn $2 did not end (Turn $(rec "$1" Turn), State $(rec "$1" State))"; }
 # full NAME — the full name (base.key) of an agent
 full() { printf '%s.%s\n' "$1" "$(hdr "$B/agents/$1" Key)"; }
 # sv_pid S — the pid of the supervisor (the owner of its lock)
@@ -115,7 +115,7 @@ sp_assert_clean() {
     for p in $(sp_pids "$b"); do kill -0 "$p" 2>/dev/null && left="$left $p"; done
   done
   for p in $(sp_fake_pids "${FK:-/nonexistent}"); do kill -0 "$p" 2>/dev/null && left="$left $p"; done
-  [ -z "$left" ] || fail "остались процессы:$left"
+  [ -z "$left" ] || fail "processes left:$left"
 }
 # cursor_is NAME A/P — the lobby cursor of NAME (evaluated on every try of wait_for)
 cursor_is() { [ "$(cursor "$1")" = "$2" ]; }

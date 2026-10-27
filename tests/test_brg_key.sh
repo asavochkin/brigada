@@ -45,7 +45,7 @@ no_bare_as() {
       if (substr(s, 1, 1) != ".") { print; next }
     }
   }')
-  [ -z "$bad" ] || fail "голое имя в подсказке --as: $bad"
+  [ -z "$bad" ] || fail "a bare name in an --as hint: $bad"
 }
 
 # files_with TEXT DIR — files under DIR whose content contains TEXT
@@ -203,7 +203,7 @@ test_key_next_lines_carry_full_name() {
     no_bare_as "$out" "$a"
     no_bare_as "$out" "$bn"
     case $(printf '%s\n' "$out" | tail -n 1) in
-      *"--as"*) case $(printf '%s\n' "$out" | tail -n 1) in *"--as $A"* | *"--as $Bn"*) ;; *) fail "NEXT без полного имени: $out" ;; esac ;;
+      *"--as"*) case $(printf '%s\n' "$out" | tail -n 1) in *"--as $A"* | *"--as $Bn"*) ;; *) fail "NEXT without the full name: $out" ;; esac ;;
     esac
   done
   # errors after the name was resolved: NEXT with the full name too

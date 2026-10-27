@@ -198,7 +198,7 @@ test_ask_first_line_cut_mixed() {
   a118=$(awk 'BEGIN { for (i = 0; i < 118; i++) printf "a" }')
   ask_as "$C" "${a118}жbcccccccccc" >/dev/null
   out=$(brg board --once)
-  # 120 characters with the mark: 118 × a, ж, … (the ж is not lost before b)
+  # 120 characters with the mark: 118 × a, «ж», … (the «ж» is not lost before b)
   assert_contains "$out" "(#1, T001): ${a118}ж… — ответь в его чате"
   ask_as "$C" "$(awk 'BEGIN { for (i = 0; i < 125; i++) printf "€" }')" >/dev/null
   out=$(brg board --once)

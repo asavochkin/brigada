@@ -24,21 +24,21 @@ fail() {
 }
 
 assert_eq() { # expected actual [msg]
-  [ "$1" = "$2" ] || fail "${3:-assert_eq}: ожидалось [$1], получено [$2]"
+  [ "$1" = "$2" ] || fail "${3:-assert_eq}: expected [$1], got [$2]"
 }
 assert_contains() { # haystack needle [msg]
-  case $1 in *"$2"*) ;; *) fail "${3:-assert_contains}: нет [$2] в:
+  case $1 in *"$2"*) ;; *) fail "${3:-assert_contains}: no [$2] in:
 $1" ;; esac
 }
 assert_not_contains() { # haystack needle [msg]
-  case $1 in *"$2"*) fail "${3:-assert_not_contains}: есть [$2] в:
+  case $1 in *"$2"*) fail "${3:-assert_not_contains}: [$2] found in:
 $1" ;; esac
 }
 assert_file_exists() { # path [msg]
-  [ -e "$1" ] || fail "${2:-assert_file_exists}: нет файла $1"
+  [ -e "$1" ] || fail "${2:-assert_file_exists}: no file $1"
 }
 assert_file_not_exists() { # path [msg]
-  [ ! -e "$1" ] || fail "${2:-assert_file_not_exists}: файл существует $1"
+  [ ! -e "$1" ] || fail "${2:-assert_file_not_exists}: the file exists $1"
 }
 
 # Fresh temp directory (removed with T_ROOT).

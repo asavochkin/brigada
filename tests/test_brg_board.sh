@@ -407,7 +407,7 @@ test_board_reviews_numeric_only() {
 test_board_stage_rule_matches_bash() {
   local html cases f
   has_node || {
-    echo "SKIP: нет node"
+    echo "SKIP: no node"
     return 0
   }
   html=$ROOT/template/board.html

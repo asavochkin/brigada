@@ -449,7 +449,7 @@ test_timeout_digest_of_the_task() {
   # stages (DESIGN §7.1.1): handed in without a review — on review, "--paths none" too
   assert_eq "T001: todo 1 · в работе I002 ${Bn%%.*} · на проверке I003, I004 · готово I005 · прогонов идёт 1
 ── нет новых (0 с) · ход не завершай · NEXT: bash $BRG wait --as $A --timeout 0" "$out"
-  # every stage: a reviewer marked (names in parens), changes → правки, --no-review → готово
+  # every stage: a reviewer marked (names in parens), changes → «правки», --no-review → «готово»
   brg item review I3 --as "$A" --start >/dev/null || fail start3
   brg item review I3 --as "$Bn" --start >/dev/null || fail start3b
   brg item review I4 --as "$Bn" --verdict changes --comment "поправь" >/dev/null || fail review4
