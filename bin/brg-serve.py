@@ -137,8 +137,13 @@ def load_token(bd):
         if r:
             return r
         time.sleep(0.1)
-    # still no valid token (a broken file, or its writer died before writing): replace it
+    # still no valid token (a broken file, or its writer died before writing): replace it.
+    # Two starts over a broken file both get here at about the same time (each waited 2 s)
+    # and both replace it: after a pause each re-reads the file, so both take the last
+    # write. A start more than 0.5 s behind could still keep its own — accepted (a broken
+    # token file and two first starts at once).
     atomic_write(path, t + '\n', 0o600)
+    time.sleep(0.5)
     return read_token(path) or t
 
 
