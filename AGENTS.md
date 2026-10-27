@@ -9,7 +9,7 @@ This file is for those who work **on this repository**. Do not confuse it with t
 An experiment: any number of agents from different harnesses (Claude Code, Codex, OpenCode, …) join a project with the phrase «подключись к бригаде» (`brg init` puts a pointer block to `.brigada/README.md` into the project's `AGENTS.md`/`CLAUDE.md`, DESIGN §3; without the block the phrase is «подключись к .brigada, прочитай инструкцию в .brigada/README.md») and organise the work on the human's task themselves. They interact through the deterministic bash CLI `brg` (messages, waiting, tasks, roles, items with path reservations, a run queue), not through a model parsing files.
 
 - [README.md](README.md) — what it is and how to start it (for the human).
-- [DESIGN.md](DESIGN.md) — the specification: what is implemented and why. It describes only what is implemented; something new is a plan in `/plans` first and enters DESIGN together with the code. Open questions — §12.
+- [DESIGN.md](DESIGN.md) — the specification: what is implemented and why. It describes only what is implemented; something new is a plan in `/plans` first and enters DESIGN together with the code. Known limitations — §12.
 
 ## Hard rules: docs = code
 
@@ -46,7 +46,7 @@ An experiment: any number of agents from different harnesses (Claude Code, Codex
 | `bin/brg.cmd` | the Windows shim (PowerShell/cmd → Git Bash), ASCII + CRLF |
 | `bin/brg-global`, `install.sh` | the human's global `brg` command (`~/.local/bin/brg`); `install.sh` has two modes: from a clone and from a pipe (`curl … \| bash`: `git clone`/`pull --ff-only` into `~/.local/share/brigada`, then install from that clone; git is allowed only here, only in this mode) |
 | `template/` | what `brg init` puts into `.brigada/`: README and PROTOCOL for participant agents, config, `board.html` (the human's board) |
-| `tests/` | tests in pure bash: `run.sh`, `lib.sh`, `brg_lib.sh`, `test_*.sh`, `pingpong.sh`; `test_install.sh` — `install.sh` (no network: the source is a temporary `file://` repository, HOME is replaced; skipped without git); `test_brg_serve.sh` — the board server (the client is Python; skipped without Python); `test_brg_spawn.sh` + `fake_opencode` — agents launched by brg (a fake OpenCode, no LLM) |
+| `tests/` | tests in pure bash: `run.sh`, `lib.sh`, `brg_lib.sh`, `spawn_lib.sh` (helpers of the launched-agent tests), `test_*.sh`, `pingpong.sh`; `test_install.sh` — `install.sh` (no network: the source is a temporary `file://` repository, HOME is replaced; skipped without git); `test_brg_serve.sh` — the board server (the client is Python; skipped without Python); `test_brg_spawn.sh` + `fake_opencode` — agents launched by brg (a fake OpenCode, no LLM) |
 | `WINDOWS.md` | the human's checklist for Windows |
 | `/plans` | plans, reviews, reports, status, backlog; never committed (`.gitignore`). For the human it is a symlink to `../brigada-archive`; elsewhere create the directory locally |
 
@@ -63,7 +63,7 @@ An experiment: any number of agents from different harnesses (Claude Code, Codex
   - a write is tmp + `mv` under a `mkdir` lock; a stale lock is removed atomically (`mv lock lock.stale.$$`), only by its owner;
   - **no signals by a pid from a file** (the pid may have been reused): the `wait` takeover goes through the pid file, stopping goes through flags;
   - one `wait` per agent; delivery at least once (`Acked`/`Pending`, the next `wait` acknowledges);
-  - `wait` always exits with code 0 and prints `NEXT:` as its last line (except STOP/SUPERSEDED/LEFT), argument errors included;
+  - `wait` always exits with code 0 and prints `NEXT:` as its last line (except STOP/SUPERSEDED/LEFT and the orphan exit: `wait` exits silently when the process that started it died), argument errors included;
   - the `brg run` exec lock is never broken by age, only by the owner's death or a stale runner heartbeat; the same holds for the supervisor lock `spawn.S00N` (DESIGN §5.5); the lock order is `spawn.S → roster → task → runs → chan`;
   - no line of brg output tells an agent launched by brg «не завершать ход» (all waiting phrases go through `next_wait`); the supervisor and the turn wrapper signal only their own children.
 
@@ -86,12 +86,12 @@ They are not visible from the code — do not repeat them.
 ## Tests
 
 ```bash
-bash tests/run.sh                       # everything (~5 min, pingpong included)
+bash tests/run.sh                       # everything (pingpong included)
 BRG_SKIP_PINGPONG=1 bash tests/run.sh   # faster
 bash tests/run.sh item                  # filter by a substring of "file:function"
 ```
 
-Tests must leave no processes and no temporary directories. `test_brg_docs.sh` checks the commands and flags mentioned in `template/*.md` and `WINDOWS.md` against `brg <cmd> --help` — when you change the CLI, check the docs. The development machine has only `/bin/bash` 3.2; bash ≥ 4 (Git Bash) has never been tested.
+Tests must leave no processes and no temporary directories. `test_brg_docs.sh` checks the commands and flags mentioned in the docs (`README.md`, `DESIGN.md`, `AGENTS.md`, `bin/README.md`, `template/*.md`, `WINDOWS.md`) against `brg <cmd> --help` — when you change the CLI, check the docs; it also checks the language (Cyrillic only inside quotes in the English docs of the `DOCS_EN` list and in code comments), links and anchors, `§N item M` references, and the markers of history and unfinished work. The development machine has only `/bin/bash` 3.2; bash ≥ 4 (Git Bash) has never been tested.
 
 Names in tests: `join_as` returns the full name (`claude-1.<key>`), which goes into `--as`; `From:`, `who`, `tail`, the paths `agents/`, `cursors/`, `run/wait/` and `metrics.log` use the base name (`${x%%.*}`, `base_of`). The helpers `cursor`, `tcursor`, `pid_is`, `ack_all`, `metrics_of` accept either; `rejoin_as` is `join --as` with a new key, `dropped` is an agent's "silence" for `join --as`.
 
@@ -110,4 +110,4 @@ The repository is public and "bare": only the tool, the tests and the documents.
 
 ## State
 
-The version is `BRG_VERSION` in `bin/brg`. Work status, the next steps and what the human checks themselves are in `plans/STATUS.md`; open questions are in DESIGN §12.
+The version is `BRG_VERSION` in `bin/brg`. Work status, the next steps and what the human checks themselves are in `plans/STATUS.md`; known limitations are in DESIGN §12.

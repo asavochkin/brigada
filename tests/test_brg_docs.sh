@@ -1,24 +1,41 @@
-# The agent docs (template/README.md, template/PROTOCOL.md) and WINDOWS.md
+# The docs (DOCS_CLI: README, DESIGN, AGENTS, bin/README, template/*.md, WINDOWS)
 # mention only commands, subcommands and flags that brg really has: every
 # `brg <cmd> [<sub>] …` (in code spans and code blocks; in PROTOCOL also the bare
 # form `item claim …`) answers `<cmd> [<sub>] --help` with code 0 and lists each
 # of its --flags in that help; a lone `--flag` must exist in some command's help.
 # Language (D11): in the English docs (DOCS_EN) and in code comments Cyrillic stands only
 # inside quotes. Links: markdown links, `§N` (and its items), and the PROTOCOL / README
-# section references lead to an existing heading, section or item.
+# section references lead to an existing heading, section or item. Markers: no history
+# or unfinished-work markers in the docs (marker_check).
 
 . "$TESTS_DIR/brg_lib.sh"
 
-DOC_CMDS="join leave busy send wait read who tail say status stop pause resume task lead item run doctor init board help"
+DOC_CMDS="join leave busy send wait read who tail say status stop pause resume task lead item run doctor init board spawn help"
 NL=$'\n'
 US=$'\037' # field separator of doc_invocations (tabs would collapse in read)
 
+# Flags of other programs, written alone in a code span: FLAG=WORDS — the flag counts as that
+# program's (and is not checked against brg) only when its line names the program (a word
+# of the |-list, case-sensitive). In `brg <cmd> …` spans every flag is brg's: a wrong
+# `brg wait --format` fails.
+EXT_FLAGS="--sandbox=Codex --auto=OpenCode|opencode --format=OpenCode|opencode --continue=OpenCode|opencode|supervisor|__spawn --session=OpenCode|opencode --standalone=OpenCode|opencode --root=server|brg-serve --ready=server|brg-serve --alive=server|brg-serve --retry-any=server|brg-serve --eol=git"
+
 # doc_invocations FILE — one line per invocation: "cmd US sub US  --flag --flag"
 # or "FLAG US US  --flag" for a code span that is just flags (`--reply-by 10m`);
-# spans of other programs (git, Set-Content, …) are skipped
+# spans of other programs (git, Set-Content, …) are skipped, and so are lone flags of
+# other programs in their program's context (EXT_FLAGS) and `--help` (every command has it)
 doc_invocations() {
-  awk -v cmds="$DOC_CMDS" -v US="$US" '
-    BEGIN { n = split(cmds, a, " "); for (i = 1; i <= n; i++) known[a[i]] = 1 }
+  awk -v cmds="$DOC_CMDS" -v US="$US" -v ext="$EXT_FLAGS" '
+    BEGIN {
+      n = split(cmds, a, " "); for (i = 1; i <= n; i++) known[a[i]] = 1
+      n = split(ext, a, " "); for (i = 1; i <= n; i++) { k = index(a[i], "="); ctx[substr(a[i], 1, k - 1)] = substr(a[i], k + 1) }
+    }
+    function foreign(w,   n, b, i) {
+      if (!(w in ctx)) return 0
+      n = split(ctx[w], b, "|")
+      for (i = 1; i <= n; i++) if (index($0, b[i])) return 1
+      return 0
+    }
     function clean(w) { sub(/^[\[("«'"'"']+/, "", w); sub(/[\])"»,.;:'"'"']+$/, "", w); return w }
     function emit(t, s, n,   cmd, sb, fl, j, w) {
       cmd = clean(t[s])
@@ -44,7 +61,7 @@ doc_invocations() {
       if (t[1] in known) { emit(t, 1, n); return }
       if (t[1] !~ /^--/) return
       fl = ""
-      for (i = 1; i <= n; i++) { w = clean(t[i]); if (w ~ /^--[a-z][a-z-]*$/) fl = fl " " w }
+      for (i = 1; i <= n; i++) { w = clean(t[i]); if (w ~ /^--[a-z][a-z-]*$/ && w != "--help" && !foreign(w)) fl = fl " " w }
       if (fl != "") printf "FLAG%s%s%s\n", US, US, fl
     }
     /^[ \t]*```/ { fence = !fence; next }
@@ -69,6 +86,9 @@ has_flag() {
   return 1
 }
 
+# The docs whose brg commands and flags are checked (C10; not board.html)
+DOCS_CLI="README.md DESIGN.md AGENTS.md bin/README.md template/README.md template/PROTOCOL.md WINDOWS.md"
+
 test_docs_mention_only_real_commands_and_flags() {
   local f cmd sb flags x help all= n=0 rc subs errs=
   new_proj
@@ -76,7 +96,8 @@ test_docs_mention_only_real_commands_and_flags() {
     all="$all$(brg "$cmd" --help 2>&1)$NL"
   done
   all="$all$(brg help)"
-  for f in "$ROOT/template/README.md" "$ROOT/template/PROTOCOL.md" "$ROOT/WINDOWS.md"; do
+  for f in $DOCS_CLI; do
+    f=$ROOT/$f
     assert_file_exists "$f"
     while IFS=$US read -r cmd sb flags; do
       n=$((n + 1))
@@ -102,6 +123,7 @@ test_docs_mention_only_real_commands_and_flags() {
         lead) subs="give take" ;;
         item) subs="add claim done release reassign review cancel list show" ;;
         run) subs="list show cancel" ;;
+        spawn) subs="list show wake rm detach rights opencode" ;; # opencode: the harness argument
         *) sb= ;; # a lowercase argument (doctor <dir>, tail lobby), not a subcommand
       esac
       if [ -n "$sb" ]; then
@@ -113,6 +135,7 @@ test_docs_mention_only_real_commands_and_flags() {
         esac
       fi
       for x in $flags; do
+        [ "$x" = --help ] && continue
         has_flag "$help" "$x" || errs="$errs${NL}${f##*/}: brg $cmd${sb:+ $sb} has no flag $x"
       done
     done <<EOF
@@ -134,7 +157,9 @@ bash .brigada/bin/brg send --as x --tooo all
 .\.brigada\bin\brg.cmd wait --as x --timeout 5 -- --not-a-flag
 git ls-files --eol bin/brg bin/brg.cmd
 ```
-Одиночный флаг `--reply-by 10m` и `--no-such`.
+Одиночный флаг `--reply-by 10m` и `--no-such`; `--help`.
+Codex: `--sandbox danger-full-access`; OpenCode `--auto`.
+Без контекста: `--sandbox x`; `brg wait --format json`.
 EOF
   out=$(doc_invocations "$d/bad.md" | tr "$US" '|')
   assert_contains "$out" "frob||"
@@ -145,6 +170,11 @@ EOF
   assert_not_contains "$out" "eol"
   assert_contains "$out" "FLAG|| --reply-by"
   assert_contains "$out" "FLAG|| --no-such"
+  assert_not_contains "$out" "--help"
+  assert_not_contains "$out" "--auto"
+  assert_contains "$out" "wait|| --format"
+  # --sandbox counts only once: on the line without its program
+  assert_eq 1 "$(printf '%s\n' "$out" | grep -c -- '--sandbox')" "--sandbox outside Codex: $out"
 }
 
 # ── Language (D11) ─────────────────────────────────────────────────────────
@@ -393,8 +423,8 @@ link_check() {
   done
 }
 
-# The English docs; DESIGN.md and bin/README.md join the list once they are translated.
-DOCS_EN="AGENTS.md README.md WINDOWS.md"
+# The English docs (D11)
+DOCS_EN="AGENTS.md README.md WINDOWS.md DESIGN.md bin/README.md"
 
 # lang_tree ROOT — lang_check over the English docs and the code comments of ROOT
 lang_tree() {
@@ -558,4 +588,118 @@ EOF
   assert_contains "$out" "bad.md:1: link #nowhere: no such heading"
   assert_contains "$out" "bad.md:2: PROTOCOL section 7: no such section"
   assert_eq 12 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "nothing else: $out"
+}
+
+# ── Markers ────────────────────────────────────────────────────────────────
+# marker_check LANG FILE — lines with history or unfinished-work markers (docs = code),
+# one "FILE:LINE: text" per line; fenced code is skipped. Case-sensitive, under LC_ALL=C
+# (Cyrillic as literals, no ranges). All docs: ~~ (struck-out text), TODO, FIXME ("todo" in
+# lowercase is an item status). LANG en: "Stage A"/"stage B" (a lettered phase), a version
+# in parentheses "(0.9.2)"/"(v0.9.2)", "in 0.9"/"In 0.9.2" (but not a duration: "in 0.5 s"),
+# "since 0.9", "used to be|have|work|wake|show", "previously". LANG ru: «этап A», «(в 0.9».
+# In AGENTS.md the sections "How we work" and "Pitfalls" are exempt (they are about our
+# process and about past mistakes on purpose).
+marker_check() {
+  LC_ALL=C awk -v lang="$1" -v ru_e1="Э" -v ru_e2="э" -v ru_tap="тап " -v ru_v1="В" -v ru_v2="в" '
+    function wb(s, i) { return i < 1 || i > length(s) || substr(s, i, 1) !~ /[A-Za-z0-9_]/ } # a word boundary at s[i]
+    function hit(s,   t, r, k, c, rest) {
+      if (index(s, "~~") || index(s, "TODO") || index(s, "FIXME")) return 1
+      if (lang == "ru") {
+        t = s
+        while ((k = index(t, ru_tap)) > 0) {
+          r = substr(t, 1, k - 1); c = substr(r, length(r) - 1)
+          rest = substr(t, k + length(ru_tap))
+          if ((c == ru_e1 || c == ru_e2) && rest ~ /^[A-Z]([^A-Za-z0-9_]|$)/) return 1
+          t = rest
+        }
+        return match(s, "\\((" ru_v1 "|" ru_v2 ") 0\\.[0-9]") > 0
+      }
+      t = s
+      while (match(t, /[Ss]tage [A-Z]/)) {
+        if (wb(t, RSTART - 1) && wb(t, RSTART + RLENGTH)) return 1
+        t = substr(t, RSTART + RLENGTH)
+      }
+      if (match(s, /\(v?0\.[0-9]+\.[0-9]+\)/)) return 1
+      t = s
+      while (match(t, /([Ii]n|since) 0\.[0-9]+/)) {
+        rest = substr(t, RSTART + RLENGTH)
+        if (wb(t, RSTART - 1) && rest !~ /^[0-9]*[ ]*(s|ms|min|h|MB|KB)([^A-Za-z]|$)/) return 1
+        t = rest
+      }
+      t = s
+      while (match(t, /used to (be|have|work|wake|show)|previously/)) {
+        if (wb(t, RSTART - 1) && wb(t, RSTART + RLENGTH)) return 1
+        t = substr(t, RSTART + RLENGTH)
+      }
+      return 0
+    }
+    FNR == 1 { fence = 0; skip = 0 }
+    /^[ \t]*```/ { fence = !fence; next }
+    fence { next }
+    /^## / { skip = (FILENAME ~ /(^|\/)AGENTS\.md$/ && ($0 ~ /^## How we work/ || $0 ~ /^## Pitfalls/)) }
+    skip { next }
+    hit($0) { printf "%s:%d: %s\n", FILENAME, FNR, $0 }
+  ' "$2"
+}
+
+# marker_tree ROOT — marker_check over every doc of ROOT
+marker_tree() {
+  local f
+  for f in $DOCS_EN; do marker_check en "$1/$f"; done
+  for f in template/README.md template/PROTOCOL.md; do marker_check ru "$1/$f"; done
+}
+
+test_docs_markers() {
+  local out
+  out=$(marker_tree "$ROOT")
+  [ -z "$out" ] || fail "history or unfinished-work markers in the docs:$NL$out"
+}
+
+# The marker checker on fixtures: what it flags and the false positives it must not flag.
+test_docs_markers_checker() {
+  local d out
+  d=$(mk_tmpdir)
+  cat >"$d/en.md" <<'EOF'
+bad: Stage B adds harnesses.
+bad: the board (0.9.2) does this.
+bad: (v0.8.0) too.
+bad: In 0.9.2 it changed.
+bad: since 0.7 the lead is one.
+bad: it used to wake everyone.
+bad: as previously described.
+bad: ~~struck~~ out.
+bad: TODO later.
+bad: FIXME now.
+good: status todo, stages of an item, the backstage A-list.
+good: a pause of 0.5 s, wait in 0.5 s, done in 0.3 s; version 0.10.0; Python ≥ 3.8 (3.8.0–3.8.11).
+good: «Stage» alone, stage 3, Stages A-Z; get used to it; he used to.
+```
+~~ TODO in fenced code: Stage A (0.9.2)
+```
+EOF
+  out=$(marker_check en "$d/en.md")
+  assert_eq 10 "$(printf '%s\n' "$out" | grep -c ': bad: ')" "every bad line: $out"
+  assert_not_contains "$out" "good:"
+  assert_not_contains "$out" "fenced"
+  cat >"$d/ru.md" <<'EOF'
+плохо: этап B — другие харнессы.
+плохо: Этап A — только OpenCode.
+плохо: так было (в 0.9.2).
+хорошо: этапы работы, этап 6, поэтапно; в 0.5 с; (версия 0.10.0).
+EOF
+  out=$(marker_check ru "$d/ru.md")
+  assert_eq 3 "$(printf '%s\n' "$out" | grep -c ': плохо: ')" "every bad line: $out"
+  assert_not_contains "$out" "хорошо"
+  mkdir "$d/x"
+  cat >"$d/x/AGENTS.md" <<'EOF'
+# AGENTS
+## How we work
+- Stage A of the plan (0.9.2) is exempt here.
+## Pitfalls we have already hit
+- it used to hang (exempt).
+## State
+- TODO: flagged again.
+EOF
+  out=$(marker_check en "$d/x/AGENTS.md")
+  assert_eq "$d/x/AGENTS.md:7: - TODO: flagged again." "$out"
 }
