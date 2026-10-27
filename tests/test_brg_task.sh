@@ -565,19 +565,49 @@ test_leave_of_role_holder_wakes() {
   assert_contains "$out" "lead теперь ${Bn%%.*}"
 }
 
-test_task_new_lifts_stop() {
+# An agent's task new under a stop is refused (DESIGN §6, §9): the general stop and the
+# author's own; another agent's personal stop does not matter; --cancel-current cancels
+# nothing; only the human lifts the flags (task new --as human — the general one)
+test_task_new_refused_under_stop() {
   local out
   three_agents
   brg stop >/dev/null
+  out=$(printf 'x\n' | brg task new --as "$A" --title "После стопа" 2>&1)
+  assert_eq 1 "$?" "refused under the general stop"
+  assert_eq "── STOP: человек остановил бригаду. Новую работу не начинай: сдай сделанное, если нужно (send, item done), и заверши ход." "$(printf '%s\n' "$out" | head -n 1)"
+  assert_contains "$out" "── ОШИБКА: человек остановил бригаду — task new не выполнено: при стопе задачу не создают, стоп снимает только человек"
+  assert_contains "$out" "Задачу дал человек — попроси человека (в чате): снять стоп — brg resume, или дать задачу самому — task new --as human, или с доски (brg board)."
+  assert_eq "── NEXT: скажи человеку в чате, что задачу не создать, пока стоит стоп, и заверши ход (стоп снимет человек и напишет тебе «продолжай»)" "$(printf '%s\n' "$out" | tail -n 1)"
+  assert_file_exists "$B/run/stopped"
+  assert_file_not_exists "$B/tasks/active"
+  # the author's own stop
+  brg resume >/dev/null
   : >"$B/run/stopped.${A%%.*}"
-  : >"$B/run/stopped.${C%%.*}"
-  out=$(printf 'x\n' | brg task new --as "$A" --title "После стопа")
+  out=$(printf 'x\n' | brg task new --as "$A" --title "После стопа" 2>&1)
+  assert_eq 1 "$?" "refused under the author's stop"
+  assert_contains "$out" "── ОШИБКА: человек остановил тебя (${A%%.*}) — task new не выполнено"
+  assert_contains "$out" "снять твой стоп — brg resume ${A%%.*} (или ответить тебе: say --to ${A%%.*})."
+  assert_file_exists "$B/run/stopped.${A%%.*}"
+  # another agent's stop does not block, and is not lifted
+  out=$(printf 'x\n' | brg task new --as "$Bn" --title "Чужой стоп")
+  assert_eq 0 "$?" "another agent's stop does not block"
+  assert_not_contains "$out" "стоп снят"
+  assert_file_exists "$B/run/stopped.${A%%.*}"
+  # --cancel-current under the general stop: refused, the current task stays
+  brg stop >/dev/null
+  out=$(printf 'x\n' | brg task new --as "$Bn" --title "Бросить" --cancel-current 2>&1)
+  assert_eq 1 "$?"
+  assert_eq active "$(hdr "$(tdir T001)/task" Status)" "the current task is not cancelled"
+  assert_file_not_exists "$(tdir T001)/../T002"
+  # the human's task lifts the general stop only
+  out=$(printf 'x\n' | brg task new --as human --title "От человека" --cancel-current)
+  assert_eq 0 "$?"
   assert_contains "$out" "Общий стоп снят."
-  assert_contains "$out" "Стоп, поставленный тебе человеком, снят"
-  assert_not_contains "$out" "── STOP" "task new lifts the stop: no banner"
   assert_file_not_exists "$B/run/stopped"
-  assert_file_not_exists "$B/run/stopped.${A%%.*}" "the author's own stop is lifted"
-  assert_file_exists "$B/run/stopped.${C%%.*}" "other per-agent stops stay"
+  assert_file_exists "$B/run/stopped.${A%%.*}" "personal stops stay"
+  # say lifts the stop of its addressees, as before
+  brg say --to "${A%%.*}" "продолжай" >/dev/null
+  assert_file_not_exists "$B/run/stopped.${A%%.*}"
 }
 
 # STOP_BANNER — the first line of an agent command while the brigade is stopped
@@ -590,13 +620,14 @@ stop_refused() {
   assert_eq "$STOP_BANNER" "$(printf '%s\n' "$1" | head -n 1)" "$3"
   assert_eq 1 "$(stop_lines "$1")" "$3"
   assert_contains "$1" "── ОШИБКА: человек остановил бригаду — $3 не выполнено: при стопе новую работу не начинают"
+  assert_contains "$1" "Можно сдать сделанное и сообщить: send, item done|release|cancel, item review --verdict, task close|cancel, run cancel, lead give|take, busy, leave, команды чтения. Стоп снимает только человек."
   assert_eq "── NEXT: заверши ход (стоп снимет человек и напишет тебе «продолжай»)" "$(printf '%s\n' "$1" | tail -n 1)" "$3"
 }
 
 # The human's stop is seen by any agent command, not only by wait (DESIGN §9):
 # the first line says STOP; commands that start work (item add|claim|reassign,
 # run) refuse with NEXT "end the turn"; handing in and talking still work; wait
-# and status say STOP exactly once; task new lifts it; after resume all works.
+# and status say STOP exactly once; after resume all works.
 test_stop_seen_by_every_command() {
   local out d
   three_agents

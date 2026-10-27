@@ -870,8 +870,8 @@ pause_who_v() { # VAR — whom the human paused: "бригаду" | "тебя (N
   eval "$1=\$_pw_w"
 }
 # stop_banner — the first line of an agent command while stopped (else while paused);
-# once per process. wait and status print STOP/the pause themselves, task new lifts
-# both: they set STOP_SHOWN. PAUSE_SHOWN: the pause line was printed (who adds its own).
+# once per process. wait and status print STOP/the pause themselves: they set STOP_SHOWN.
+# PAUSE_SHOWN: the pause line was printed (who adds its own).
 STOP_SHOWN=
 PAUSE_SHOWN=
 stop_banner() {
@@ -903,7 +903,7 @@ work_refuse() {
       NEXT_ON_ERR="заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
     fi
     die "человек остановил $w — $1 не выполнено: при стопе новую работу не начинают" \
-      "Можно сдать сделанное и сообщить: send, item done|release, item review --verdict, task close. Стоп снимает только человек."
+      "Можно сдать сделанное и сообщить: send, item done|release|cancel, item review --verdict, task close|cancel, run cancel, lead give|take, busy, leave, команды чтения. Стоп снимает только человек."
   fi
   [ "${2-}" != stoponly ] || return 0
   pause_who_v w || return 0
@@ -914,6 +914,35 @@ work_refuse() {
   fi
   die "человек поставил на паузу $w — $1 не выполнено: на паузе новую работу не начинают" \
     "Можно сдать сделанное и сообщить: send, item done|release|cancel, item review --verdict, task close, run (проверка начатой работы). Паузу снимает человек: brg resume или с доски; сообщение (say) её не снимает — жди в wait."
+}
+
+# task_new_refuse — an agent's task new under the human's stop or pause (DESIGN §6, §9): the
+# general flags and the author's own refuse it (before anything changes, --cancel-current
+# included); another agent's personal flags do not matter. Only the human lifts them.
+task_new_refuse() {
+  local w sp= h
+  [ -n "$AGENT" ] && spawned_v sp "$AGENT"
+  if stop_who_v w; then
+    if [ "$w" = бригаду ]; then
+      h="попроси человека (в чате): снять стоп — brg resume, или дать задачу самому — task new --as human, или с доски (brg board)."
+    else
+      h="попроси человека (в чате): снять твой стоп — brg resume $AGENT (или ответить тебе: say --to $AGENT)."
+    fi
+    if [ -n "$sp" ]; then
+      NEXT_ON_ERR="заверши ход (стоп снимет человек; если стоп прервал твою работу — brg разбудит тебя после его снятия)"
+    else
+      NEXT_ON_ERR="скажи человеку в чате, что задачу не создать, пока стоит стоп, и заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
+    fi
+    die "человек остановил $w — task new не выполнено: при стопе задачу не создают, стоп снимает только человек" "Задачу дал человек — $h"
+  fi
+  pause_who_v w || return 0
+  if [ "$w" = бригаду ]; then
+    h="попроси человека (в чате): снять паузу — brg resume, или дать задачу самому — task new --as human, или с доски (brg board)."
+  else
+    h="попроси человека (в чате): снять твою паузу — brg resume $AGENT."
+  fi
+  NEXT_ON_ERR="скажи человеку в чате, что задачу не создать, пока стоит пауза; затем $(next_wait)"
+  die "человек поставил на паузу $w — task new не выполнено: на паузе задачу не создают, паузу снимает только человек" "Задачу дал человек — $h"
 }
 
 touch_seen() { # [NAME] — Last-Seen := now (not for a read command without the key)
@@ -2053,15 +2082,15 @@ usage_print() {
     tail) echo "Переписка в читаемом виде: без канала — lobby и активная задача (следит за сменой задачи); -f — следить (Ctrl-C — выход)." ;;
     say) echo "Сообщение от human (по умолчанию всем, в канал активной задачи); снимает общий стоп и стоп названных агентов (паузу не снимает — она будится человеком, но остаётся: resume). --re N — ответ на сообщение #N (на вопрос агента: закрывает его на доске)." ;;
     status) echo "Кто я, задача и моя роль, непрочитанное (без сдвига курсора), мои дедлайны, жив ли мой wait, NEXT. С именем без ключа — только просмотр (не подтверждает, что ты этот агент)." ;;
-    stop) echo "Остановить бригаду (или одного агента): wait возвращает STOP сразу и на ближайшем тике; любая команда агента печатает STOP первой строкой; item add|claim|reassign, item review --start и запуск run отказывают." ;;
+    stop) echo "Остановить бригаду (или одного агента): wait возвращает STOP сразу и на ближайшем тике; любая команда агента печатает STOP первой строкой; item add|claim|reassign, item review --start, запуск run и task new агента отказывают. Снять: resume, say (общий и адресатов), task new --as human (общий)." ;;
     pause)
-      echo "Пауза для всей бригады (или одного агента): мягче стопа — агент ход не завершает, а ждёт в wait. Новую работу он не начинает (item add|claim|reassign и item review --start откажут; сдать сделанное, отправить сообщение и run для начатой работы можно, подагент доводит своё); wait просыпается только от твоих сообщений (say, task new|cancel --as human, lead give --as human) и от снятия паузы."
+      echo "Пауза для всей бригады (или одного агента): мягче стопа — агент ход не завершает, а ждёт в wait. Новую работу он не начинает (item add|claim|reassign, item review --start и task new агента откажут; сдать сделанное, отправить сообщение и run для начатой работы можно, подагент доводит своё); wait просыпается только от твоих сообщений (say, task new|cancel --as human, lead give --as human) и от снятия паузы."
       echo "Снять: brg resume [<имя>] или кнопкой на доске (brg board с Python); say паузу не снимает. Пауза при стопе — стоп сильнее."
       ;;
     resume) echo "Снять стоп и паузу: без имени — общие и все личные, с именем — только этого агента (общая пауза стоит, пока не вызван resume без имени). Остановленные агенты завершили ход — напиши им «продолжай»; агенты на паузе вернутся из wait сами." ;;
     init) echo "Создать/обновить <проект>/.brigada: bin/brg, brg-serve.py, README.md, PROTOCOL.md, board.html, config.default, VERSION; состояние и config не трогает. В корне проекта дописывает (или обновляет) короткий блок brigada в AGENTS.md (нет — создаёт и исключает из git) и в CLAUDE.md, если он есть и не импортирует AGENTS.md: тогда агенту достаточно сказать «подключись к бригаде». --no-agents-md — эти файлы не трогать." ;;
     task)
-      echo "Задачи (одна активная): new — создать (ты lead; постановка человека дословно → brief.md; человек сам даёт задачу с --as human: lead выбирает brg — прежний lead, если на связи, иначе первый подключившийся); close — закрыть (lead; нужен непустой summary.md); cancel — отменить (lead или человек: --as human); show/list — посмотреть."
+      echo "Задачи (одна активная): new — создать (ты lead; постановка человека дословно → brief.md; при стопе или паузе — общих или твоих — отказ: снимает их только человек; человек сам даёт задачу с --as human: lead выбирает brg — прежний lead, если на связи, иначе первый подключившийся; так снимаются общие стоп и пауза); close — закрыть (lead; нужен непустой summary.md); cancel — отменить (lead или человек: --as human); show/list — посмотреть."
       echo "close отказывает, пока есть подзадачи в работе или идут прогоны (--force — отменить и остановить их). Есть непрочитанное для lead'а (то, что разбудило бы его wait) — close показывает его (оно считается доставленным) и отказывает: учти и повтори close."
       ;;
     lead) echo "Роль lead в активной задаче (фасилитатор и связь с человеком; lead есть всегда): give — передать (только текущий lead; человек — в любой момент: lead give <имя> --as human); take — взять, если текущий lead asleep/gone или lead нет." ;;
@@ -4723,8 +4752,9 @@ cmd_task() {
 
 # task new: an agent (the human gave it work in the chat: the author becomes the lead) or
 # the human himself (--as human: from the terminal or the browser — no agent is involved, so
-# no need_agent / touch_seen / NEXT; the lead is chosen by brg, DESIGN §6.2). A new task
-# lifts the stop and the pause the human put (general ones, and the author's own).
+# no need_agent / touch_seen / NEXT; the lead is chosen by brg, DESIGN §6.2). The human's
+# task lifts the general stop and pause; an agent's is refused under them and under its own
+# (task_new_refuse).
 task_new() {
   local title= file= cc= n slug name d brief cleared= cancelled= human= lead= lp lt cancel=
   if [ "$AS_HINT" = human ]; then NEXT_ON_ERR=; else NEXT_ON_ERR="исправь команду и повтори: $BRG task new --as $AS_HINT --title \"…\" <<'BRG_EOF' (постановка человека дословно) BRG_EOF; закончив шаг — $(next_wait)"; fi
@@ -4751,13 +4781,13 @@ task_new() {
     esac
   done
   need_root
-  STOP_SHOWN=1 # a new task lifts the stop and the pause (below)
   if [ "$OPT_AS" = human ]; then
     human=1
     AGENT=human
     NEXT_ON_ERR=
   else
     need_agent write
+    task_new_refuse
     NEXT_ON_ERR="исправь команду и повтори: $BRG task new --as $ASN --title \"…\" <<'BRG_EOF' (постановка человека дословно) BRG_EOF; закончив шаг — $(next_wait)"
   fi
   title=${title//[[:cntrl:]]/ }
@@ -4810,24 +4840,15 @@ task_new() {
   task_write "$d"
   { printf '%s\n' "$name" >"$ROOT/tasks/.tmp.active.$$" && mv_retry "$ROOT/tasks/.tmp.active.$$" "$ROOT/tasks/active"; } ||
     die "не удалось записать $ROOT/tasks/active"
-  # DESIGN §9: a new task lifts the stop and the pause — the human has just given work.
-  if [ -e "$RUN/stopped" ]; then
+  # DESIGN §9: the human's task lifts the general stop and pause (an agent's never gets here
+  # under them: task_new_refuse)
+  if [ -n "$human" ] && [ -e "$RUN/stopped" ]; then
     rm -f "$RUN/stopped"
     cleared=1
   fi
-  if [ -e "$RUN/paused" ]; then
+  if [ -n "$human" ] && [ -e "$RUN/paused" ]; then
     rm -f "$RUN/paused"
     cleared="$cleared${cleared:+ }pause"
-  fi
-  if [ -z "$human" ]; then
-    if [ -e "$RUN/stopped.$AGENT" ]; then
-      rm -f "$RUN/stopped.$AGENT"
-      cleared="$cleared${cleared:+ }me"
-    fi
-    if [ -e "$RUN/paused.$AGENT" ]; then
-      rm -f "$RUN/paused.$AGENT"
-      cleared="$cleared${cleared:+ }mepause"
-    fi
   fi
   if [ -n "$human" ]; then
     lt="lead: ${lead:-нет — назначится первому, кто выйдет на связь}"
@@ -4861,10 +4882,6 @@ task_new() {
   echo "── создана задача $n «$title»: ты lead."
   echo "Каталог: $RROOT/tasks/$name/ — brief.md (постановка), shared/ (план, решения, артефакты), summary.md (итог; нужен для task close, первая строка — итог одной фразой)."
   echo "Всем отправлено системное «новая задача» (lobby). Переписка по задаче — канал $n: send по умолчанию идёт туда."
-  case $cleared in 1*) echo "Общий стоп снят. Остановленные агенты завершили ход — попроси человека написать им «продолжай»." ;; esac
-  case " $cleared " in *" me "* | *" me") echo "Стоп, поставленный тебе человеком, снят: он дал новую задачу." ;; esac
-  case " $cleared " in *" pause "* | *" pause") echo "Общая пауза снята: человек дал новую задачу." ;; esac
-  case " $cleared " in *" mepause "* | *" mepause") echo "Пауза, поставленная тебе человеком, снята: он дал новую задачу." ;; esac
   echo "Как работать — решаете сообща; проверенный порядок (PROTOCOL.md, не обязателен): перекличка с --reply-by 10m (каждый один раз ответит: модель, сильные стороны, загрузка), затем план в shared/plan.md."
   echo "Lead — фасилитатор: план и подзадачи — вместе с бригадой, работу раздай участникам. Ты, как и все, только координатор: исследование и любую работу по своей части делает твой подагент — одновременно один; больше — только с разрешения человека; сам держи цикл wait. Как проверять подзадачи (другим участником — рекомендуется) — решаете сами; обязательно одно: стадии подзадач в brg — как на деле, человек смотрит их на доске (README, раздел 5)."
   echo "Ты — связь с человеком: он читает твой чат и смотрит доску. Отчёты и вопросы ему — обычным текстом в своём чате перед очередным wait и тем же текстом send --to human (его видно на доске; человек мог дать следующую задачу и ответить с доски, не в твоём чате). Вопрос — ещё и send --to human --ask: он виден человеку на доске, пока на него не ответят (ответ получил — перешли суть бригаде с --re N)."
