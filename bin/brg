@@ -63,6 +63,13 @@ is_uint() {
   return 0
 }
 
+# dec_v VAR VALUE — VALUE as a decimal integer into VAR: digits only, at most 9 of them;
+# leading zeros are decimal (08 is 8, not a bash octal error). Exit 1, VAR untouched, otherwise
+dec_v() {
+  is_uint "$2" && [ ${#2} -le 9 ] || return 1
+  eval "$1=\$((10#\$2))"
+}
+
 # ipv4_ok X — a decimal IPv4 address: four octets 0–255, no leading zeros (010 is ambiguous), no
 # empty octets (checked before the split: "1.2.3.4." and "1..2.3" give four fields too)
 ipv4_ok() {

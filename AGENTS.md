@@ -1,101 +1,112 @@
-# AGENTS.md — для агентов, разрабатывающих brigada
+# AGENTS.md — for agents developing brigada
 
-Этот файл — для тех, кто работает **над этим репозиторием**. Не путать с инструкциями для агентов-участников бригады в чужих проектах: это `template/README.md` и `template/PROTOCOL.md`, их `brg init` копирует в `<проект>/.brigada/`.
+This file is for those who work **on this repository**. Do not confuse it with the instructions for brigade participants in other projects: those are `template/README.md` and `template/PROTOCOL.md`, which `brg init` copies into `<project>/.brigada/`.
 
-Общение с человеком — по-русски. Код и комментарии в коде — по-английски, кратко.
+**Language.** Talk to the human in Russian. Technical documentation is in English: this file, `DESIGN.md`, `README.md`, `WINDOWS.md`, `bin/README.md`, `/plans`, code comments, test names and test diagnostics, commit messages, and the text `brg init` writes into projects' files. The user interface is in Russian: everything brg prints (including `--help`), the board UI, `template/README.md` and `template/PROTOCOL.md`, the comments in `template/config`. Russian literals quoted in English texts (UI strings, the phrases the human says to an agent) stay verbatim. Comments are short.
 
-## Что это
+## What this is
 
-Эксперимент: любое число агентов из разных харнессов (Claude Code, Codex, OpenCode, …) подключаются к проекту фразой «подключись к бригаде» (`brg init` кладёт в `AGENTS.md`/`CLAUDE.md` проекта блок-указатель на `.brigada/README.md`, DESIGN §3; без блока — «подключись к .brigada, прочитай инструкцию в .brigada/README.md») и сами организуют работу над задачей человека. Взаимодействие — через детерминированный bash-CLI `brg` (сообщения, ожидание, задачи, роли, подзадачи с резервированием путей, очередь прогонов), а не через разбор файлов моделью.
+An experiment: any number of agents from different harnesses (Claude Code, Codex, OpenCode, …) join a project with the phrase «подключись к бригаде» (`brg init` puts a pointer block to `.brigada/README.md` into the project's `AGENTS.md`/`CLAUDE.md`, DESIGN §3; without the block the phrase is «подключись к .brigada, прочитай инструкцию в .brigada/README.md») and organise the work on the human's task themselves. They interact through the deterministic bash CLI `brg` (messages, waiting, tasks, roles, items with path reservations, a run queue), not through a model parsing files.
 
-- [README.md](README.md) — что это и как запустить (для человека).
-- [DESIGN.md](DESIGN.md) — спецификация: что и почему. Изменения дизайна — **сначала** сюда. Открытые вопросы и следующие правки — §12.
+- [README.md](README.md) — what it is and how to start it (for the human).
+- [DESIGN.md](DESIGN.md) — the specification: what is implemented and why. It describes only what is implemented; something new is a plan in `/plans` first and enters DESIGN together with the code. Open questions — §12.
 
-## Карта репозитория
+## Hard rules: docs = code
 
-| Путь | Что |
+1. **Documentation is:**
+   - `README.md`, `DESIGN.md`, `WINDOWS.md`, `bin/README.md`;
+   - `template/README.md`, `template/PROTOCOL.md`, the comments in `template/config`;
+   - `brg … --help` and `brg help`;
+   - the map and the constraints in this file.
+2. **Statements about the tool's behaviour describe only what is implemented** in the same revision and can be checked against the code or a test: commands, flags, output, exit codes, formats, config, invariants, protection.
+3. **Normative texts are allowed as norms** when they are clearly marked as such and not presented as code behaviour: the frames and recommendations of PROTOCOL for participants, the human's decisions, the development rules in this file.
+4. **Not allowed in documentation:**
+   - plans and promises;
+   - discussions and options to choose from;
+   - history: what the tool did before, versions in headings or tags, struck-out text, retold field cases;
+   - run reports and work status.
+5. **Allowed:**
+   - a short "why" for a current decision;
+   - **known limitations** of the implementation and of testing ("not tested on Windows / in Safari", "tested live with …");
+   - procedures the human runs (`WINDOWS.md`).
+6. **No revision of `master` has docs and code out of step.**
+   - Work branches may hold intermediate revisions, but every behaviour commit includes the minimal edits to every place that describes that behaviour (the agent and human READMEs, DESIGN, `--help`).
+   - Text quoted in two places that change in separate parallel branches is fixed in a contract in `/plans` first and checked on the merged tree.
+   - General editing goes in separate commits, never mixed into behaviour commits.
+7. **Plans, discussions, reviews, reports, status and backlog live in `/plans`,** never in git. New behaviour is a plan first; it enters DESIGN in the implementing commit. Version history lives in commit messages.
+8. **A mismatch you find is fixed in the same change.** If the fix needs the human's decision, record it in `/plans` and document today's behaviour.
+9. **Checking.** Every validation node checks docs = code on its diff; `tests/test_brg_docs.sh` checks what can be checked mechanically.
+
+## Repository map
+
+| Path | What |
 |---|---|
-| `bin/brg` | весь инструмент, один bash-файл |
-| `bin/brg-serve.py` | необязательный сервер доски человека (Python ≥ 3.8, stdlib; DESIGN §9.1; `--bind ADDR` — по сети, только по просьбе человека); `brg board` запускает его, `init` ставит в `.brigada/bin/` |
-| `bin/brg.cmd` | шим для Windows (PowerShell/cmd → Git Bash), ASCII + CRLF |
-| `bin/brg-global`, `install.sh` | глобальная команда `brg` для человека (`~/.local/bin/brg`); `install.sh` — два режима: из клона и из пайпа (`curl … | bash`: `git clone`/`pull --ff-only` в `~/.local/share/brigada`, затем установка из клона; git разрешён только здесь, только в этом режиме) |
-| `template/` | то, что `brg init` кладёт в `.brigada/`: README и PROTOCOL для агентов-участников, config, `board.html` (доска человека) |
-| `tests/` | тесты на чистом bash: `run.sh`, `lib.sh`, `brg_lib.sh`, `test_*.sh`, `pingpong.sh`; `test_install.sh` — `install.sh` (без сети: источник — временный репозиторий `file://`, HOME подменён; без git пропускается); `test_brg_serve.sh` — сервер доски (клиент — Python, без Python тесты пропускаются); `test_brg_spawn.sh` + `fake_opencode` — агенты, запущенные brg (поддельный OpenCode, без LLM) |
-| `WINDOWS.md` | чек-лист проверки на Windows для человека |
+| `bin/brg` | the whole tool, one bash file |
+| `bin/brg-serve.py` | the optional server of the human's board (Python ≥ 3.8, stdlib; DESIGN §9.1; `--bind ADDR` — over the network, only when the human asks); `brg board` starts it, `init` installs it into `.brigada/bin/` |
+| `bin/brg.cmd` | the Windows shim (PowerShell/cmd → Git Bash), ASCII + CRLF |
+| `bin/brg-global`, `install.sh` | the human's global `brg` command (`~/.local/bin/brg`); `install.sh` has two modes: from a clone and from a pipe (`curl … \| bash`: `git clone`/`pull --ff-only` into `~/.local/share/brigada`, then install from that clone; git is allowed only here, only in this mode) |
+| `template/` | what `brg init` puts into `.brigada/`: README and PROTOCOL for participant agents, config, `board.html` (the human's board) |
+| `tests/` | tests in pure bash: `run.sh`, `lib.sh`, `brg_lib.sh`, `test_*.sh`, `pingpong.sh`; `test_install.sh` — `install.sh` (no network: the source is a temporary `file://` repository, HOME is replaced; skipped without git); `test_brg_serve.sh` — the board server (the client is Python; skipped without Python); `test_brg_spawn.sh` + `fake_opencode` — agents launched by brg (a fake OpenCode, no LLM) |
+| `WINDOWS.md` | the human's checklist for Windows |
+| `/plans` | plans, reviews, reports, status, backlog; never committed (`.gitignore`). For the human it is a symlink to `../brigada-archive`; elsewhere create the directory locally |
 
-## Технические ограничения `bin/brg` (жёсткие)
+## Technical constraints of `bin/brg` (hard)
 
-- **bash 3.2** (macOS). Нельзя: ассоциативные массивы, `mapfile`/`readarray`, `${x,,}`/`${x^^}`, `|&`, `&>>`, `declare -n`, `$EPOCHSECONDS`, `wait -n`, `sed -i`, `setsid`.
-- Утилиты: только `mkdir mv rm cat sed awk date sleep kill ls head tail wc sort tr printf cp uname nohup`. Без jq/node. `date` — только форматирование (`+%s`, ISO), никакого разбора дат.
-- **CLI харнесса** (`opencode run`, `opencode session export`) вызывают только надзор `brg __spawn` и обёртка хода `brg __turn` запущенных агентов (DESIGN §5.5); `spawn`/`doctor`/`board` лишь ищут бинарь (`type -P`). Настоящий `opencode` в тестах не вызывается — только `tests/fake_opencode` через `spawn.opencode.bin` в `config` тестового проекта.
-- **Python — только сервер человека** `bin/brg-serve.py` (необязательный, stdlib, ≥ 3.8; DESIGN §1 п. 4, §9.1). `bin/brg` вызывает Python лишь в `board` и `doctor`, всегда через `py_find_v` (она не вызывает шим macOS и заглушки Windows Store); инструмент агентов — bash 3.2. Без Python `brg board` работает как раньше (`file://`, просмотр). Сервер сам состояние не пишет — только вызовы `brg`.
-- Совместимость с Git Bash на Windows: без GNU/BSD-специфичных флагов; `mv` с повторами.
-- Формат записей — «заголовки `Key: value` + пустая строка + тело».
-- Инварианты, которые легко сломать (подробно — DESIGN §4–§7):
-  - запись — tmp + `mv` под `mkdir`-блокировкой; протухшая блокировка снимается атомарно (`mv lock lock.stale.$$`), снимает только владелец;
-  - **никаких сигналов по pid из файлов** (pid мог быть переиспользован): takeover `wait` — через pid-файл, остановка/стоп — через флаги;
-  - один `wait` на агента; доставка хотя бы один раз (`Acked`/`Pending`, подтверждает следующий `wait`);
-  - `wait` всегда завершается с кодом 0 и печатает последней строкой `NEXT:` (кроме STOP/SUPERSEDED/LEFT), в том числе при ошибке аргументов;
-  - exec-лок `brg run` не ломается по возрасту, только по смерти владельца или устаревшему heartbeat раннера; так же — лок надзора `spawn.S00N` (DESIGN §5.5), порядок блокировок `spawn.S → roster → task → runs → chan`;
-  - у запущенного brg агента ни одна строка вывода brg не велит «не завершать ход» (все фразы ожидания — через `next_wait`); надзор и обёртка шлют сигналы только своим детям.
+- **bash 3.2** (macOS). Not allowed: associative arrays, `mapfile`/`readarray`, `${x,,}`/`${x^^}`, `|&`, `&>>`, `declare -n`, `$EPOCHSECONDS`, `wait -n`, `sed -i`, `setsid`.
+- Utilities: only `mkdir mv rm cat sed awk date sleep kill ls head tail wc sort tr printf cp uname nohup`. No jq/node. `date` only formats (`+%s`, ISO); no date parsing.
+- **Harness CLIs** (`opencode run`, `opencode session export`) are called only by the `brg __spawn` supervisor and the `brg __turn` turn wrapper of launched agents (DESIGN §5.5); `spawn`/`doctor`/`board` only look the binary up (`type -P`). The real `opencode` is never called in tests — only `tests/fake_opencode`, through `spawn.opencode.bin` in the test project's `config`.
+- **Python only for the human's server** `bin/brg-serve.py` (optional, stdlib, ≥ 3.8; DESIGN §1 item 4, §9.1). `bin/brg` calls Python only in `board` and `doctor`, always through `py_find_v` (it does not call the macOS shim or the Windows Store stubs); the agents' tool is bash 3.2. Without Python `brg board` works in `file://` mode, view only. The server writes no state itself — only through `brg` calls.
+- Compatibility with Git Bash on Windows: no GNU/BSD-specific flags; `mv` with retries.
+- Record format: `Key: value` headers + an empty line + the body.
+- Invariants that are easy to break (details: DESIGN §4–§7):
+  - a write is tmp + `mv` under a `mkdir` lock; a stale lock is removed atomically (`mv lock lock.stale.$$`), only by its owner;
+  - **no signals by a pid from a file** (the pid may have been reused): the `wait` takeover goes through the pid file, stopping goes through flags;
+  - one `wait` per agent; delivery at least once (`Acked`/`Pending`, the next `wait` acknowledges);
+  - `wait` always exits with code 0 and prints `NEXT:` as its last line (except STOP/SUPERSEDED/LEFT), argument errors included;
+  - the `brg run` exec lock is never broken by age, only by the owner's death or a stale runner heartbeat; the same holds for the supervisor lock `spawn.S00N` (DESIGN §5.5); the lock order is `spawn.S → roster → task → runs → chan`;
+  - no line of brg output tells an agent launched by brg «не завершать ход» (all waiting phrases go through `next_wait`); the supervisor and the turn wrapper signal only their own children.
 
-## Грабли, на которые мы уже наступали
+## Pitfalls we have already hit
 
-Из кода это не видно — не повторяй.
+They are not visible from the code — do not repeat them.
 
-- **bash 3.2: `read -t` на пайпе не срабатывает, а трапы не прерывают блокирующий `read`.** Поэтому stdin для тел сообщений читается фоновым `head -c` во временный файл с опросом до `BRG_STDIN_WAIT` — сторожа на сигналах теряли уже прочитанное тело.
-- **Своя группа процессов — только через `set -m`** (в подшелле перед запуском); `setsid` на macOS нет. Раннер `brg run` — `nohup` + `set -m`, все fd перенаправлены, иначе харнесс ждёт закрытия пайпа и вызов «висит».
-- **`kill -0` даёт EPERM на процесс, к которому нет прав** (из песочницы Codex к процессу вне её; на macOS и без песочницы — `kill -0 1`) — это «жив», а не «мёртв». Решено: живость pid из файла — только через `pid_alive` (единственное место, где разбирается текст ошибки `kill`; `kill -0` напрямую — только своим детям и `$$`), смерть раннера ещё и подтверждается молчанием heartbeat (`runner_dead_grace`). Остаток — ESRCH: pid-namespace может прятать живой процесс, тогда обычные блокировки и сирота `wait` ошибаются (DESIGN §12, п. 3). В тестах песочницу изображает `BRG_TEST_EPERM_PIDS`.
-- **Сигнал по pid из файла может убить постороннюю программу** (pid переиспользован после KILL) — отсюда takeover через pid-файл и флаги вместо сигналов.
-- **Claude Code**: Bash-команда, упёршаяся в лимит инструмента, не убивается, а уходит в фон — второй `wait` поверх первого (отсюда SUPERSEDED и таймаут `wait` ниже лимита); у Bash tool по умолчанию 2 мин, модель должна передать `timeout`.
-- **Codex**: длинная команда «паркуется» через 10–30 с, дальше модель опрашивает её сама; песочница по умолчанию — `.git` только для чтения, нет сети, ограничены сигналы и доступ к процессам/сервисам вне неё.
-- **OpenCode v2**: инструмент оболочки называется `shell`; headless — `opencode run --standalone`. Команды модели идут в своих группах процессов и переживают ход (хвостовой `wait` — отсюда откат курсоров надзором); на SIGINT `run` гасит их сам и выходит с 130 (SIGTERM не обрабатывает); сообщение-аргумент перекодируется — промпт только через stdin; `session export` без `--standalone` поднимает у человека долгоживущий фоновый сервис, а большой экспорт через пайп обрывается — читать только начало файла.
-- **`curl | bash` и `install.sh`**: в bash 3.2 при чтении скрипта из stdin `BASH_SOURCE` не задан (под `set -u` `${BASH_SOURCE[0]}` падает, `$0` — просто `bash`, что означало бы «текущий каталог»); в bash ≥ 4 внутри функции он `main`. Поэтому признак режима — `src=${BASH_SOURCE:-}` на верхнем уровне и `[ -f "$src" ]`; всё тело в функциях, `main "$@"` — последняя строка (любая команда, читающая stdin, съела бы остаток скрипта: у `git` и `exec` — `</dev/null`).
-- **Сеть и `Sec-Fetch-Site`**: браузер шлёт `Sec-Fetch-*` только на potentially trustworthy URL (loopback, https). По сетевому адресу заголовка нет, и проверка «нет заголовка — пускаем» молча пропускает чужие страницы с соседнего порта; поэтому вне loopback снимок защищён токеном `k` в адресе скрипта. macOS: `0.0.0.0` с `SO_REUSEADDR` садится поверх чужого `127.0.0.1:P` — для `0.0.0.0` сокет без него. `EACCES` при `bind` — порт, не адрес (код 5 только для `EADDRNOTAVAIL`, и до повтора на другом порту). `HTTPServer.server_bind` зовёт `getfqdn` — сервер переопределяет его (обратный DNS мог бы съесть 5 с рукопожатия).
-- **Windows/NTFS**: `mv` поверх файла, открытого другим процессом (антивирус, читатель), падает — нужны повторы; `bash` в PATH может оказаться WSL — `brg.cmd` ищет Git Bash сам.
-- **macOS `sed -i`/`date -d` несовместимы с GNU** — не использовать; разбор дат не делать вообще (только `date +%s`).
+- **bash 3.2: `read -t` does not work on a pipe, and traps do not interrupt a blocking `read`.** So the stdin of message bodies is read by a background `head -c` into a temp file, polled up to `BRG_STDIN_WAIT` — watchdogs on signals lost a body already read.
+- **An own process group only via `set -m`** (in a subshell before the start); macOS has no `setsid`. The `brg run` runner is `nohup` + `set -m` with every fd redirected, otherwise the harness waits for the pipe to close and the call "hangs".
+- **`kill -0` gives EPERM for a process you have no rights to** (from the Codex sandbox to a process outside it; on macOS without a sandbox — `kill -0 1`): that means "alive", not "dead". The liveness of a pid from a file goes only through `pid_alive` (the only place that parses the text of a `kill` error; `kill -0` directly — only to own children and `$$`), and a runner's death is also confirmed by a silent heartbeat (`runner_dead_grace`). What remains is ESRCH: a pid namespace may hide a live process, and then ordinary locks and the `wait` orphan check are wrong (DESIGN §12, item 3). In tests the sandbox is imitated by `BRG_TEST_EPERM_PIDS`.
+- **A signal by a pid from a file may kill an unrelated program** (the pid is reused after KILL) — hence the takeover through the pid file and flags instead of signals.
+- **Claude Code**: a Bash command that hits the tool limit is not killed but goes to the background — a second `wait` on top of the first (hence SUPERSEDED and the `wait` timeout below the limit); the Bash tool defaults to 2 min, the model must pass `timeout`.
+- **Codex**: a long command is "parked" after 10–30 s and the model polls it itself; the default sandbox has `.git` read-only, no network, limited signals and limited access to processes/services outside it.
+- **OpenCode v2**: the shell tool is called `shell`; headless is `opencode run --standalone`. The model's commands run in their own process groups and outlive the turn (a trailing `wait` — hence the supervisor's cursor rollback); on SIGINT `run` stops them itself and exits with 130 (it does not handle SIGTERM); the message argument is re-encoded — the prompt goes only through stdin; `session export` without `--standalone` starts a long-lived background service for the human, and a big export through a pipe is cut — read only the start of the file.
+- **`curl | bash` and `install.sh`**: in bash 3.2, when the script is read from stdin, `BASH_SOURCE` is unset (under `set -u` `${BASH_SOURCE[0]}` fails, `$0` is just `bash`, which would mean "the current directory"); in bash ≥ 4 inside a function it is `main`. So the mode test is `src=${BASH_SOURCE:-}` at the top level plus `[ -f "$src" ]`; the whole body is in functions and `main "$@"` is the last line (any command reading stdin would eat the rest of the script: `git` and `exec` get `</dev/null`).
+- **Network and `Sec-Fetch-Site`**: a browser sends `Sec-Fetch-*` only to a potentially trustworthy URL (loopback, https). On a network address the header is absent, and a "no header — let it in" check silently admits foreign pages from a neighbouring port; so off loopback the snapshot is protected by the token `k` in the script address. macOS: `0.0.0.0` with `SO_REUSEADDR` binds on top of a foreign `127.0.0.1:P` — for `0.0.0.0` the socket goes without it. `EACCES` on `bind` is about the port, not the address (code 5 only for `EADDRNOTAVAIL`, and before a retry on another port). `HTTPServer.server_bind` calls `getfqdn` — the server overrides it (reverse DNS could eat 5 s of the handshake).
+- **Windows/NTFS**: `mv` over a file opened by another process (an antivirus, a reader) fails — retries are needed; `bash` in PATH may turn out to be WSL — `brg.cmd` finds Git Bash itself.
+- **macOS `sed -i`/`date -d` are incompatible with GNU** — do not use them; do not parse dates at all (only `date +%s`).
 
-## Тесты
+## Tests
 
 ```bash
-bash tests/run.sh                       # всё (~5 мин, включая пингпонг)
-BRG_SKIP_PINGPONG=1 bash tests/run.sh   # быстрее
-bash tests/run.sh item                  # фильтр по подстроке «файл:функция»
+bash tests/run.sh                       # everything (~5 min, pingpong included)
+BRG_SKIP_PINGPONG=1 bash tests/run.sh   # faster
+bash tests/run.sh item                  # filter by a substring of "file:function"
 ```
 
-Тесты не должны оставлять процессов и временных каталогов. `test_brg_docs.sh` сверяет команды и флаги, упомянутые в `template/*.md` и `WINDOWS.md`, с `brg <cmd> --help` — меняешь CLI, проверь доки. На машине разработки только `/bin/bash` 3.2; bash ≥ 4 (Git Bash) нигде не проверялся.
+Tests must leave no processes and no temporary directories. `test_brg_docs.sh` checks the commands and flags mentioned in `template/*.md` and `WINDOWS.md` against `brg <cmd> --help` — when you change the CLI, check the docs. The development machine has only `/bin/bash` 3.2; bash ≥ 4 (Git Bash) has never been tested.
 
-Имена в тестах: `join_as` возвращает полное имя (`claude-1.<ключ>`) — его передают в `--as`; в `From:`, `who`, `tail`, путях `agents/`, `cursors/`, `run/wait/` и `metrics.log` — базовое (`${x%%.*}`, `base_of`). Хелперы `cursor`, `tcursor`, `pid_is`, `ack_all`, `metrics_of` принимают любое; `rejoin_as` — `join --as` с новым ключом, `dropped` — «тишина» агента для `join --as`.
+Names in tests: `join_as` returns the full name (`claude-1.<key>`), which goes into `--as`; `From:`, `who`, `tail`, the paths `agents/`, `cursors/`, `run/wait/` and `metrics.log` use the base name (`${x%%.*}`, `base_of`). The helpers `cursor`, `tcursor`, `pid_is`, `ack_all`, `metrics_of` accept either; `rejoin_as` is `join --as` with a new key, `dropped` is an agent's "silence" for `join --as`.
 
-## Как мы работаем (предпочтения человека)
+## How we work (the human's preferences)
 
-- **Поэтапно.** Когда план согласован — реализацию этапа отдаём подагенту-исполнителю с самодостаточным заданием (ссылки на DESIGN, ограничения, критерии, тесты). Каждый этап независимо валидирует отдельный агент на **другой модели** (до сих пор — Fable): прогон тестов, чтение diff, свои сценарии воспроизведения, вердикт «принято / блокирующие правки». Правки по замечаниям → коммит этапа (`Stage N: …`, трейлер Co-Authored-By, если его требует окружение).
-- **Не останавливаться на вопросах.** Если появился вопрос к человеку — продолжать то, что не заблокировано, вопросы собирать и задавать по ходу.
-- **Дизайн сначала.** Решения и отклонения от DESIGN фиксировать в DESIGN.md в том же этапе.
-- **LLM-прогоны — короткие и по согласию.** Длинные/дорогие прогоны без человека не запускать. OpenCode headless: `opencode run --standalone --model <провайдер>/<модель>`. Провайдер может троттлить (запросы зависают и повторяются) — бригада должна это переживать, закладывай запас по времени.
-- **Философия протокола (решение человека).** `template/PROTOCOL.md` задаёт только цель и минимальные рамки (безопасность; вопросы по бизнес-сути — человеку; человек видит вопросы и итог; не коммитить в main/master без разрешения и не уничтожать чужую работу; связь через brg; участник — только координатор, любую работу делает его подагент, одновременно один, больше — с разрешения человека; доска показывает правду — стадии подзадач и «работает/ждёт» как на деле; закрытие с `summary.md`). Весь процесс — рекомендации, агенты вправе договориться о другом и строить свои инструменты. Ожидания (PROTOCOL, раздел 3; DESIGN §1 п. 8): решения коллегиально, lead — фасилитатор и связь с человеком (роли host с 0.7.0 нет; lead есть всегда — назначает brg), работа — у участников (силами подагентов), проверка подзадач другим участником; подагенты в бригаду не вступают никогда. `brg` не навязывает процесс (например, не требует ревью) — он даёт гибкие инструменты на каждый случай (DESIGN §7.1.1: проверять, не проверять, передумать, свой порядок), привязанные к доске, и следит за целостностью состояния.
-- **Глобальная команда `brg`** у человека — обёртка из `install.sh`. Изменил `bin/brg-global` или путь к репозиторию — выполни `bash install.sh` и скажи человеку. Изменения `bin/brg` переустановки не требуют, но проекты подхватывают их через `brg init`.
+- **In stages.** Once a plan is agreed, the implementation of a stage goes to an executor subagent with a self-contained assignment (pointers to DESIGN, constraints, criteria, tests). Every node is checked by a separate high-effort agent that took no part in the implementation; the final check is by a fresh agent. The validator runs the tests and the mechanical checks itself, reads the diff, runs its own reproductions, checks docs = code, and gives the verdict "accepted / blocking fixes". Fixes after the remarks → the stage commit (with a Co-Authored-By trailer if the environment requires one).
+- **Do not stop on questions.** If a question for the human comes up, continue with whatever is not blocked; collect the questions and ask them along the way.
+- **Plan first.** A plan goes to `/plans`; decisions enter DESIGN.md in the implementing commit.
+- **LLM runs are short and only with consent.** Do not start long or expensive runs without the human. OpenCode headless: `opencode run --standalone --model <provider>/<model>`. The provider may throttle (requests hang and are retried) — the brigade must survive that; leave a time margin.
+- **The protocol's philosophy (the human's decision).** `template/PROTOCOL.md` sets only the goal and minimal frames (safety; questions about business substance go to the human; the human sees the questions and the result; no commits to main/master without permission and no destroying other people's work; communication through brg; a participant is only a coordinator, any work is done by its subagent, one at a time, more with the human's permission; the board shows the truth — item stages and "busy/waiting" as they really are; closing with `summary.md`). The whole process is recommendations: agents may agree on something else and build their own tools. Expectations (PROTOCOL, section 3; DESIGN §1 item 8): decisions are collegial, the lead is a facilitator and the link to the human (there is one role, lead, always present — brg assigns it), the work belongs to the participants (done by their subagents), an item is checked by another participant; subagents never join the brigade. `brg` does not impose a process (for example, it does not require review) — it gives flexible tools for every case (DESIGN §7.1.1: check, do not check, change your mind, your own order), tied to the board, and keeps the state consistent.
+- **The global `brg` command** of the human is the wrapper from `install.sh`. If you changed `bin/brg-global` or the repository path, run `bash install.sh` and tell the human. Changes to `bin/brg` need no reinstall, but projects pick them up through `brg init`.
 
-## Публичный репозиторий
+## Public repository
 
-Репозиторий публичный и «голый»: только инструмент, тесты и документы. Отчёты и логи живых прогонов, данные чужих проектов, внутренние имена провайдеров и моделей не коммитим. Локальные заметки человека (провайдер для прогонов, где лежат отчёты) — в `AGENTS.local.md`, если он есть (в .gitignore): прочитай его.
+The repository is public and "bare": only the tool, the tests and the documents. Reports and logs of live runs, data of other projects, internal names of providers and models are never committed. Plans and the human's local notes live outside git: `/plans` (above) and `AGENTS.local.md` if it exists (in .gitignore; e.g. the provider for runs, where the reports are) — read it.
 
-## Текущее состояние (обновляй по ходу работы)
+## State
 
-Сделано: ядро транспорта, задачи и роли, подзадачи/резервирования/`brg run`, документы для агентов, Windows-шим и `doctor`, свободный PROTOCOL, рекомендация про подагентов, глобальная команда `brg`; этап 6.1 — живость процессов в песочнице (`pid_alive`, `runner_dead_grace`); этап 6.2 — ключ сессии в имени (`claude-1.k7f3q9`: изменяющие команды требуют ключ, состояние — на базовом имени, `join --as` — только когда агент «выпал»; версия 0.2.0); этап 6.3 — страховки (предупреждение о пересечении со своими резервированиями, STOP первой строкой любой команды и отказ командам, начинающим работу, `task close` выдаёт непрочитанное lead'а и отказывает — «отказ = доставка»); этап 6.4 — документы (чтение в общем дереве не проверяется, трейлеры участников в коммитах); 0.2.1 — весь `.brigada/` в `.git/info/exclude` (было: только переписка и рантайм); 0.3.0 — доска `brg board`, этап A (DESIGN §9.1: `file://`-страница `template/board.html`, снимок `run/board/` одной awk-программой, только чтение; решения и «сейчас делаю» — этап B); 0.4.0 — `brg init` кладёт блок brigada в `AGENTS.md` (нет — создаёт и исключает из git) и в `CLAUDE.md` без импорта `@AGENTS.md`: агенту достаточно «подключись к бригаде» (DESIGN §3; `--no-agents-md` — не трогать; `doctor` проверяет блок); 0.5.0 — стадии подзадач (DESIGN §7.1.1: проверка — рекомендация, обязательно — стадия как на деле, доска; одно правило `item_stage_v` — сводка `wait`, `item list|show`, `status`, `task close`; `item add|done --no-review`, `item review --start` → `Reviewing:`, `--verdict skip`, `item claim` своей сданной — вернуть в работу, `item cancel`) и подагенты — обязательная рамка (§5.4, PROTOCOL раздел 2); новый вид доски (§9.1: колонки по стадиям, цвета агентов, переписка блоками); 0.5.1 — вопросы человеку (DESIGN §9.2: `send --to human --ask`, маркеры `run/asks/`, закрывает `--re` автора или человека (`say --re`); видны на доске, в `who`/`status` и в терминале `brg board`; на доске — префикс ключа агента); 0.5.2 — доска скрывает ушедших агентов без роли, работы и вопроса: чип «ушли N» (DESIGN §9.1). 0.6.0 — пометка «работает» (DESIGN §5 п. 13, §5.2: «ждёт» ⇔ свободен; `wait --busy`, `brg busy`, автопометка при `item claim`/`review --start`; все подсказки `wait` — через `next_wait`; на доске — «подзадачи готовы · lead …» и плашка «бригада простаивает»). 0.7.0 — одна роль lead (host убран; `Host:` старых задач читается и игнорируется), lead всегда: `task new --as human` и уход lead'а — выбор brg (DESIGN §6.2), иначе — первому, кто выйдет на связь; `lead give --as human`; пауза `brg pause|resume` (DESIGN §5 п. 14, §9: агенты остаются в цикле `wait`, будит только человек). 0.8.0 — сервер человека (DESIGN §9.1, «Сервер человека»): `brg board` поднимает `bin/brg-serve.py` (Python ≥ 3.8, stdlib; нет Python или `--static` — `file://` только для просмотра); с доски — сообщения и ответы на вопросы, новая задача, lead, пауза, стоп, отмена задачи; сервер состояние не пишет — всё через вызовы brg; 127.0.0.1, токен → cookie `brg_<порт>`, проверки Host/Origin/`Sec-Fetch-Site`.
-
-0.9.0 — агенты, запущенные brg (DESIGN §5.5): `brg spawn` (и «Добавить агента» с доски) — надзор на агента, обёртка хода, надзорный `wait` (HOLD/FORCE/ROLLBACK, флаги), свободный запущенный агент завершает ход, откат курсоров, права full/project, активность и токены на доске, действия сервера `spawn`/`spawn-ctl`; только OpenCode, macOS/Linux; проверено с поддельным OpenCode (живая проверка — по согласию человека, план — в архиве).
-
-0.9.1 — запущенные агенты по итогам первого живого прогона (DESIGN §5.5): лента активности разбирается по ходу (`turn.N.parse`: только полные строки, порядок «activity → состояние», обрезка при восстановлении), токены хода считаются один раз (номер хода в `stream.tok`), смена прав не будит (`Rights-Note` приходит с пробуждением), «чей отказ» (агента или подагента — эвристика), `Context`, токены основной сессии и подагентов раздельно, стоимость — только если > 0; доска держит прокрутку ленты.
-
-0.9.2 — доска по сети и установка одной командой: `brg board --bind ADDR` (DESIGN §9.1, «Адрес и порт», «Защита»: IPv4 или 0.0.0.0, только на этот запуск, `Host` по IP, `Origin` = `Host` запроса, токен `k` у снимка вне loopback — `Sec-Fetch-*` браузер шлёт только на loopback/https; код 5 сервера — адрес не на машине; крючок `BRG_SERVE_TEST_LISTEN=127.0.0.1` — тесты не слушают сеть); `install.sh` — однострочник (`curl … | bash`), `BRIGADA_REPO`/`BRIGADA_DIR`, подстановка пути без `sed`.
-
-**Следующая работа — этап 6.5** — короткий живой прогон (по согласию человека), теперь и с управлением с доски. Остальное — DESIGN §12.
-
-За человеком (результаты он пришлёт):
-1. Замер стоимости ожидания в Claude Code и Codex → заполнить DESIGN §5.1, при необходимости поднять `wait_timeout.*` в `template/config`.
-2. Проверка на Windows по `WINDOWS.md`.
-3. Проверка из песочницы Codex (DESIGN §12, п. 3): `doctor` даёт ⚠ про EPERM, `wait` не уходит в `orphan`, два одновременных `run` идут строго по очереди, `run list` не помечает живой прогон `killed`.
-4. Доска: открыть `.brigada/board.html` в Safari (macOS) — грузится ли `run/board/data.js?<время>` под `file://`, переключение на прошлую задачу; на Windows — пункт 2.7 `WINDOWS.md`.
-5. Сервер доски (0.8.0): в Safari (вход по адресу, действия) и на Windows — пункт 2.8 `WINDOWS.md` (`brg.cmd` из Python, кириллица, `README*` в заголовке, не остаётся `python.exe`).
-6. Доска по сети (0.9.2): `brg board --bind <IP виртуалки>` (и `--bind 0.0.0.0`) — открыть с другой машины, действия с доски; однострочник установки на Linux и в Git Bash.
+The version is `BRG_VERSION` in `bin/brg`. Work status, the next steps and what the human checks themselves are in `plans/STATUS.md`; open questions are in DESIGN §12.
