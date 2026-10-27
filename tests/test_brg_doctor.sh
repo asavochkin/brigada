@@ -208,6 +208,26 @@ test_doctor_platform_config_git() {
   assert_contains "$out" "не найден .brigada"
 }
 
+# Numbers in config are decimal: 090 is 90, not an octal error; junk is skipped (the next
+# layer or the built-in value) and doctor names the key and the value used (DESIGN §5.1)
+test_doctor_config_numbers() {
+  local out
+  new_proj
+  printf 'wait_timeout.claude: 090\nheartbeat: 08\nlock_stale: 0x8\nwait_timeout.codex: 9x\nrun_timeout: 1234567890\n' >>"$B/config"
+  out=$(brg join --harness claude --model m)
+  assert_contains "$out" "через 90 с."
+  out=$(brg doctor)
+  assert_eq 0 "$?" "doctor exit: $out"
+  assert_contains "$(warns "$out")" "⚠ wait_timeout (darwin) меньше 5 с: opencode 3, прочие 3"
+  assert_not_contains "$(warns "$out")" "claude"
+  assert_contains "$(warns "$out")" "⚠ .brigada/config: lock_stale: «0x8» — не десятичное число (до 9 цифр): brg его пропускает и берёт 30"
+  assert_contains "$(warns "$out")" "⚠ .brigada/config: wait_timeout.codex: «9x» — не десятичное число (до 9 цифр): brg его пропускает и берёт 25"
+  assert_contains "$(warns "$out")" "⚠ .brigada/config: run_timeout: «1234567890» — не десятичное число (до 9 цифр): brg его пропускает и берёт 1800"
+  assert_eq 1 "$(printf '%s\n' "$out" | grep -c 'lock_stale: «0x8»')" "one line per key"
+  assert_not_contains "$out" "heartbeat: «"
+  assert_not_contains "$out" "value too great"
+}
+
 # The brigada block in AGENTS.md / CLAUDE.md (DESIGN §3): ✓ with the block; ⚠
 # without it; ⚠ for CLAUDE.md with neither the block nor @AGENTS.md. Read only.
 test_doctor_agents_md() {

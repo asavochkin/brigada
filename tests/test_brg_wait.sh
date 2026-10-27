@@ -468,3 +468,60 @@ test_timeout_digest_of_the_task() {
   assert_contains "$out" "  есть новости"
   assert_not_contains "$out" "T001: todo"
 }
+
+# Numbers are decimal (dec_v): leading zeros are not octal, overflow and junk are refused
+# with exit 0 and NEXT, and no pid/hb file is left behind (DESIGN §5 item 7, §5.1)
+test_wait_decimal_timeout() {
+  local out v
+  two_agents
+  out=$(brg wait --as "$A" --timeout 01)
+  assert_eq 0 "$?" "exit code"
+  assert_eq "── нет новых (1 с) · ход не завершай · NEXT: bash $BRG wait --as $A --timeout 1" "$out"
+  for v in 08 010; do
+    start_wait "$A" "$P/w" --timeout "$v"
+    wait_for 3 grep -q "wait.start timeout=$((10#$v)) pid=$WP" "$B/run/metrics.log" || fail "timeout $v: $(metrics_of "$A" wait.start)"
+    send_as "$Bn" "wake $v" --to "${A%%.*}"
+    wait_pid $WP 5 || fail "wait $v hung"
+    assert_contains "$(cat "$P/w")" "wake $v"
+    assert_contains "$(cat "$P/w")" "wait --as $A --timeout $((10#$v))"
+    assert_not_contains "$(cat "$P/w")" "value too great"
+  done
+  for v in 1234567890 0999999999 1e3 -5 0x10; do
+    out=$(brg wait --as "$A" --timeout "$v" 2>&1)
+    assert_eq 0 "$?" "exit code for $v"
+    assert_contains "$out" "── ОШИБКА: --timeout — целое число секунд: $v"
+    assert_eq "── NEXT: bash $BRG wait --as $A" "$(printf '%s\n' "$out" | tail -n 1)"
+    assert_file_not_exists "$B/run/wait/${A%%.*}.pid" "pid file after $v"
+    assert_file_not_exists "$B/run/wait/${A%%.*}.hb" "hb file after $v"
+  done
+  assert_contains "$(brg wait --help)" "0 возвращается сразу — не используй"
+}
+
+# Leading zeros in config and options: wait, status, join, read --since, tail -n; an unknown
+# harness and a platform key; a fractional BRG_TICK still works
+test_config_and_options_with_leading_zeros() {
+  local out n
+  new_proj
+  printf 'wait_timeout.claude: 02\nheartbeat: 08\nwait_timeout.default: 01\nwait_timeout.opencode.darwin: 03\n' >>"$B/config"
+  out=$(brg join --harness claude --model m)
+  assert_contains "$out" "через 2 с."
+  A=$(printf '%s\n' "$out" | sed -n 's/^── подключён: \([^ ]*\) .*/\1/p')
+  assert_contains "$(brg status --as "$A")" "Таймаут wait: 2 с."
+  ack_all "$A"
+  out=$(BRG_TICK=0.1 brg wait --as "$A")
+  assert_eq "── нет новых (2 с) · ход не завершай · NEXT: bash $BRG wait --as $A" "$out"
+  n=$(join_as frob)
+  ack_all "$n"
+  assert_eq "── нет новых (1 с) · ход не завершай · NEXT: bash $BRG wait --as $n" "$(brg wait --as "$n")"
+  n=$(BRG_PLATFORM=Darwin join_as opencode)
+  ack_all "$n"
+  assert_eq "── нет новых (3 с) · ход не завершай · NEXT: bash $BRG wait --as $n" "$(BRG_PLATFORM=Darwin brg wait --as "$n")"
+  for n in 1 2 3 4 5 6 7 8 9; do send_as "$A" "m$n"; done
+  out=$(brg read --as "$A" --since 08 --all)
+  assert_contains "$out" "m6"
+  assert_not_contains "$out" "m5"
+  out=$(brg tail -n 08 lobby)
+  assert_contains "$out" "m2"
+  printf '%s\n' "$out" | grep -qx '  m1' && fail "tail -n 08 shows m1: $out"
+  assert_not_contains "$out" "value too great"
+}

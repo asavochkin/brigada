@@ -70,6 +70,13 @@ dec_v() {
   eval "$1=\$((10#\$2))"
 }
 
+# frac_ok X — a sleep step (BRG_TICK, BRG_SPAWN_STEP): ^[0-9]+(\.[0-9]+)?$. Such values go
+# only to sleep and awk, never into bash arithmetic
+frac_ok() {
+  case $1 in '' | .* | *. | *.*.* | *[!0-9.]*) return 1 ;; esac
+  return 0
+}
+
 # ipv4_ok X — a decimal IPv4 address: four octets 0–255, no leading zeros (010 is ambiguous), no
 # empty octets (checked before the split: "1.2.3.4." and "1..2.3" give four fields too)
 ipv4_ok() {
@@ -157,8 +164,8 @@ parse_dur_v() {
     *m) _pd_n=${_pd_n%m} _pd_m=60 ;;
     *h) _pd_n=${_pd_n%h} _pd_m=3600 ;;
   esac
-  is_uint "$_pd_n" && [ ${#_pd_n} -le 6 ] || return 1
-  _pd_n=$((10#$_pd_n * _pd_m))
+  [ ${#_pd_n} -le 6 ] && dec_v _pd_n "$_pd_n" || return 1
+  _pd_n=$((_pd_n * _pd_m))
   [ "$_pd_n" -ge 1 ] && [ "$_pd_n" -le 86400 ] || return 1
   eval "$1=\$_pd_n"
 }
@@ -382,25 +389,37 @@ cfg_set() {
   eval "CFG_$k=\$2"
 }
 CFGL_VARS=
+CFGL_KEYS= # " PREFIX:key …" — the keys read from the files (doctor checks numbers)
 cfg_set_layer() { # PREFIX KEY VALUE — into CFG_ and the layer PREFIX_
   local k=${2//./_}
   k=${k//-/_}
   eval "CFG_$k=\$3; $1_$k=\$3"
   CFGL_VARS="$CFGL_VARS $1_$k"
+  case "$CFGL_KEYS " in *" $1:$2 "*) ;; *) CFGL_KEYS="$CFGL_KEYS $1:$2" ;; esac
 }
 cfg_set_d() { cfg_set_layer CFGD "$@"; } # config.default
 cfg_set_u() { cfg_set_layer CFGU "$@"; } # config
-cfg_num() { # VAR KEY DEFAULT
-  local _cn_k=${2//./_} _cn_v
+# cfg_num VAR KEY DEFAULT — the first decimal value (dec_v) of config, config.default, DEFAULT;
+# a value that is not one is skipped (doctor names it). CFG_NUMK " key=VAR …" for doctor.
+CFG_NUMK=
+cfg_num() {
+  local _cn_k=${2//./_} _cn_l _cn_v _cn_r=$3
   _cn_k=${_cn_k//-/_}
-  eval "_cn_v=\${CFG_$_cn_k-}"
-  is_uint "$_cn_v" || _cn_v=$3
-  eval "$1=\$_cn_v"
+  for _cn_l in CFGU CFGD; do
+    eval "_cn_v=\${${_cn_l}_$_cn_k-}"
+    [ -n "$_cn_v" ] || continue
+    if dec_v _cn_v "$_cn_v"; then
+      _cn_r=$_cn_v
+      break
+    fi
+  done
+  eval "$1=\$_cn_r"
+  CFG_NUMK="$CFG_NUMK $2=$1"
 }
 cfg_load() {
   local v
   for v in $CFGL_VARS; do unset "$v"; done # a second load (doctor: another .brigada)
-  CFGL_VARS=
+  CFGL_VARS= CFGL_KEYS= CFG_NUMK=
   cfg_defaults
   cfg_parse "$ROOT/config.default" cfg_set_d
   cfg_parse "$ROOT/config" cfg_set_u
@@ -443,7 +462,8 @@ platform_key_v() { # VAR PLATFORM — key part for config: Darwin → darwin, MS
 #   config: wait_timeout.<harness>.<platform>, wait_timeout.<harness>
 #   config.default: the same two, then the built-in values: the same two
 #   (codex.msys: Codex on Windows blocks instead of parking, DESIGN §5.1);
-# none of them — wait_timeout.default, in the same order of files.
+# none of them — wait_timeout.default, in the same order of files. A value that is not
+# decimal (dec_v) is skipped as if absent (doctor names it).
 wait_timeout_v() {
   local _wt_t= _wt_p= _wt_l _wt_k _wt_v _wt_h=${2//[!a-z0-9_]/_}
   if [ -n "${3:-}" ]; then
@@ -453,7 +473,7 @@ wait_timeout_v() {
   for _wt_l in CFGU CFGD CFGB; do
     for _wt_k in ${_wt_p:+"${_wt_h}_$_wt_p"} "$_wt_h"; do
       eval "_wt_v=\${${_wt_l}_wait_timeout_$_wt_k-}"
-      if is_uint "$_wt_v"; then
+      if dec_v _wt_v "$_wt_v"; then
         _wt_t=$_wt_v
         break 2
       fi
@@ -462,7 +482,7 @@ wait_timeout_v() {
   if [ -z "$_wt_t" ]; then
     for _wt_l in CFGU CFGD CFGB; do
       eval "_wt_v=\${${_wt_l}_wait_timeout_default-}"
-      if is_uint "$_wt_v"; then
+      if dec_v _wt_v "$_wt_v"; then
         _wt_t=$_wt_v
         break
       fi
@@ -1266,8 +1286,7 @@ BRIEF_MAX=65536
 task_norm_id_v() {
   local _tn_n=${2%%-*}
   case $_tn_n in [Tt]*) _tn_n=${_tn_n#?} ;; esac
-  is_uint "$_tn_n" && [ ${#_tn_n} -le 6 ] || return 1
-  _tn_n=$((10#$_tn_n))
+  [ ${#_tn_n} -le 6 ] && dec_v _tn_n "$_tn_n" || return 1
   [ "$_tn_n" -gt 0 ] || return 1
   printf -v _tn_n 'T%03d' "$_tn_n"
   eval "$1=\$_tn_n"
@@ -1894,7 +1913,7 @@ rb_cleanup() { # kill the reader, remove the temp file (also from release_all)
 # rb_pipe MAXBYTES — stdin (pipe) → fd 3 opened on a complete temp copy; dies on timeout
 rb_pipe() {
   local wait=${BRG_STDIN_WAIT:-10} t=0 step=1 rc
-  is_uint "$wait" && [ "$wait" -gt 0 ] || wait=10
+  dec_v wait "$wait" && [ "$wait" -gt 0 ] || wait=10
   RB_TMP=$RUN/.body.$$.$RANDOM
   head -c "$1" <&0 >"$RB_TMP" 2>/dev/null &
   RB_PID=$!
@@ -2022,6 +2041,7 @@ usage_print() {
     send) echo "Отправить сообщение (тело — stdin или --file; CRLF→LF; лимит msg_max_bytes). По умолчанию --to all, канал — активная задача (нет задачи — lobby). --reply-by: по сроку твой wait вернёт сводку, кто ответил. --ask (с --to human): вопрос человеку — открыт на доске, в who и в терминале brg board, пока его автор (переслав ответ человека) или человек не ответит с --re на него (задай его и текстом в своём чате; ответ получил — перешли суть бригаде с --re N; уточнить — новым --ask)." ;;
     wait)
       echo "Ждать сообщений (последнее действие каждого шага). Слушает lobby и активную задачу. Всегда код 0, последняя строка — NEXT (кроме STOP/SUPERSEDED)."
+      echo "--timeout S — секунды (десятичное число; по умолчанию — таймаут твоего харнесса из config). 0 возвращается сразу — не используй: NEXT повторит его, и цикл wait станет горячим."
       echo "На паузе (brg pause) wait просыпается только от сообщений человека и снятия паузы (тогда выводит «пауза снята» и накопленное); таймаут на паузе — строка «── пауза · нет новых от человека»."
       echo "wait без --busy значит «я свободен» (в списках — «ждёт»). --busy [\"подпись\"] — «мой подагент работает»: в who, status и на доске ты «работает: подпись» (подпись — до 2 слов, лишнее и кавычки, \$, \`, %, \\ обрезаются с предупреждением; без подписи — просто «работает»). Пометка действует в активной задаче; NEXT повторяет --busy, пока она стоит, поэтому копируй NEXT дословно. item claim и item review --start ставят её сами. Подагент закончил — следующий wait без --busy."
       ;;
@@ -3159,8 +3179,7 @@ cmd_send() {
     parse_dur_v rbs "$rb" || usage_die "--reply-by — срок вида 90s, 5m, 1h (от 1 с до 24 ч): $rb"
   fi
   if [ -n "$re" ]; then
-    is_uint "$re" && [ ${#re} -le 9 ] || die "--re — номер сообщения: $re"
-    re=$((10#$re))
+    dec_v re "$re" || die "--re — номер сообщения: $re"
     printf -v rf '%s/messages/%06d.msg' "$d" "$re"
     if [ ! -f "$rf" ]; then
       # numbering is per channel: point at the other channel if #re is there
@@ -3251,8 +3270,8 @@ cmd_say() {
   get_now
   check_to "$to" 0
   if [ -n "$re" ]; then # the human answers a question (DESIGN §9.2)
-    is_uint "$re" && [ ${#re} -le 9 ] || die "--re — номер сообщения: $re"
-    printf -v rf '%s/messages/%06d.msg' "$d" "$((10#$re))"
+    dec_v re "$re" || die "--re — номер сообщения: $re"
+    printf -v rf '%s/messages/%06d.msg' "$d" "$re"
     if [ ! -f "$rf" ]; then
       x=
       for o in lobby $ACT_ID; do
@@ -3339,7 +3358,7 @@ cmd_read() {
   need_root
   need_agent read
   NEXT_ON_ERR="$BRG read --as $ASN [--channel C] [--since N] [--all]"
-  [ -z "$since" ] || { is_uint "$since" && [ ${#since} -le 15 ]; } || usage_die "--since — номер сообщения: $since"
+  [ -z "$since" ] || dec_v since "$since" || usage_die "--since — номер сообщения: $since"
   if [ -n "$c" ]; then
     chan_dir d "$c" || die "нет канала: $c"
     chans=$CHAN_ID
@@ -3418,12 +3437,12 @@ cmd_tail() {
   done
   need_root
   AGENT=human
-  [ -z "$n" ] || { is_uint "$n" && [ ${#n} -le 9 ]; } || usage_die "-n — число сообщений: $n"
+  [ -z "$n" ] || dec_v n "$n" || usage_die "-n — число сообщений: $n"
   get_now
   metric tail channel="${c:-all}" follow="${follow:-0}"
   SCAN_LIMIT=1000000
   tick=${BRG_TICK:-1}
-  case $tick in '' | *[!0-9.]*) tick=1 ;; esac
+  frac_ok "$tick" || tick=1
   if [ -n "$c" ]; then
     chan_dir d "$c" || die "нет канала: $c"
     c=$CHAN_ID
@@ -4377,6 +4396,40 @@ dr_stops() {
   return 0
 }
 
+# dr_cfg_nums — numeric keys of config/config.default whose value is not a decimal number
+# (dec_v): brg skips them (the next layer or the built-in value); name the key and what is used
+dr_cfg_nums() {
+  local e l k v u r h p f
+  for e in $CFGL_KEYS; do
+    l=${e%%:*} k=${e#*:}
+    case $k in
+      wait_timeout.*)
+        r=${k#wait_timeout.} h=${r%%.*} p=
+        case $r in *.*) p=${r#*.} ;; esac
+        ;;
+      *)
+        case "$CFG_NUMK " in *" $k="*) ;; *) continue ;; esac
+        h= p=
+        ;;
+    esac
+    v=${k//./_}
+    v=${v//-/_}
+    eval "v=\${${l}_$v-}"
+    dec_v u "$v" && continue
+    if [ -n "$h" ]; then
+      wait_timeout_v u "$h" "$p"
+    else
+      r="$CFG_NUMK "
+      r=${r#*" $k="}
+      eval "u=\$${r%% *}"
+    fi
+    f=$RROOT/config
+    [ "$l" = CFGD ] && f=$RROOT/config.default
+    dr_warn "$f: $k: «$v» — не десятичное число (до 9 цифр): brg его пропускает и берёт $u" "Исправь значение в $RROOT/config (config.default перезаписывает brg init)."
+  done
+  return 0
+}
+
 # dr_config — wait timeouts must stay under the command limits of the harnesses
 # (DESIGN §5.1): 120 s by default (Claude Code, OpenCode, Codex on Windows), up to
 # 600 s when the agent passes a tool timeout; Codex elsewhere parks a command after
@@ -4411,6 +4464,7 @@ dr_config() {
     "Codex вне Windows паркует команду через 10–30 с: wait дольше 25 с стоит опросов (write_stdin)."
   [ -z "$low" ] || dr_warn "wait_timeout ($pk) меньше 5 с: $low" "Каждый возврат wait — вызов модели: слишком частые пробуждения дорого стоят."
   [ -n "$fail$high$low" ] || dr_ok "wait_timeout ($pk): $line — ниже лимитов команд харнессов (DESIGN §5.1)"
+  dr_cfg_nums
   if [ "$RUNNER_STALE" -le "$LOCK_STALE" ]; then
     dr_warn "runner_stale ($RUNNER_STALE) не больше lock_stale ($LOCK_STALE)" "Раннер, ждущий блокировку runs до lock_stale, могут счесть зависшим: сделай runner_stale больше lock_stale."
   fi
@@ -5236,8 +5290,7 @@ US=$'\037' # field separator of the item table (never in titles/paths: control c
 item_norm_id_v() { # VAR RAW — I1 | i001 | 1 → I001; 1 if not an item id
   local _in_n=$2
   case $_in_n in [Ii]*) _in_n=${_in_n#?} ;; esac
-  is_uint "$_in_n" && [ ${#_in_n} -le 6 ] || return 1
-  _in_n=$((10#$_in_n))
+  [ ${#_in_n} -le 6 ] && dec_v _in_n "$_in_n" || return 1
   [ "$_in_n" -gt 0 ] || return 1
   printf -v _in_n 'I%03d' "$_in_n"
   eval "$1=\$_in_n"
@@ -6721,13 +6774,12 @@ BRG_MI_EOF
 # taken away stops its command and leaves.
 RUN_FINAL=" done failed timeout killed cancelled "
 RUN_KILL_GRACE=${BRG_KILL_GRACE:-5}
-is_uint "$RUN_KILL_GRACE" || RUN_KILL_GRACE=5
+dec_v RUN_KILL_GRACE "$RUN_KILL_GRACE" || RUN_KILL_GRACE=5
 
 run_norm_id_v() { # VAR RAW — R3 | r003 | 3 → R003; 1 if not a run id
   local _rn_n=$2
   case $_rn_n in [Rr]*) _rn_n=${_rn_n#?} ;; esac
-  is_uint "$_rn_n" && [ ${#_rn_n} -le 6 ] || return 1
-  _rn_n=$((10#$_rn_n))
+  [ ${#_rn_n} -le 6 ] && dec_v _rn_n "$_rn_n" || return 1
   [ "$_rn_n" -gt 0 ] || return 1
   printf -v _rn_n 'R%03d' "$_rn_n"
   eval "$1=\$_rn_n"
@@ -7315,7 +7367,7 @@ run_runner() {
   lock_release runs
   # tick: 0.1 s growing to BRG_TICK (1 s)
   x=${BRG_TICK:-1}
-  case $x in '' | *[!0-9.]*) x=1 ;; esac
+  frac_ok "$x" || x=1
   maxstep=$(awk -v t="$x" 'BEGIN { s = int(t * 10 + 0.5); if (s < 1) s = 1; print s }')
   # Wait for the turn: head of the queue, then the exec lock. Every second: the
   # heartbeat in our queue entry, and a look at our run — settled by someone
@@ -8201,7 +8253,7 @@ cmd_wait() {
       *) usage_die "неизвестный параметр: $1" ;;
     esac
   done
-  [ -z "$opt_t" ] || { is_uint "$opt_t" && [ ${#opt_t} -le 9 ]; } || usage_die "--timeout — целое число секунд: $opt_t"
+  [ -z "$opt_t" ] || dec_v opt_t "$opt_t" || usage_die "--timeout — целое число секунд: $opt_t"
   need_root
   STOP_SHOWN=1 # wait returns STOP itself
   need_agent write
@@ -8230,7 +8282,7 @@ cmd_wait() {
   W_PID=$RUN/wait/$AGENT.pid
   W_HB=$RUN/wait/$AGENT.hb
   TICK=${BRG_TICK:-1}
-  case $TICK in '' | *[!0-9.]*) TICK=1 ;; esac
+  frac_ok "$TICK" || TICK=1
   trap '' PIPE # a closed stdout must not kill us before the log line
   trap 'w_on_signal TERM' TERM
   trap 'w_on_signal INT' INT
@@ -8429,8 +8481,7 @@ sp_write() {
 spawn_norm_id_v() {
   local _sn_n=$2
   case $_sn_n in [Ss]*) _sn_n=${_sn_n#?} ;; *) return 1 ;; esac
-  is_uint "$_sn_n" && [ ${#_sn_n} -le 6 ] || return 1
-  _sn_n=$((10#$_sn_n))
+  [ ${#_sn_n} -le 6 ] && dec_v _sn_n "$_sn_n" || return 1
   [ "$_sn_n" -gt 0 ] || return 1
   printf -v _sn_n 'S%03d' "$_sn_n"
   eval "$1=\$_sn_n"
@@ -8827,9 +8878,9 @@ SV_HB_AT=0
 SV_T0=0
 sv_setup() {
   SV_STEP=${BRG_SPAWN_STEP:-1} # a test hook: the step of sleeps
-  case $SV_STEP in '' | *[!0-9.]* | .*) SV_STEP=1 ;; esac
+  frac_ok "$SV_STEP" || SV_STEP=1
   SV_MAXLIFE=${BRG_SPAWN_TEST_MAXLIFE:-} # a test hook: leave after N s (or when the project is gone)
-  is_uint "$SV_MAXLIFE" || SV_MAXLIFE=
+  dec_v SV_MAXLIFE "$SV_MAXLIFE" || SV_MAXLIFE=
   SV_HB_EVERY=$((SPAWN_STALE / 3))
   [ "$SV_HB_EVERY" -le 5 ] || SV_HB_EVERY=5
   [ "$SV_HB_EVERY" -ge 1 ] || SV_HB_EVERY=1
@@ -9044,7 +9095,7 @@ sv_notify_lead() {
 # only the head of its output is read.
 sv_export_one() {
   local t=$SD/.export.$$.$RANDOM p i=0 lim=${BRG_SPAWN_EXPORT_TIMEOUT:-20} bin=${CFG_spawn_opencode_bin:-opencode} args=${CFG_spawn_opencode_args-}
-  is_uint "$lim" || lim=20
+  dec_v lim "$lim" || lim=20
   EX=
   # its own group (set -m): a background command without job control would ignore SIGINT
   set -f -m
