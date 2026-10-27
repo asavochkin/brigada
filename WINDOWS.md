@@ -1,61 +1,61 @@
-# brigada на Windows — чек-лист проверки
+# brigada on Windows — test checklist
 
-Критерий: `doctor` зелёный; `brg.cmd` работает из PowerShell и cmd, включая `send --file` с кириллицей; агент держит цикл 30 мин. Ничего из этого на Windows ещё не запускалось — каждое расхождение с «ожидается» записывай в шаблон в конце. Время: ≈15 мин руками + 30 мин цикла агента.
+Criterion: `doctor` is green; `brg.cmd` works from PowerShell and cmd, including `send --file` with Cyrillic; an agent keeps its loop for 30 min. None of this has been run on Windows yet — write every difference from "Expected" into the template at the end. Time: ≈15 min by hand + 30 min of the agent's loop.
 
-Пути ниже — для примера: brigada в `C:\work\brigada`, игрушечный проект в `C:\work\toy`.
+The paths below are examples: brigada in `C:\work\brigada`, a toy project in `C:\work\toy`.
 
-## 0. Установка (3 мин)
+## 0. Installation (3 min)
 
-1. Git for Windows (https://git-scm.com/download/win), установщик с настройками по умолчанию.
-2. Клон brigada — нарочно с `core.autocrlf=true` (проверяем `.gitattributes`). В PowerShell:
+1. Git for Windows (https://git-scm.com/download/win), the installer with default settings.
+2. A brigada clone — deliberately with `core.autocrlf=true` (this checks `.gitattributes`). In PowerShell:
    ```
-   git clone -c core.autocrlf=true <url-или-путь-к-репозиторию-brigada> C:\work\brigada
+   git clone -c core.autocrlf=true <url-or-path-to-the-brigada-repository> C:\work\brigada
    cd C:\work\brigada
    git ls-files --eol bin/brg bin/brg.cmd template/config
    ```
-   Ожидается: у `bin/brg` и `template/config` — `w/lf`, у `bin/brg.cmd` — `w/crlf`.
-3. Проект: `mkdir C:\work\toy; cd C:\work\toy; git init`.
+   Expected: `bin/brg` and `template/config` have `w/lf`, `bin/brg.cmd` has `w/crlf`.
+3. The project: `mkdir C:\work\toy; cd C:\work\toy; git init`.
 
-## 1. init и doctor (3 мин)
+## 1. init and doctor (3 min)
 
-В **Git Bash**:
+In **Git Bash**:
 ```
 cd /c/work/toy
 bash /c/work/brigada/bin/brg init .
-bash .brigada/bin/brg doctor; echo "код $?"
+bash .brigada/bin/brg doctor; echo "code $?"
 ```
-Ожидается: init — «создан AGENTS.md (только у тебя: исключён из git …)», в `.git/info/exclude` строки `.brigada/` и `/AGENTS.md`; doctor — `── итого: … ✗ 0`, «платформа MSYS (Git Bash)», «mkdir атомарен», «mv поверх файла, открытого другим процессом на чтение, — успешно», «AGENTS.md: блок brigada есть», `wait_timeout (msys): … codex 100 …`, код 0. Все строки ⚠ и ✗ — в шаблон.
+Expected: init — «создан AGENTS.md (только у тебя: исключён из git …)», `.git/info/exclude` has the lines `.brigada/` and `/AGENTS.md`; doctor — `── итого: … ✗ 0`, «платформа MSYS (Git Bash)», «mkdir атомарен», «mv поверх файла, открытого другим процессом на чтение, — успешно», «AGENTS.md: блок brigada есть», `wait_timeout (msys): … codex 100 …`, code 0. Every ⚠ and ✗ line goes into the template.
 
-В **PowerShell** (Windows PowerShell 5.1; если есть — ещё и PowerShell 7):
+In **PowerShell** (Windows PowerShell 5.1; if you have it — PowerShell 7 as well):
 ```
 cd C:\work\toy
 chcp
-.\.brigada\bin\brg.cmd doctor; "код $LASTEXITCODE"
+.\.brigada\bin\brg.cmd doctor; "code $LASTEXITCODE"
 chcp
 ```
-Ожидается: то же, плюс «запуск через brg.cmd»; кириллица и значки ✓ читаются; код 0; `chcp` после — то же значение, что до. Если текст — «кракозябры» или `?`: повтори с `$env:BRG_NO_CHCP=1` и запиши оба варианта.
+Expected: the same, plus «запуск через brg.cmd»; Cyrillic and the ✓ marks are readable; code 0; `chcp` afterwards shows the same value as before. If the text is mojibake or `?`: repeat with `$env:BRG_NO_CHCP=1` and record both variants.
 
-`brg.cmd` на время вызова ставит `chcp 65001`; при прерывании посреди вызова (Ctrl-C) кодовая страница консоли может остаться 65001 — верни прежнюю вручную: `chcp <прежняя>` (значение — из первого `chcp` выше).
+`brg.cmd` sets `chcp 65001` for the duration of the call; if the call is interrupted midway (Ctrl-C), the console code page may stay at 65001 — restore it by hand: `chcp <previous>` (the value from the first `chcp` above).
 
-В **cmd.exe**:
+In **cmd.exe**:
 ```
 cd /d C:\work\toy
 .brigada\bin\brg.cmd doctor
-echo код %ERRORLEVEL%
+echo code %ERRORLEVEL%
 ```
 
-## 2. brg.cmd из PowerShell (6 мин)
+## 2. brg.cmd from PowerShell (6 min)
 
 ```
 cd C:\work\toy
 .\.brigada\bin\brg.cmd join --harness test --model human
 ```
-Ожидается: полное имя `test-1.<ключ>` (например, `test-1.k7f3q9`); строка «Ты вызываешь brg из PowerShell/cmd …»; последняя строка `── NEXT: .\.brigada\bin\brg.cmd wait --as test-1.<ключ>`. Сохрани полное имя — ниже оно в `$me`:
+Expected: the full name `test-1.<key>` (for example, `test-1.k7f3q9`); the line «Ты вызываешь brg из PowerShell/cmd …»; the last line `── NEXT: .\.brigada\bin\brg.cmd wait --as test-1.<key>`. Save the full name — below it is in `$me`:
 ```
-$me = "test-1.<ключ из вывода join>"
+$me = "test-1.<key from the join output>"
 ```
 
-Кириллица в аргументах и в файлах:
+Cyrillic in arguments and in files:
 ```
 Set-Content -Encoding utf8 brief.txt "Постановка: проверить кириллицу, ёЁ, «кавычки»"
 .\.brigada\bin\brg.cmd task new --as $me --title "Проверка кириллицы" --file brief.txt
@@ -65,69 +65,69 @@ Set-Content -Encoding utf8 msg.txt "Привет, бригада! ёЁ — «к�
 .\.brigada\bin\brg.cmd tail -n 5
 .\.brigada\bin\brg.cmd task show
 ```
-Ожидается: в `tail` и `task show` текст читается без искажений (заголовок задачи, постановка, сообщение, подзадача). То же в Git Bash: `bash .brigada/bin/brg tail -n 5`.
+Expected: in `tail` and `task show` the text reads without distortion (the task title, the brief, the message, the item). The same in Git Bash: `bash .brigada/bin/brg tail -n 5`.
 
-Ошибки и коды выхода:
+Errors and exit codes:
 ```
 "x" | Out-File u16.txt
-.\.brigada\bin\brg.cmd send --as $me --file u16.txt; "код $LASTEXITCODE"
-.\.brigada\bin\brg.cmd send --as nobody --file msg.txt; "код $LASTEXITCODE"
-.\.brigada\bin\brg.cmd send --as test-1 --file msg.txt; "код $LASTEXITCODE"
+.\.brigada\bin\brg.cmd send --as $me --file u16.txt; "code $LASTEXITCODE"
+.\.brigada\bin\brg.cmd send --as nobody --file msg.txt; "code $LASTEXITCODE"
+.\.brigada\bin\brg.cmd send --as test-1 --file msg.txt; "code $LASTEXITCODE"
 .\.brigada\bin\brg.cmd wait --as $me --timeout 5
 ```
-Ожидается: «текст в кодировке UTF-16 — нужен UTF-8», код 1; «неизвестный агент: nobody», код 1; без ключа — «имя test-1 занято другой сессией», код 1; wait через 5 с — строка-сводка задачи `T001: todo 1`, затем `── нет новых (5 с) · NEXT: .\.brigada\bin\brg.cmd wait --as test-1.<ключ> --timeout 5`.
+Expected: «текст в кодировке UTF-16 — нужен UTF-8», code 1; «неизвестный агент: nobody», code 1; without the key — «имя test-1 занято другой сессией», code 1; wait after 5 s — the task summary line `T001: todo 1`, then `── нет новых (5 с) · ход не завершай · NEXT: .\.brigada\bin\brg.cmd wait --as test-1.<key> --timeout 5`.
 
-Пометка «работает» (кавычки в `NEXT:` идут через `brg.cmd`):
+The busy mark (the quotes in `NEXT:` go through `brg.cmd`):
 ```
 .\.brigada\bin\brg.cmd wait --as $me --busy "финальная валидация" --timeout 3
 .\.brigada\bin\brg.cmd who
 .\.brigada\bin\brg.cmd wait --as $me --timeout 3
 ```
-Ожидается: в выводе первого `wait` — «Ты отмечен «работает: финальная валидация»» и `NEXT: … wait --as test-1.<ключ> --busy "финальная валидация" --timeout 3` (кавычки на месте, команду из `NEXT:` можно выполнить как есть); `who` на время пометки — «работает: финальная валидация», после простого `wait` — «ждёт» (когда идёт wait) или «работает» (между вызовами).
+Expected: the output of the first `wait` has `Ты отмечен «работает: финальная валидация»` and `NEXT: … wait --as test-1.<key> --busy "финальная валидация" --timeout 3` (the quotes are in place, the command from `NEXT:` can be run as is); `who` while the mark is on — «работает: финальная валидация», after a plain `wait` — «ждёт» (while a wait runs) or «работает» (between calls).
 
-Пауза (ход агента не завершается, `wait` просыпается от слов человека и снятия паузы):
+Pause (the agent's turn does not end, `wait` wakes on the human's words and on the lifted pause):
 ```
 .\.brigada\bin\brg.cmd pause
 .\.brigada\bin\brg.cmd wait --as $me --timeout 3
 .\.brigada\bin\brg.cmd resume
 ```
-Ожидается: `pause` — «── ПАУЗА для всех …»; `wait` через 3 с — «── пауза · нет новых от человека (3 с) · ход не завершай · NEXT: … wait --as test-1.<ключ> --timeout 3»; `resume` — «── пауза снята.».
+Expected: `pause` — «── ПАУЗА для всех …»; `wait` after 3 s — «── пауза · нет новых от человека (3 с) · ход не завершай · NEXT: … wait --as test-1.<key> --timeout 3»; `resume` — «── пауза снята.».
 
-Не из корня проекта:
+Not from the project root:
 ```
 cd C:\work
 .\toy\.brigada\bin\brg.cmd status --as $me
 cd C:\work\toy
 ```
-Ожидается: первая строка «brg вызван не из корня проекта … cd "C:\work\toy" …», NEXT — в форме `.\.brigada\bin\brg.cmd …`.
+Expected: the first line «brg вызван не из корня проекта … cd "C:\work\toy" …», NEXT in the form `.\.brigada\bin\brg.cmd …`.
 
-Прогоны:
+Runs:
 ```
-.\.brigada\bin\brg.cmd run --as $me --sync -- "echo привет; exit 3"; "код $LASTEXITCODE"
+.\.brigada\bin\brg.cmd run --as $me --sync -- "echo привет; exit 3"; "code $LASTEXITCODE"
 .\.brigada\bin\brg.cmd run --as $me --timeout 5s -- "sleep 60"
 .\.brigada\bin\brg.cmd run --as $me --timeout 5s -- "ping -n 60 127.0.0.1"
 ```
-Подожди 15 с, затем:
+Wait 15 s, then:
 ```
 .\.brigada\bin\brg.cmd run list
 Get-Process sleep, PING -ErrorAction SilentlyContinue
 ```
-Ожидается: первый — `failed (код 3)`, в хвосте лога «привет», код 3; второй и третий — `timeout`; процессов `sleep` и `PING` не осталось (если остались — запиши: известный риск с Windows-процессами внутри группы).
+Expected: the first — `failed (код 3)`, «привет» in the log tail, code 3; the second and the third — `timeout`; no `sleep` or `PING` processes are left (if some are left, record it: a known risk with Windows processes inside a process group).
 
-Доска (только просмотр):
+The board (view only):
 ```
 .\.brigada\bin\brg.cmd board --once
 ```
-Ожидается: первая строка — адрес `file:///C:/work/toy/.brigada/board.html`, затем «снимок записан». Открой адрес (или файл `C:\work\toy\.brigada\board.html`) в Chrome и в Edge: видны задача T001, агент test-1, подзадача, прогоны с хвостом лога по клику, переписка; кириллица без искажений; нет баннера «Снимка ещё нет». Затем `.\.brigada\bin\brg.cmd board --static` (без `--once` и без сервера; с сервером — ниже) и в Git Bash `bash .brigada/bin/brg say "проверка доски"`: сообщение появится на доске за ~2 с; Ctrl+C — выход (на вопрос cmd о завершении пакетного файла — Y), в `.brigada\run\board` не остаётся `.tmp`.
+Expected: the first line is the address `file:///C:/work/toy/.brigada/board.html`, then «снимок записан». Open the address (or the file `C:\work\toy\.brigada\board.html`) in Chrome and in Edge: you see the task T001, the agent test-1, the item, the runs with the log tail on click, the conversation; Cyrillic without distortion; no «Снимка ещё нет» banner. Then `.\.brigada\bin\brg.cmd board --static` (without `--once` and without the server; with the server — below) and in Git Bash `bash .brigada/bin/brg say "проверка доски"`: the message appears on the board within ~2 s; Ctrl+C — exit (when cmd asks whether to terminate the batch job — Y), no `.tmp` is left in `.brigada\run\board`.
 
-Доска с сервером — управление из браузера (нужен Python 3.8+: `py -3 --version` или `python --version`; Python нет — пункт пропусти: `board` напишет «Python 3.8+ не найден» и покажет `file://`, `doctor` — «Python 3.8+ не найден»). Агент `test-1` на связи, задачи нет (`task cancel --as human`):
+The board with the server — control from the browser (needs Python 3.8+: `py -3 --version` or `python --version`; no Python — skip this step: `board` prints «Python 3.8+ не найден» and shows `file://`, `doctor` — «Python 3.8+ не найден»). The agent `test-1` is on the line, there is no task (`task cancel --as human`):
 ```
 .\.brigada\bin\brg.cmd doctor
 .\.brigada\bin\brg.cmd board
 ```
-Ожидается: `doctor` — «✓ Python 3.x.y (…\python.exe) — brg board поднимет сервер с управлением; bin/brg-serve.py на месте» (не из `WindowsApps` — заглушку Store поиск пропускает); `board` — первой строкой `http://127.0.0.1:ПОРТ/?t=ТОКЕН`, затем «── доска обновляется … (сервер остановится)». Открой адрес в Chrome и в Edge: в адресной строке остаётся `http://127.0.0.1:ПОРТ/` (токен ушёл в cookie), в шапке кнопки «Новая задача», «Пауза», «Стоп всех», под перепиской — поле сообщения. Проверь с кириллицей: «Новая задача» — заголовок `Задача с доски: ёЁ`, постановка с «кавычками» и `100%`; в поле сообщения — `"кавычки" и C:\temp\x`; в `.\.brigada\bin\brg.cmd tail -n 5` и `task show` текст точно такой же; терминал `board` показывает строки «── с доски: …» читаемо. Заголовок с `%` или `&` сервер отклоняет понятным текстом; заголовок `README*` (и `fix?`) должен дойти до задачи как есть (`MSYS=noglob`: Git Bash не должен заменить маску именами файлов корня). «Пауза» → в `.\.brigada\bin\brg.cmd who` строка «ПАУЗА», «Продолжить» снимает. Дважды запусти `board` в двух окнах: второй получит другой порт. Затем Ctrl+C в окне `board` (на вопрос cmd о завершении пакетного файла — Y) и отдельно — закрытие окна терминала: в Диспетчере задач нет лишнего `python.exe` (при закрытии окна он уйдёт сам через ≤ 15 с). `.\.brigada\bin\brg.cmd board --static` — адрес `file:///…`, кнопок нет.
+Expected: `doctor` — «✓ Python 3.x.y (…\python.exe) — brg board поднимет сервер с управлением; bin/brg-serve.py на месте» (not from `WindowsApps` — the search skips the Store stub); `board` — the first line `http://127.0.0.1:PORT/?t=TOKEN`, then «── доска обновляется … (сервер остановится)». Open the address in Chrome and in Edge: the address bar keeps `http://127.0.0.1:PORT/` (the token moved into a cookie), the header has the buttons «Новая задача», «Пауза», «Стоп всех», and under the conversation there is a message field. Check with Cyrillic: «Новая задача» — the title `Задача с доски: ёЁ`, a brief with «кавычки» and `100%`; in the message field — `"кавычки" и C:\temp\x`; in `.\.brigada\bin\brg.cmd tail -n 5` and `task show` the text is exactly the same; the `board` terminal shows the lines «── с доски: …» readably. The server rejects a title with `%` or `&` with a clear text; a title `README*` (and `fix?`) must reach the task as is (`MSYS=noglob`: Git Bash must not replace the mask with the names of files in the root). «Пауза» → `.\.brigada\bin\brg.cmd who` has the line «ПАУЗА», «Продолжить» lifts it. Start `board` twice in two windows: the second gets another port. Then Ctrl+C in the `board` window (when cmd asks whether to terminate the batch job — Y) and separately — closing the terminal window: Task Manager shows no extra `python.exe` (when the window is closed, it goes away by itself within ≤ 15 s). `.\.brigada\bin\brg.cmd board --static` — a `file:///…` address, no buttons.
 
-Задача от человека и lead (кириллица в заголовке; агент `test-1` на связи):
+A task from the human and the lead (Cyrillic in the title; the agent `test-1` is on the line):
 ```
 .\.brigada\bin\brg.cmd task cancel --as human
 Set-Content -Encoding utf8 human.txt "Задача от человека: ёЁ — «кавычки»"
@@ -135,74 +135,74 @@ Set-Content -Encoding utf8 human.txt "Задача от человека: ёЁ �
 .\.brigada\bin\brg.cmd lead give test-1 --as human
 .\.brigada\bin\brg.cmd task show
 ```
-Ожидается: `task new --as human` — «── создана задача T002 «Задача с доски» от человека · lead: test-1.» (без `NEXT:`); `lead give` — «test-1 уже lead задачи T002»; в `task show` заголовок и постановка читаются без искажений, `lead test-1`.
+Expected: `task new --as human` — `── создана задача T002 «Задача с доски» от человека · lead: test-1.` (no `NEXT:`); `lead give` — «test-1 уже lead задачи T002»; in `task show` the title and the brief read without distortion, `lead test-1`.
 
-Убрать тестовую задачу и агента (иначе агент в разделе 3 увидит чужую активную задачу):
+Remove the test task and the agent (otherwise the agent in section 3 sees someone else's active task):
 ```
 .\.brigada\bin\brg.cmd task cancel --as human
 .\.brigada\bin\brg.cmd leave --as $me
 ```
 
-## 3. Агент держит цикл 30 мин
+## 3. An agent keeps its loop for 30 min
 
-Харнесс: **Codex CLI на Windows** (PowerShell) — главный кандидат; нет Codex — Claude Code (на Windows он выполняет команды в Git Bash) или OpenCode. Если есть время — оба.
+Harness: **Codex CLI on Windows** (PowerShell) — the main candidate; no Codex — Claude Code (on Windows it runs commands in Git Bash) or OpenCode. If there is time — both.
 
-1. В Git Bash смотри переписку: `cd /c/work/toy && bash .brigada/bin/brg tail -f`.
-2. Новая сессия агента в `C:\work\toy`, фраза: **«подключись к бригаде»** (блок в `AGENTS.md` от init). Не подключился — запиши в шаблон и скажи полную: **«подключись к .brigada, прочитай инструкцию в .brigada/README.md»**. На запрос разрешения — «always allow» для brg.
-3. Проверь в `tail`: `join` с верным `--harness`; агент в цикле `wait` (Codex на Windows — `wait` по 100 с).
-4. За 30 мин 3 раза (в начале, середине, конце) напиши из Git Bash:
+1. Watch the conversation in Git Bash: `cd /c/work/toy && bash .brigada/bin/brg tail -f`.
+2. A new agent session in `C:\work\toy`, the phrase: **«подключись к бригаде»** (the block in `AGENTS.md` from init). It did not join — record it in the template and say the full one: **«подключись к .brigada, прочитай инструкцию в .brigada/README.md»**. When asked for permission — "always allow" for brg.
+3. Check in `tail`: `join` with the right `--harness`; the agent is in the `wait` loop (Codex on Windows — `wait` of 100 s).
+4. Three times in 30 min (at the start, in the middle, at the end) write from Git Bash:
    ```
    bash .brigada/bin/brg say "ответь всем одним словом: pong-1"
    ```
-   Ожидается: ответ `pong-1` в `tail` в пределах одного `wait`; в PowerShell агент отправляет через `--file` без искажения кириллицы.
-5. Один раз напиши агенту прямо в чат харнесса: «какое у тебя имя в бригаде? ответь и продолжай цикл».
-6. В конце: `bash .brigada/bin/brg stop` → агент отвечает «стоп» и завершает ход. Потом `bash .brigada/bin/brg resume`.
-7. Сводка по циклу (подставь имя агента):
+   Expected: the answer `pong-1` in `tail` within one `wait`; in PowerShell the agent sends through `--file` without distorting Cyrillic.
+5. Once write to the agent directly in the harness chat: «какое у тебя имя в бригаде? ответь и продолжай цикл».
+6. At the end: `bash .brigada/bin/brg stop` → the agent answers «стоп» and ends its turn. Then `bash .brigada/bin/brg resume`.
+7. A summary of the loop (put in the agent's name):
    ```
    awk -v a=codex-1 '$2 == a && $3 == "wait.start" { if (e) { g = $1 - e; if (g > m) m = g; if (g > 60) k++ } }
      $2 == a && $3 == "wait" { e = $1; n++; split($5, r, "="); c[r[2]]++ }
-     END { printf "wait: %d, макс. пауза %d с, пауз > 60 с: %d\n", n, m, k; for (x in c) printf "  %s: %d\n", x, c[x] }' .brigada/run/metrics.log
+     END { printf "wait: %d, max gap %d s, gaps > 60 s: %d\n", n, m, k; for (x in c) printf "  %s: %d\n", x, c[x] }' .brigada/run/metrics.log
    ```
-   Ожидается: нет пауз > 60 с (кроме долгих ответов модели), исходы — `timeout`/`msg`, без `superseded`-лавин; цикл не выпал до STOP.
+   Expected: no gaps > 60 s (except long model answers), outcomes — `timeout`/`msg`, no avalanches of `superseded`; the loop did not drop out before STOP.
 
-## 4. Что собрать
+## 4. What to collect
 
-- Вывод `doctor` из Git Bash, PowerShell и cmd.
-- `C:\work\toy\.brigada\run\metrics.log` и `runner.log`; вывод `bash .brigada/bin/brg tail -n 100`.
-- Харнесс и версия, модель, токены за 30 мин (из UI/`/status`) — посчитай «токенов на wait».
-- Codex: были ли «парковки» команды (`write_stdin` в транскрипте сессии) и сколько.
+- The `doctor` output from Git Bash, PowerShell and cmd.
+- `C:\work\toy\.brigada\run\metrics.log` and `runner.log`; the output of `bash .brigada/bin/brg tail -n 100`.
+- The harness and its version, the model, tokens for 30 min (from the UI/`/status`) — compute "tokens per wait".
+- Codex: whether the command was "parked" (`write_stdin` in the session transcript) and how many times.
 
-Заполненный шаблон пришли текстом (или открой issue в репозитории brigada).
+Send the filled-in template as text (or open an issue in the brigada repository).
 
-## 5. Шаблон результатов
+## 5. Results template
 
 ```
-# brigada на Windows — результаты
-Дата: · Windows (версия/сборка): · Git for Windows (версия): · PowerShell (5.1/7.x):
-Харнесс/модель для цикла:
+# brigada on Windows — results
+Date: · Windows (version/build): · Git for Windows (version): · PowerShell (5.1/7.x):
+Harness/model for the loop:
 
-| # | Проверка | Ожидается | Получено | Примечание |
+| # | Check | Expected | Got | Note |
 |---|---|---|---|---|
-| 0.2 | .gitattributes при autocrlf=true | brg w/lf, brg.cmd w/crlf | | |
-| 1.1 | doctor в Git Bash | ✗ 0, код 0 | | ⚠: |
-| 1.2 | doctor через brg.cmd (PowerShell) | ✗ 0, код 0, кириллица читается | | chcp до/после: |
-| 1.3 | doctor через brg.cmd (cmd) | ✗ 0, код 0 | | |
-| 2.1 | join из PowerShell | NEXT с .\.brigada\bin\brg.cmd | | |
-| 2.2 | task new / send --file / item add --desc с кириллицей | без искажений в tail и task show | | |
-| 2.3 | UTF-16 файл | ошибка «UTF-16», код 1 | | |
-| 2.4 | коды выхода brg.cmd | 1 на ошибке, 3 у run --sync exit 3 | | |
+| 0.2 | .gitattributes with autocrlf=true | brg w/lf, brg.cmd w/crlf | | |
+| 1.1 | doctor in Git Bash | ✗ 0, code 0 | | ⚠: |
+| 1.2 | doctor through brg.cmd (PowerShell) | ✗ 0, code 0, Cyrillic readable | | chcp before/after: |
+| 1.3 | doctor through brg.cmd (cmd) | ✗ 0, code 0 | | |
+| 2.1 | join from PowerShell | NEXT with .\.brigada\bin\brg.cmd | | |
+| 2.2 | task new / send --file / item add --desc with Cyrillic | no distortion in tail and task show | | |
+| 2.3 | UTF-16 file | error «UTF-16», code 1 | | |
+| 2.4 | brg.cmd exit codes | 1 on an error, 3 for run --sync exit 3 | | |
 | 2.5 | wait --timeout 5 | «нет новых (5 с)» + NEXT | | |
-| 2.5a | brg.cmd не из корня | строка «не из корня» с cd, NEXT относительный | | |
-| 2.5b | pause / wait на паузе / resume | «ПАУЗА», «── пауза · нет новых от человека (3 с)», «пауза снята» | | |
-| 2.5c | task new --as human, lead give --as human | без NEXT, кириллица без искажений | | |
-| 2.6 | run timeout: sleep / ping | timeout, процессов не осталось | | |
-| 2.7 | board: адрес file:///C:/…, страница в Chrome и Edge | все разделы, кириллица, обновление за ~2 с; отправь `say` с текстом `"кавычки" и C:\temp\x` — на доске он точно такой же (Git Bash — это gawk: проверка экранирования) | | |
-| 2.8 | board с сервером (Python): адрес http://127.0.0.1…, кнопки, кириллица, второй board — другой порт, Ctrl+C и закрытие окна | cookie вместо `?t=`, текст из браузера точно такой же в tail, `python.exe` не остаётся | | python.exe после Ctrl+C / закрытия окна: |
-| 3.1 | агент подключился сам по фразе | join с верным харнессом | | |
-| 3.2 | цикл 30 мин | без выпадений, pong ×3 | | wait: , макс. пауза: |
-| 3.3 | ответ на сообщение в чате | ответил и продолжил цикл | | |
-| 3.4 | STOP | «стоп», ход завершён | | |
-| 3.5 | токены | — | | на wait: |
+| 2.5a | brg.cmd not from the root | the «не из корня» line with cd, relative NEXT | | |
+| 2.5b | pause / wait under a pause / resume | «ПАУЗА», «── пауза · нет новых от человека (3 с)», «пауза снята» | | |
+| 2.5c | task new --as human, lead give --as human | no NEXT, Cyrillic without distortion | | |
+| 2.6 | run timeout: sleep / ping | timeout, no processes left | | |
+| 2.7 | board: address file:///C:/…, the page in Chrome and Edge | all sections, Cyrillic, refresh within ~2 s; send `say` with the text `"кавычки" и C:\temp\x` — on the board it is exactly the same (Git Bash means gawk: this checks escaping) | | |
+| 2.8 | board with the server (Python): address http://127.0.0.1…, buttons, Cyrillic, a second board — another port, Ctrl+C and closing the window | a cookie instead of `?t=`, the text from the browser is exactly the same in tail, no `python.exe` left | | python.exe after Ctrl+C / closing the window: |
+| 3.1 | the agent joined by itself on the phrase | join with the right harness | | |
+| 3.2 | a 30 min loop | no dropouts, pong ×3 | | wait: , max gap: |
+| 3.3 | an answer to a message in the chat | answered and went on with the loop | | |
+| 3.4 | STOP | «стоп», the turn ended | | |
+| 3.5 | tokens | — | | per wait: |
 
-Что сломалось или удивило:
+What broke or surprised you:
 ```
