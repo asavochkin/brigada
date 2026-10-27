@@ -1088,7 +1088,9 @@ busy_drop_reviewers() {
 }
 # busy_item_ok CAPTION — 0 unless CAPTION names an item ("I002", "проверка I002") that is
 # not the caller's: not claimed by AGENT in the active task and AGENT is not in its
-# Reviewing: — a stale NEXT executed after the task changed must not mark the new one
+# Reviewing: — a stale NEXT executed after the task changed must not mark the new one.
+# AGENT's own valid mark for that item is kept too: a verdict by another reviewer closed
+# the round, but AGENT's subagent may still be checking (DESIGN §7.1.1)
 busy_item_ok() {
   local _bi_id
   case $1 in
@@ -1101,6 +1103,7 @@ busy_item_ok() {
   item_read "$ACT_DIR/items/I$(printf '%03d' "$((10#$_bi_id))")" || return 1
   [ "$IT_STATUS" = claimed ] && [ "$IT_ASSIGNEE" = "$AGENT" ] && return 0
   case ",$IT_REVIEWING," in *",$AGENT,"*) return 0 ;; esac
+  busy_read "$AGENT" && [ "$BZ_ITEM" = "$IT_ID" ] && return 0
   return 1
 }
 # busy_empty_note — after an item command by AGENT: a mark with no item stays however
@@ -2107,7 +2110,7 @@ usage_print() {
       echo "Подзадачи активной задачи. Как работать — решает бригада; обязательно одно: стадия подзадачи в brg (её видит человек на доске) — такая, как на деле. Переводят её этими командами."
       echo "add — добавить (todo; описание — --desc \"…\", stdin (heredoc) или --file; --paths — предлагаемые пути; --no-review — проверка не нужна, решили заранее); claim — взять в работу с резервированием путей (--paths относительно корня проекта, через запятую; none — без правок файлов; без --paths — предлагаемые пути подзадачи; пересечение с чужими резервированиями — отказ, со своими (другие твои подзадачи) — предупреждение); повторный claim своей — сменить пути; claim исполнителем сданной (done) — вернуть её в работу (правки, переделка; прежние пути)."
       echo "done — сдать (только исполнитель; снимает резервирования; --note — итог одной строкой до 500 байт, --result — файл с подробностями): «на проверке», «готово» — после ревью ok; --no-review — сдать без проверки (сразу «готово · без проверки»). release — вернуть в todo (исполнитель; lead — если исполнитель asleep/gone); reassign — передать другому (lead, если исполнитель asleep/gone; так же — правки сданной). cancel — подзадача не нужна (todo — любой; в работе или сданная — исполнитель или lead; --comment или --file — почему, необязательно): «отменено», назад пути нет."
-      echo "review — проверка: --start — «взялся проверять» (не исполнитель; видно в сводке wait и item list; текста нет, stdin не читается); --verdict ok|changes — вердикт (не исполнитель; лучше агент другой модели), комментарий — --comment \"…\", stdin (heredoc) или --file; --verdict skip — проверка не нужна (любой, и исполнитель; комментарий необязателен — --comment или --file). Вердикт по сданной заканчивает круг проверки (Reviewing очищается). Результат получают исполнитель и lead. После changes исполнитель возвращает сданную подзадачу в работу тем же claim, правит и снова done."
+      echo "review — проверка: --start — «взялся проверять» (не исполнитель; видно в сводке wait и item list; текста нет, stdin не читается); --verdict ok|changes — вердикт (не исполнитель; лучше агент другой модели), комментарий — --comment \"…\", stdin (heredoc) или --file; --verdict skip — проверка не нужна (любой, и исполнитель; комментарий необязателен — --comment или --file). Вердикт по сданной заканчивает круг проверки (Reviewing очищается): остальные проверяющие получают сообщение (продолжаешь — повтори --start), их пометка «работает» остаётся. Результат получают исполнитель и lead. После changes исполнитель возвращает сданную подзадачу в работу тем же claim, правит и снова done."
       echo "list/show — посмотреть: стадия (todo · в работе · на проверке · правки · готово · отменено), кто проверяет; list --status — по статусу (todo, claimed, done, cancelled)."
       echo "Длинные --title, --note, --desc, --comment не отвергаются, а обрезаются с пометкой «…(обрезано)» и предупреждением."
       ;;
@@ -6372,7 +6375,7 @@ item_to_v() {
 }
 
 item_review() {
-  local v= mk ak x t others= to body= warn= amodel= shown again= st was
+  local v= mk ak x t others= to body= warn= amodel= shown again= st was rv=
   item_opts "id verdict file comment start" "$@"
   if [ -n "$IO_START" ]; then
     [ -z "$IO_VERDICT$IO_TEXT$IO_FILE" ] ||
@@ -6463,6 +6466,7 @@ item_review() {
   # again); on an item in work it takes only its author out
   if [ "$IT_STATUS" = done ]; then
     x=
+    list_drop_v rv "$IT_REVIEWING" "$AGENT" # the other reviewers: told below, marks kept
   else
     list_drop_v x "$IT_REVIEWING" "$AGENT"
   fi
@@ -6502,6 +6506,12 @@ item_review() {
   else
     item_say all no # the assignee and the lead wrote it themselves: for the record
   fi
+  if [ -n "$rv" ]; then
+    # DESIGN §7.1.1: the others who reviewed it are out of Reviewing — tell them and wake
+    # them; their busy marks stay (a subagent may still be checking)
+    BODY="${rv//,/, }: круг проверки $IT_ID «$IT_TITLE» закрыт вердиктом $v от $AGENT — вас больше нет среди проверяющих. Продолжаете проверку — повторите $BRG item review $IT_ID --as <имя> --start; не нужна — дайте подагенту закончить, затем wait без --busy.${NL}Стадия: $st."
+    item_say "$rv" "$rv"
+  fi
   lock_release task
   touch_seen
   metric item.review task="$ACT_ID" id="$IT_ID" verdict="$v" n="$RW_N" same_model="${warn:+1}" stage="$IS_STAGE"
@@ -6510,6 +6520,7 @@ item_review() {
   else
     echo "── ревью #$RW_N по $IT_ID записано ($v); сообщение отправлено: ${to//,/, }."
   fi
+  [ -z "$rv" ] || echo "Круг проверки закрыт: ${rv//,/, } больше не среди проверяющих — им отправлено «повторите review --start, если продолжаете»."
   case $IS_STAGE in
     fix) echo "Стадия $IT_ID: $st — исполнитель вернёт её в работу (item claim) и пересдаст." ;;
     *) echo "Стадия $IT_ID: $st." ;;
