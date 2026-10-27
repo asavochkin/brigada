@@ -382,23 +382,32 @@ url_tok() { local u; u=$(head -n 1 "$1"); case $u in http://*\?t=*) printf '%s' 
 has_url() { [ -n "$(url_tok "$1")" ]; }
 
 # Two first starts at once agree on the token: os.link publishes a complete file, the
-# loser reads it. Each board has its own ready file; stopping one leaves the other's.
+# loser reads it (the test hook race makes both servers pass "no token" first). Each board has its own ready file; stopping one leaves the other's.
 test_serve_token_two_first_starts() {
-  local o1 o2 b1 b2 s1 s2 t1 t2 i
+  local o1 o2 b1 b2 s1 s2 t1 t2 i o
   serve_need || return 0
   new_proj
   for i in 1 2 3; do
     rm -f "$B/run/board/token"
     o1=$(mk_tmpdir)/out o2=$(mk_tmpdir)/out
-    bg_board "$o1"
+    # race: each server pauses after "no token", so both surely create one
+    bg_board "$o1" BRG_SERVE_TEST_TOKEN=race
     b1=$BP
-    bg_board "$o2"
+    bg_board "$o2" BRG_SERVE_TEST_TOKEN=race
     b2=$BP
     wait_for 10 has_url "$o1" || fail "no address of board 1: $(cat "$o1")"
     wait_for 10 has_url "$o2" || fail "no address of board 2: $(cat "$o2")"
     t1=$(url_tok "$o1") t2=$(url_tok "$o2")
     assert_eq "$t1" "$t2" "the tokens of two first starts (round $i)"
     assert_eq "$t1" "$(cat "$B/run/board/token")" "the token file (round $i)"
+    # brg prints the token from the file: each server must accept it (its own token in memory)
+    for o in "$o1" "$o2"; do
+      PORT=$(head -n 1 "$o")
+      PORT=${PORT#http://127.0.0.1:}
+      PORT=${PORT%%/*}
+      http GET "/?t=$t1"
+      assert_eq 303 "$HTTP_ST" "the printed token is the server's (round $i, port $PORT)"
+    done
     s1=$(sed -n 2p "$B/run/board/ready.$b1") s2=$(sed -n 2p "$B/run/board/ready.$b2")
     track_pid "$s1"
     track_pid "$s2"

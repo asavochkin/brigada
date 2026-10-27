@@ -95,12 +95,14 @@ def load_token(bd):
     # (atomic, never overwrites); the loser reads the winner's complete file. Without hard
     # links (SMB, exFAT): O_EXCL, and the loser waits up to ~2 s for the winner to write it.
     path = os.path.join(bd, 'token')
+    hook = (os.environ.get('BRG_SERVE_TEST_TOKEN') or '').split(',')  # test hook: nolink, stall, race
     t = read_token(path)
     if t:
         return t
+    if 'race' in hook:
+        time.sleep(0.5)  # test hook: two first starts both surely see "no token"
     t = secrets.token_hex(16)
     data = (t + '\n').encode('ascii')
-    hook = os.environ.get('BRG_SERVE_TEST_TOKEN') or ''  # test hook: nolink[,stall]
     tmp = os.path.join(bd, TMP_PREFIX + 'token.' + str(os.getpid()))
     linked = False
     if 'nolink' not in hook:
