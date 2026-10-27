@@ -159,7 +159,7 @@ test_git_exclude_migrates_old_lines_and_worktree() {
   out=$(bash "$BRG_SRC" init --no-agents-md "$p")
   assert_contains "$out" "заменены на .brigada/ — весь каталог"
   assert_contains "$out" "git rm -r --cached .brigada"
-  assert_eq "$(printf '*.log\nbuild/\r\n# brigada: служебный каталог агентов (brg init) не коммитится\n.brigada/\n')" "$(cat "$p/.git/info/exclude")"
+  assert_eq "$(printf '*.log\nbuild/\r\n# brigada: the service directory of the agents (brg init) is not committed\n.brigada/\n')" "$(cat "$p/.git/info/exclude")"
   out=$(bash "$BRG_SRC" init "$p" --no-agents-md)
   assert_contains "$out" ".git/info/exclude уже настроен"
   # old lines next to .brigada/ (added by hand): only the old lines go
@@ -178,7 +178,7 @@ test_git_exclude_migrates_old_lines_and_worktree() {
   assert_file_exists "$w/AGENTS.md"
   assert_file_not_exists "$p/AGENTS.md"
   assert_eq ".brigada/
-# brigada: AGENTS.md создан brg init — чтобы коммитить его, удали строку ниже
+# brigada: AGENTS.md was created by brg init — to commit it, delete the line below
 /AGENTS.md" "$(cat "$p/.git/info/exclude")"
   assert_file_not_exists "$p/.git/worktrees/wt/info/exclude"
 }
@@ -195,8 +195,10 @@ test_agents_md_block_text() {
   local b
   b=$(am_block)
   assert_contains "$b" "<!-- brigada:begin"
-  assert_contains "$b" "«подключиться к бригаде»"
-  assert_contains "$b" ".brigada/README.md"
+  assert_contains "$b" "join the brigade («подключиться к бригаде», brigada, .brigada)"
+  assert_contains "$b" "read \`.brigada/README.md\` and follow it"
+  assert_contains "$b" "the section «Тебя запустил brg» in \`.brigada/README.md\`"
+  assert_contains "$(cat "$ROOT/template/README.md")" "Тебя запустил brg" "the section named by the block"
   assert_contains "$b" "--no-agents-md"
   assert_eq 4 "$(printf '%s\n' "$b" | wc -l | tr -d ' ')" "block lines"
   assert_eq "<!-- brigada:end -->" "$(printf '%s\n' "$b" | tail -n 1)"
@@ -281,6 +283,91 @@ test_agents_md_old_block_replaced() {
   assert_contains "$out" "AGENTS.md: есть «<!-- brigada:begin», но нет «<!-- brigada:end» — не тронут"
   assert_contains "$out" "Дальше скажи агенту: «подключись к .brigada, прочитай инструкцию в .brigada/README.md»."
   same_bytes "$p/expected" "$p/AGENTS.md" "broken block"
+}
+
+# A project set up by brg 0.9.2: the Russian block in AGENTS.md and CLAUDE.md, the Russian
+# comments in .git/info/exclude. init replaces only the block (one English block, line
+# endings kept); exclude stays byte for byte; doctor sees the block and the exclude.
+OLD_BLOCK=$(
+  cat <<'EOF'
+<!-- brigada:begin — блок от brg init, init его обновляет; не нужен — удали по brigada:end включительно и запускай init с --no-agents-md -->
+## brigada
+Если человек просит «подключиться к бригаде» (brigada, .brigada) — прочитай `.brigada/README.md` и следуй ему. Подключиться — значит войти в рабочий цикл бригады и оставаться в нём до STOP: после `join` не отчитывайся человеку и не завершай ход — сразу `wait`. В бригаде ты только координатор: brg, переписка, решения, поручения подагентам и приём их результата; любую работу — чтение и правку кода, исследование, проверку чужой работы — делает твой подагент — одновременно один; больше — только с разрешения человека (харнесс без подагентов — делаешь сам, короткими шагами между `wait`). Без такой просьбы к бригаде не подключайся. Тебя запустил сам brg (первое сообщение — от brg, в нём твоё имя) — `join` уже сделан: следуй этому сообщению и разделу «Тебя запустил brg» в `.brigada/README.md`. Если работу тебе поручил другой агент (ты — подагент), к бригаде не подключайся и `wait` не вызывай ни при каких обстоятельствах — выполни поручение сам.
+<!-- brigada:end -->
+EOF
+)
+OLD_EXCLUDE='*.log
+# brigada: служебный каталог агентов (brg init) не коммитится
+.brigada/
+# brigada: AGENTS.md создан brg init — чтобы коммитить его, удали строку ниже
+/AGENTS.md
+мой/каталог/
+'
+test_agents_md_092_project_migrates() {
+  local p out
+  p=$(mk_tmpdir)
+  mkdir -p "$p/.git/info"
+  printf '%s' "$OLD_EXCLUDE" >"$p/.git/info/exclude"
+  printf '%s\n' "$OLD_BLOCK" >"$p/AGENTS.md"
+  { printf '# Claude\r\n\r\n'; printf '%s\n' "$OLD_BLOCK" | awk '{ printf "%s\r\n", $0 }'; printf 'хвост\r\n'; } >"$p/CLAUDE.md"
+  cp "$p/.git/info/exclude" "$p/x.before"
+  out=$(bash "$BRG_SRC" init "$p") || fail init
+  assert_contains "$out" "блок brigada обновлён в AGENTS.md"
+  assert_contains "$out" "блок brigada обновлён в CLAUDE.md"
+  assert_contains "$out" ".git/info/exclude уже настроен"
+  same_bytes "$p/x.before" "$p/.git/info/exclude" "exclude of a 0.9.2 project changed"
+  printf '%s\n' "$(am_block)" >"$p/expected"
+  same_bytes "$p/expected" "$p/AGENTS.md" "AGENTS.md: the English block"
+  { printf '# Claude\r\n\r\n'; am_block | awk '{ printf "%s\r\n", $0 }'; printf 'хвост\r\n'; } >"$p/c.expected"
+  same_bytes "$p/c.expected" "$p/CLAUDE.md" "CLAUDE.md: the English block, CRLF kept"
+  assert_eq 1 "$(am_count "$p/AGENTS.md")"
+  assert_eq 1 "$(am_count "$p/CLAUDE.md")"
+  assert_not_contains "$(cat "$p/AGENTS.md")" "не подключайся" "the Russian block is gone"
+  # doctor: the block and the exclude are fine
+  out=$(cd "$p" && bash .brigada/bin/brg doctor 2>&1)
+  assert_contains "$out" "AGENTS.md: блок brigada есть"
+  assert_contains "$out" ".git/info/exclude: .brigada/ — каталог brigada не коммитится"
+  assert_not_contains "$out" "AGENTS.md: нет блока"
+  assert_not_contains "$out" "CLAUDE.md: нет ни блока"
+  # doctor also accepts the old block (a project not re-inited yet)
+  printf '%s\n' "$OLD_BLOCK" >"$p/AGENTS.md"
+  out=$(cd "$p" && bash .brigada/bin/brg doctor 2>&1)
+  assert_contains "$out" "AGENTS.md: блок brigada есть"
+  # --no-agents-md leaves the old block alone
+  cp "$p/AGENTS.md" "$p/a.before"
+  bash "$BRG_SRC" init --no-agents-md "$p" >/dev/null || fail init
+  same_bytes "$p/a.before" "$p/AGENTS.md" "--no-agents-md changed the block"
+  # a repeated init is idempotent
+  bash "$BRG_SRC" init "$p" >/dev/null || fail init
+  cp "$p/AGENTS.md" "$p/a.before"
+  cp "$p/CLAUDE.md" "$p/c.before"
+  out=$(bash "$BRG_SRC" init "$p") || fail init
+  assert_contains "$out" "AGENTS.md: блок brigada уже есть"
+  assert_contains "$out" "CLAUDE.md: блок brigada уже есть"
+  same_bytes "$p/a.before" "$p/AGENTS.md" "re-init AGENTS.md"
+  same_bytes "$p/c.before" "$p/CLAUDE.md" "re-init CLAUDE.md"
+  same_bytes "$p/x.before" "$p/.git/info/exclude" "re-init exclude"
+  # the human removed /AGENTS.md from exclude (to commit it): not added again
+  printf '*.log\n# brigada: служебный каталог агентов (brg init) не коммитится\n.brigada/\n' >"$p/.git/info/exclude"
+  cp "$p/.git/info/exclude" "$p/x.before"
+  bash "$BRG_SRC" init "$p" >/dev/null || fail init
+  same_bytes "$p/x.before" "$p/.git/info/exclude" "/AGENTS.md re-added"
+  # CLAUDE.md a link to a 0.9.2 AGENTS.md: one English block
+  p=$(mk_tmpdir)
+  printf 'общее\n\n%s\n' "$OLD_BLOCK" >"$p/AGENTS.md"
+  ln -s AGENTS.md "$p/CLAUDE.md"
+  bash "$BRG_SRC" init "$p" >/dev/null || fail init
+  [ -L "$p/CLAUDE.md" ] || fail "the link replaced by a file"
+  printf 'общее\n\n%s\n' "$(am_block)" >"$p/expected"
+  same_bytes "$p/expected" "$p/AGENTS.md" "linked: one English block"
+  # a new project gets the English comments in exclude
+  p=$(mk_tmpdir)
+  mkdir -p "$p/.git/info"
+  bash "$BRG_SRC" init "$p" >/dev/null || fail init
+  assert_eq "# brigada: the service directory of the agents (brg init) is not committed
+.brigada/
+# brigada: AGENTS.md was created by brg init — to commit it, delete the line below
+/AGENTS.md" "$(cat "$p/.git/info/exclude")"
 }
 
 # CRLF file: the block is written with CRLF, the rest untouched (also on update).

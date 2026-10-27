@@ -2198,10 +2198,12 @@ cfg_keys_any() {
 
 # The whole .brigada is kept out of git (DESIGN §3). Up to 0.2.0 init excluded only
 # the correspondence and the runtime: those lines (and their comment) are replaced.
+# Existing exclude files are recognised by the lines (.brigada/, /AGENTS.md), never by
+# the comments: a comment in another language written by an older brg stays as it is.
 GIT_EXCLUDE=.brigada/
 GIT_EXCLUDES_OLD=".brigada/tasks/ .brigada/lobby/ .brigada/run/ .brigada/agents/"
 GIT_EXCLUDE_OLD_NOTE='# brigada: переписка и рантайм не коммитятся'
-GIT_EXCLUDE_NOTE='# brigada: служебный каталог агентов (brg init) не коммитится'
+GIT_EXCLUDE_NOTE='# brigada: the service directory of the agents (brg init) is not committed'
 
 # git_exclude_scan FILE → GE_FOUND (has .brigada/), GE_OLD (has lines of old brg),
 # GE_KEEP (the file without those old lines, original line endings kept)
@@ -2263,12 +2265,12 @@ exclude_append() {
 # "подключись к бригаде" is enough for any harness. Markers are matched by prefix.
 AM_BEGIN='<!-- brigada:begin'
 AM_END='<!-- brigada:end'
-AM_BLOCK="$AM_BEGIN — блок от brg init, init его обновляет; не нужен — удали по brigada:end включительно и запускай init с --no-agents-md -->
+AM_BLOCK="$AM_BEGIN — a block from brg init, which keeps it up to date; not needed — delete it through brigada:end and run init with --no-agents-md -->
 ## brigada
-Если человек просит «подключиться к бригаде» (brigada, .brigada) — прочитай \`.brigada/README.md\` и следуй ему. Подключиться — значит войти в рабочий цикл бригады и оставаться в нём до STOP: после \`join\` не отчитывайся человеку и не завершай ход — сразу \`wait\`. В бригаде ты только координатор: brg, переписка, решения, поручения подагентам и приём их результата; любую работу — чтение и правку кода, исследование, проверку чужой работы — делает твой подагент — одновременно один; больше — только с разрешения человека (харнесс без подагентов — делаешь сам, короткими шагами между \`wait\`). Без такой просьбы к бригаде не подключайся. Тебя запустил сам brg (первое сообщение — от brg, в нём твоё имя) — \`join\` уже сделан: следуй этому сообщению и разделу «Тебя запустил brg» в \`.brigada/README.md\`. Если работу тебе поручил другой агент (ты — подагент), к бригаде не подключайся и \`wait\` не вызывай ни при каких обстоятельствах — выполни поручение сам.
+If the human asks you to join the brigade («подключиться к бригаде», brigada, .brigada), read \`.brigada/README.md\` and follow it. To join means to enter the brigade's work loop and stay in it until STOP: after \`join\` do not report to the human and do not end your turn — call \`wait\` at once. In the brigade you are only a coordinator: brg, the correspondence, decisions, tasks for subagents and taking their results; all the work — reading and editing code, research, checking others' work — is done by your subagent, one at a time; more only with the human's permission (a harness without subagents — do it yourself, in short steps between \`wait\` calls). Without such a request do not join the brigade. If brg itself launched you (the first message is from brg and has your name), \`join\` is already done: follow that message and the section «Тебя запустил brg» in \`.brigada/README.md\`. If another agent gave you the work (you are a subagent), do not join the brigade and never call \`wait\`, whatever happens — do the task yourself.
 $AM_END -->"
 AM_EXCLUDE=/AGENTS.md
-AM_EXCLUDE_NOTE='# brigada: AGENTS.md создан brg init — чтобы коммитить его, удали строку ниже'
+AM_EXCLUDE_NOTE='# brigada: AGENTS.md was created by brg init — to commit it, delete the line below'
 AM_FULL='«подключись к .brigada, прочитай инструкцию в .brigada/README.md»'
 
 # am_scan FILE → AM_ALL (the file as is), AM_PRE/AM_POST (around the first block;
