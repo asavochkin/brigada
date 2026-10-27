@@ -528,7 +528,8 @@ test_serve_port_saved_and_busy() {
   p1=$PORT
   stop_board
   assert_eq "$p1" "$(cat "$B/run/board/port")"
-  # the saved port is used again
+  # the saved port is used again (a leading zero is decimal)
+  printf '0%s\n' "$p1" >"$B/run/board/port"
   BOUT=$(mk_tmpdir)/out
   bash "$BRG" board --interval 1 >"$BOUT" 2>&1 &
   BP=$!
@@ -600,13 +601,17 @@ test_serve_static_once_and_no_python() {
     BRG_PYTHON=$o bash "$BRG" board --interval 1 >"$BOUT" 2>&1 &
     BP=$!
     track_pid $BP
-    wait_for 10 grep -q "Python 3.8+ не найден" "$BOUT" || fail "no word about Python ($o):
+    wait_for 10 grep -q "BRG_PYTHON=$o — не Python 3.8+: доска только для просмотра" "$BOUT" || fail "no word about BRG_PYTHON ($o):
 $(cat "$BOUT")"
     assert_eq "file://$B/board.html" "$(head -n 1 "$BOUT")" "the file address without Python"
     no_ready || fail "a ready file is left"
     kill -TERM "$BP"
     wait_pid "$BP" 8 || fail "board did not exit on TERM"
   done
+  # no Python at all: the hint names BRG_PYTHON
+  o=$(BRG_PYTHON= BRG_SOURCE_ONLY=1 bash -c '. "$1"; ROOT=$2; PY_DONE=1 PY_EXE=; board_serve_start; printf "%s" "$B_NOTE"' _ "$BRG_SRC" "$B")
+  assert_contains "$o" "── Python 3.8+ не найден — доска только для просмотра"
+  assert_contains "$o" "Python не в PATH — BRG_PYTHON=/путь/к/python3 brg board"
   # the server file is missing in .brigada: the same, with the reason
   rm -f "$B/bin/brg-serve.py"
   BOUT=$(mk_tmpdir)/out

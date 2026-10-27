@@ -10865,9 +10865,9 @@ board_task() {
 # board_settled DIR — a finished task whose data no longer change: closed longer than
 # BOARD_SETTLE ago, or none of its runs is still going
 board_settled() {
-  local f
+  local f e
   task_read "$1"
-  is_uint "$TK_CLOSED_EPOCH" && [ $((NOW - TK_CLOSED_EPOCH)) -gt "$BOARD_SETTLE" ] && return 0
+  dec_v e "$TK_CLOSED_EPOCH" && [ $((NOW - e)) -gt "$BOARD_SETTLE" ] && return 0
   for f in "$1"/shared/runs/R[0-9]*; do
     [ -f "$f" ] || continue
     case ${f##*/} in *.*) continue ;; esac
@@ -11164,7 +11164,11 @@ board_serve_start() {
   case $B_BIND in 127.0.0.1) ;; *) bindopt=$B_BIND ;; esac # the default address: no flag to the server
   py_find_v py
   if [ -z "$py" ]; then
-    B_NOTE="── Python 3.8+ не найден — доска только для просмотра (отвечать — brg say …); Python необязателен: с ним brg board сам поднимает сервер с управлением"
+    if [ -n "${BRG_PYTHON:-}" ]; then
+      B_NOTE="── BRG_PYTHON=$BRG_PYTHON — не Python 3.8+: доска только для просмотра (отвечать — brg say …)"
+    else
+      B_NOTE="── Python 3.8+ не найден — доска только для просмотра (отвечать — brg say …); Python необязателен: с ним brg board сам поднимает сервер с управлением; Python не в PATH — BRG_PYTHON=/путь/к/python3 brg board"
+    fi
     return 1
   fi
   if [ ! -f "$ROOT/bin/brg-serve.py" ]; then
@@ -11182,7 +11186,7 @@ board_serve_start() {
     retry=--retry-any
     x=
     [ -f "$BD/port" ] && IFS= read -r x <"$BD/port"
-    if is_uint "$x" && [ ${#x} -le 5 ] && [ $((10#$x)) -ge 1 ] && [ $((10#$x)) -le 65535 ]; then port=$((10#$x)); fi
+    if dec_v x "$x" && [ "$x" -ge 1 ] && [ "$x" -le 65535 ]; then port=$x; fi
   fi
   # our own ready file (ready.<our pid>), named like alive: the pid of Python is not $! in MSYS
   rdy=$BD/ready.$$
@@ -11268,23 +11272,21 @@ cmd_board() {
   while [ $# -gt 0 ]; do
     case $1 in
       --interval)
-        x=${2:-}
-        if ! is_uint "$x" || [ "$x" -lt 1 ] || [ ${#x} -gt 6 ]; then
+        if ! dec_v x "${2:-}" || [ "$x" -lt 1 ] || [ "$x" -gt 999999 ]; then
           usage_line_v u board
-          say_err "── ОШИБКА: --interval — целое число секунд ≥ 1${2+: $2}" "Использование: $u"
+          say_err "── ОШИБКА: --interval — целое число секунд от 1 до 999999${2+: $2}" "Использование: $u"
           exit 1
         fi
-        B_INT=$((10#$x))
+        B_INT=$x
         shift 2
         ;;
       --port)
-        x=${2:-}
-        if ! is_uint "$x" || [ ${#x} -gt 5 ] || [ $((10#$x)) -gt 65535 ]; then
+        if ! dec_v x "${2:-}" || [ "$x" -gt 65535 ]; then
           usage_line_v u board
           say_err "── ОШИБКА: --port — номер порта 0–65535 (0 — любой свободный)${2+: $2}" "Использование: $u"
           exit 1
         fi
-        B_PORT=$((10#$x))
+        B_PORT=$x
         shift 2
         ;;
       --bind)

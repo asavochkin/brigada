@@ -345,6 +345,23 @@ test_board_cli_errors_and_init() {
   assert_contains "$out" "--interval"
   out=$(brg board --frob 2>&1)
   assert_eq 1 "$?" "unknown option"
+  # integers: leading zeros are decimal (08 is not an octal error), junk and overflow refused
+  for x in "--port 08" "--port 0000000080" "--port 99999999999" "--port -1" "--port ''" \
+    "--interval 08x" "--interval 1000000" "--interval 0000000000" "--interval 99999999999"; do
+    out=$(eval "brg board $x --static --once" 2>&1)
+    rc=$?
+    case $x in
+      "--port 08") assert_eq 0 "$rc" "$x" ;;
+      *)
+        assert_eq 1 "$rc" "$x: $out"
+        assert_contains "$out" "── ОШИБКА: ${x%% *}" "$x"
+        assert_not_contains "$out" "value too great" "$x"
+        ;;
+    esac
+  done
+  rm -rf "$B/run/board"
+  out=$(brg board --interval 0 2>&1)
+  assert_contains "$out" "целое число секунд от 1 до 999999: 0"
   assert_file_not_exists "$B/run/board" "a refused board wrote its snapshot"
   # no metrics from board
   brg board --once >/dev/null || fail board
