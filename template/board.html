@@ -14,8 +14,8 @@
   lead, pause, stop; every button is a POST to /api/<action> that runs brg as the human.
   `brg board` writes run/board/data.js (window.BRG_BOARD) and run/board/T00N.js
   (window.BRG_TASKS) next to this file; the page reloads data.js every 2 s with a
-  classic script tag. The agent state words (DESIGN §5.2): "ждёт" = free, "работает ·
-  подпись · N мин" = busy mark. Data go into the page only through textContent /
+  classic script tag. The agent state words (DESIGN §5.2): "ждёт" = free,
+  "работает · подпись · N мин" = busy mark. Data go into the page only through textContent /
   createElement / safe attributes — never parsed as markup.
 -->
 <style>
@@ -553,7 +553,7 @@ pre {
     for (i = 0; i < ls.length; i++) { x = ls[i].replace(/^\s+|\s+$/g, ""); if (x) break; }
     return x.length > max ? x.slice(0, max - 1) + "…" : x;
   }
-  // a span kept current by tick(): "ago" (… назад) or "dur" (… мин) since an epoch
+  // a span kept current by tick(): "ago" ("… назад") or "dur" ("… мин") since an epoch
   function live(fmt, since, cls) {
     var e = el("span", "live" + (cls ? " " + cls : ""));
     e.setAttribute("data-fmt", fmt);
@@ -840,8 +840,8 @@ pre {
     for (i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
     return h;
   }
-  // the state of an agent for people (DESIGN §5.2, §9.1): ждёт = free (a live wait, no busy mark);
-  // работает[ · подпись] with how long (mark) or "не на связи N мин" (no wait for a while)
+  // the state of an agent for people (DESIGN §5.2, §9.1): "ждёт" = free (a live wait, no busy
+  // mark); "работает[ · подпись]" with how long (mark) or "не на связи N мин" (no wait for a while)
   function offline(a) { var m = /не на связи ([^·]+?)\s*(?:·|$)/.exec(a.note || ""); return m ? "не на связи " + m[1] : ""; }
   function workText(a) { // plain text, no live parts
     if (a.halt) return "остановлен — напиши «продолжай» в его окне";

@@ -80,7 +80,7 @@ $(cat "$BOUT")"
   PORT=${URL#http://${BADDR:-127.0.0.1}:}
   PORT=${PORT%%/*}
   TOK=${URL##*\?t=}
-  SPID=$(sed -n 2p "$B/run/board/ready")
+  SPID=$(sed -n 2p "$B/run/board/ready.$BP")
   track_pid "$SPID"
   COOKIE="brg_$PORT=$TOK"
 }
@@ -110,6 +110,9 @@ hdr_of() { printf '%s\n' "$HTTP_OUT" | awk -v k="H $1:" 'index($0, k) == 1 { pri
 # the body of a message file (after the blank line)
 body_of() { sed '1,/^$/d' "$1"; }
 
+# no_ready — no run/board/ready* file (no server answered, or it removed its own)
+no_ready() { ! ls "$B/run/board"/ready* >/dev/null 2>&1; }
+
 no_srv_tmp() { [ -z "$(cd "$B/run/board" && ls -A | awk '/^\.srv\.tmp\.|^\.tmp\./')" ]; }
 
 test_serve_address_auth_and_headers() {
@@ -119,7 +122,7 @@ test_serve_address_auth_and_headers() {
   start_board
   assert_contains "$(sed -n 2p "$BOUT")" "каждые 1 с"
   assert_contains "$(sed -n 2p "$BOUT")" "сервер остановится"
-  assert_eq "$PORT" "$(sed -n 1p "$B/run/board/ready")" "ready: the port"
+  assert_eq "$PORT" "$(sed -n 1p "$B/run/board/ready.$BP")" "ready: the port"
   assert_eq "$PORT" "$(cat "$B/run/board/port")" "port file"
   assert_eq "$TOK" "$(cat "$B/run/board/token")" "token file"
   assert_contains "$(ls -l "$B/run/board/token")" "-rw-------" "token: mode 600"
@@ -173,14 +176,15 @@ test_serve_address_auth_and_headers() {
   done
   http GET /run/board/T001.js -H "Cookie: $COOKIE"
   assert_eq 404 "$HTTP_ST" "no such task cache"
-  for n in /run/board/token /run/board/ready /board.html /config /run/board/../../config /run/board/../token /agents /etc/passwd /run/board/T001.js.bak; do
+  for n in /run/board/token /run/board/ready /run/board/ready.$BP /board.html /config /run/board/../../config /run/board/../token /agents /etc/passwd /run/board/T001.js.bak; do
     http GET "$n" -H "Cookie: $COOKIE"
     assert_eq 404 "$HTTP_ST" "path $n"
   done
   # methods
-  for n in OPTIONS PUT DELETE; do
+  for n in OPTIONS PUT DELETE PATCH TRACE CONNECT PROPFIND FOO; do
     http $n /api/say -H "Cookie: $COOKIE"
     assert_eq 405 "$HTTP_ST" "$n"
+    assert_eq "GET, POST" "$(hdr_of Allow)" "Allow ($n)"
     assert_eq "" "$(hdr_of Access-Control-Allow-Origin)" "no CORS"
   done
   # the token is printed once (in the address), the log has no URLs
@@ -366,16 +370,133 @@ test_serve_task_lead_pause_stop() {
   stop_board
 }
 
+# bg_board OUT [env…] — brg board --interval 1 --port 0 in the background with the env; BP
+bg_board() {
+  local o=$1
+  shift
+  env "$@" bash "$BRG" board --interval 1 --port 0 >"$o" 2>&1 &
+  BP=$!
+  track_pid $BP
+}
+url_tok() { local u; u=$(head -n 1 "$1"); case $u in http://*\?t=*) printf '%s' "${u##*\?t=}" ;; esac; }
+has_url() { [ -n "$(url_tok "$1")" ]; }
+
+# Two first starts at once agree on the token: os.link publishes a complete file, the
+# loser reads it (the test hook race makes both servers pass "no token" first). Each board has its own ready file; stopping one leaves the other's.
+test_serve_token_two_first_starts() {
+  local o1 o2 b1 b2 s1 s2 t1 t2 i o
+  serve_need || return 0
+  new_proj
+  for i in 1 2 3; do
+    rm -f "$B/run/board/token"
+    o1=$(mk_tmpdir)/out o2=$(mk_tmpdir)/out
+    # race: each server pauses after "no token", so both surely create one
+    bg_board "$o1" BRG_SERVE_TEST_TOKEN=race
+    b1=$BP
+    bg_board "$o2" BRG_SERVE_TEST_TOKEN=race
+    b2=$BP
+    wait_for 10 has_url "$o1" || fail "no address of board 1: $(cat "$o1")"
+    wait_for 10 has_url "$o2" || fail "no address of board 2: $(cat "$o2")"
+    t1=$(url_tok "$o1") t2=$(url_tok "$o2")
+    assert_eq "$t1" "$t2" "the tokens of two first starts (round $i)"
+    assert_eq "$t1" "$(cat "$B/run/board/token")" "the token file (round $i)"
+    # brg prints the token from the file: each server must accept it (its own token in memory)
+    for o in "$o1" "$o2"; do
+      PORT=$(head -n 1 "$o")
+      PORT=${PORT#http://127.0.0.1:}
+      PORT=${PORT%%/*}
+      http GET "/?t=$t1"
+      assert_eq 303 "$HTTP_ST" "the printed token is the server's (round $i, port $PORT)"
+    done
+    s1=$(sed -n 2p "$B/run/board/ready.$b1") s2=$(sed -n 2p "$B/run/board/ready.$b2")
+    track_pid "$s1"
+    track_pid "$s2"
+    [ -n "$s1" ] && [ -n "$s2" ] && [ "$s1" != "$s2" ] || fail "ready files: [$s1] [$s2]"
+    no_srv_tmp || fail "temp files left: $(ls -A "$B/run/board")"
+    # independent cleanup: board 1 stops, board 2 and its ready file stay
+    kill -TERM "$b1"
+    wait_pid "$b1" 8 || fail "board 1 did not exit on TERM"
+    wait_for 5 is_dead "$s1" || fail "server 1 outlived its board"
+    assert_file_not_exists "$B/run/board/ready.$b1"
+    assert_file_exists "$B/run/board/ready.$b2" "the other board's ready file"
+    is_alive "$s2" || fail "server 2 stopped with board 1"
+    kill -TERM "$b2"
+    wait_pid "$b2" 8 || fail "board 2 did not exit on TERM"
+    wait_for 5 is_dead "$s2" || fail "server 2 outlived its board"
+    no_ready || fail "a ready file is left"
+  done
+  # an existing valid token is never changed
+  t1=$(cat "$B/run/board/token")
+  start_board
+  assert_eq "$t1" "$TOK" "the existing token"
+  stop_board
+}
+
+# Without hard links (the test hook nolink): O_EXCL. The winner stops between creating the
+# file and writing it (stall); the loser waits for the complete token instead of making its own.
+test_serve_token_without_hard_links() {
+  local o1 o2 b1 b2 t1 t2
+  serve_need || return 0
+  new_proj
+  rm -f "$B/run/board/token"
+  o1=$(mk_tmpdir)/out o2=$(mk_tmpdir)/out
+  bg_board "$o1" BRG_SERVE_TEST_TOKEN=nolink,stall
+  b1=$BP
+  wait_for 5 test -f "$B/run/board/token" || fail "the winner did not create the token file"
+  assert_eq "" "$(cat "$B/run/board/token")" "the winner has not written yet"
+  bg_board "$o2" BRG_SERVE_TEST_TOKEN=nolink
+  b2=$BP
+  wait_for 10 has_url "$o1" || fail "no address of board 1: $(cat "$o1")"
+  wait_for 10 has_url "$o2" || fail "no address of board 2: $(cat "$o2")"
+  t1=$(url_tok "$o1") t2=$(url_tok "$o2")
+  assert_eq "$t1" "$t2" "the tokens without hard links"
+  assert_eq "$t1" "$(cat "$B/run/board/token")" "the token file"
+  assert_contains "$(ls -l "$B/run/board/token")" "-rw-------" "token: mode 600"
+  kill -TERM "$b1" "$b2"
+  wait_pid "$b1" 8 || fail "board 1 did not exit on TERM"
+  wait_pid "$b2" 8 || fail "board 2 did not exit on TERM"
+  # a broken token file (not a token) is replaced, as before
+  printf 'junk\n' >"$B/run/board/token"
+  start_board
+  case $TOK in [0-9a-f]*) ;; *) fail "token [$TOK]" ;; esac
+  assert_eq 32 "${#TOK}" "a new token instead of the broken one"
+  assert_eq "$TOK" "$(cat "$B/run/board/token")" "the token file"
+  stop_board
+}
+
+# A foreign or stale ready file is not ours: brg reads only ready.<its pid>. The server
+# removes ready files of boards that write no heartbeat.
+test_serve_foreign_and_stale_ready() {
+  serve_need || return 0
+  new_proj
+  mkdir -p "$B/run/board"
+  printf '1\n1\n' >"$B/run/board/ready"           # the old shared name
+  printf '2\n2\n' >"$B/run/board/ready.99999999"  # a killed board: no alive.99999999
+  printf '3\n3\n' >"$B/run/board/ready.88888888"  # a live board: its heartbeat is there
+  printf '1\n' >"$B/run/board/alive.88888888"
+  start_board
+  [ "$PORT" != 1 ] && [ "$PORT" != 2 ] && [ "$PORT" != 3 ] || fail "a foreign ready was read: $PORT"
+  is_alive "$SPID" || fail "the server is not running"
+  assert_eq "$PORT" "$(sed -n 1p "$B/run/board/ready.$BP")" "our own ready"
+  assert_file_not_exists "$B/run/board/ready.99999999" "the stale ready is removed"
+  assert_file_exists "$B/run/board/ready.88888888" "the ready of a live board is kept"
+  assert_file_exists "$B/run/board/ready" "a fresh shared ready file is kept (removed after 60 s)"
+  stop_board
+  assert_file_not_exists "$B/run/board/ready.$BP"
+  assert_file_exists "$B/run/board/ready.88888888"
+  rm -f "$B/run/board/ready" "$B/run/board/ready.88888888" "$B/run/board/alive.88888888"
+}
+
 test_serve_ends_with_term() {
   serve_need || return 0
   new_proj
   start_board
-  assert_eq "$SPID" "$(sed -n 2p "$B/run/board/ready")"
+  assert_eq "$SPID" "$(sed -n 2p "$B/run/board/ready.$BP")"
   is_alive "$SPID" || fail "the server is not running"
   post pause
   post resume
   stop_board
-  assert_file_not_exists "$B/run/board/ready" "ready is removed by the server"
+  no_ready || fail "ready is removed by the server"
   assert_file_exists "$B/run/board/port" "the port is kept for the next run"
   assert_file_exists "$B/run/board/token" "the token is kept"
   no_srv_tmp || fail "temp files left: $(ls -A "$B/run/board")"
@@ -390,7 +511,7 @@ test_serve_ends_when_parent_is_killed() {
   kill -KILL "$BP"
   wait_for 8 is_dead "$SPID" || fail "the server outlived its parent (kill -9)"
   wait "$BP" 2>/dev/null
-  assert_file_not_exists "$B/run/board/ready"
+  no_ready || fail "a ready file is left"
 }
 
 test_serve_ends_by_stale_heartbeat() {
@@ -406,7 +527,7 @@ test_serve_ends_by_stale_heartbeat() {
   sleep 0.5
   is_alive "$SPID" || fail "the server left at once — the heartbeat test is not testing it"
   wait_for 10 is_dead "$SPID" || fail "the server outlived the stale heartbeat (parent killed -9)"
-  assert_file_not_exists "$B/run/board/ready"
+  no_ready || fail "a ready file is left"
 }
 
 test_serve_port_saved_and_busy() {
@@ -417,14 +538,15 @@ test_serve_port_saved_and_busy() {
   p1=$PORT
   stop_board
   assert_eq "$p1" "$(cat "$B/run/board/port")"
-  # the saved port is used again
+  # the saved port is used again (a leading zero is decimal)
+  printf '0%s\n' "$p1" >"$B/run/board/port"
   BOUT=$(mk_tmpdir)/out
   bash "$BRG" board --interval 1 >"$BOUT" 2>&1 &
   BP=$!
   track_pid $BP
   wait_for 10 first_is_url || fail "no address"
   assert_contains "$(head -n 1 "$BOUT")" "http://127.0.0.1:$p1/"
-  SPID=$(sed -n 2p "$B/run/board/ready")
+  SPID=$(sed -n 2p "$B/run/board/ready.$BP")
   stop_board
   # the saved port is taken by someone else: a new address, a line about it
   s=$(mk_tmpdir)/bound
@@ -442,7 +564,7 @@ open(sys.argv[2], "w").write("ok\n"); time.sleep(120)' "$p1" "$s" &
 $(cat "$BOUT")"
   assert_contains "$(cat "$BOUT")" "порт $p1 занят — новый адрес"
   case $(head -n 1 "$BOUT") in "http://127.0.0.1:$p1/"*) fail "the busy port was used" ;; esac
-  SPID=$(sed -n 2p "$B/run/board/ready")
+  SPID=$(sed -n 2p "$B/run/board/ready.$BP")
   stop_board
   # an explicit --port that is busy: no server, the file address and why
   BOUT=$(mk_tmpdir)/out
@@ -453,7 +575,7 @@ $(cat "$BOUT")"
 $(cat "$BOUT")"
   assert_contains "$(cat "$BOUT")" "file://$B/board.html"
   assert_contains "$(cat "$BOUT")" "доска только для просмотра"
-  assert_file_not_exists "$B/run/board/ready"
+  no_ready || fail "a ready file is left"
   kill -TERM "$BP"
   wait_pid "$BP" 8 || fail "board did not exit on TERM"
   kill "$lp" 2>/dev/null
@@ -471,7 +593,7 @@ test_serve_static_once_and_no_python() {
   wait_for 10 test -f "$B/run/board/data.js" || fail "no data.js"
   assert_eq "file://$B/board.html" "$(head -n 1 "$BOUT")"
   assert_not_contains "$(cat "$BOUT")" "Python"
-  assert_file_not_exists "$B/run/board/ready"
+  no_ready || fail "a ready file is left"
   assert_file_not_exists "$B/run/board/port"
   assert_file_not_exists "$B/run/board/token"
   kill -TERM "$BP"
@@ -479,7 +601,7 @@ test_serve_static_once_and_no_python() {
   # --once: no server either
   o=$(brg board --once) || fail "board --once"
   assert_eq "file://$B/board.html" "$(printf '%s\n' "$o" | head -n 1)"
-  assert_file_not_exists "$B/run/board/ready"
+  no_ready || fail "a ready file is left"
   # no Python (BRG_PYTHON that does not exist, and one that is too old)
   fake=$(mk_tmpdir)/oldpython
   printf '#!/bin/sh\nexit 1\n' >"$fake"
@@ -489,13 +611,17 @@ test_serve_static_once_and_no_python() {
     BRG_PYTHON=$o bash "$BRG" board --interval 1 >"$BOUT" 2>&1 &
     BP=$!
     track_pid $BP
-    wait_for 10 grep -q "Python 3.8+ не найден" "$BOUT" || fail "no word about Python ($o):
+    wait_for 10 grep -q "BRG_PYTHON=$o — не Python 3.8+: доска только для просмотра" "$BOUT" || fail "no word about BRG_PYTHON ($o):
 $(cat "$BOUT")"
     assert_eq "file://$B/board.html" "$(head -n 1 "$BOUT")" "the file address without Python"
-    assert_file_not_exists "$B/run/board/ready"
+    no_ready || fail "a ready file is left"
     kill -TERM "$BP"
     wait_pid "$BP" 8 || fail "board did not exit on TERM"
   done
+  # no Python at all: the hint names BRG_PYTHON
+  o=$(BRG_PYTHON= BRG_SOURCE_ONLY=1 bash -c '. "$1"; ROOT=$2; PY_DONE=1 PY_EXE=; board_serve_start; printf "%s" "$B_NOTE"' _ "$BRG_SRC" "$B")
+  assert_contains "$o" "── Python 3.8+ не найден — доска только для просмотра"
+  assert_contains "$o" "Python не в PATH — BRG_PYTHON=/путь/к/python3 brg board"
   # the server file is missing in .brigada: the same, with the reason
   rm -f "$B/bin/brg-serve.py"
   BOUT=$(mk_tmpdir)/out
@@ -531,8 +657,11 @@ test_serve_old_temp_files_are_cleaned() {
   : >"$B/run/board/.srv.tmp.old.txt"
   touch -t 202001010000 "$B/run/board/.srv.tmp.old.txt"
   : >"$B/run/board/.srv.tmp.fresh.txt"
+  printf '1\n1\n' >"$B/run/board/ready" # the shared ready file of an older brg
+  touch -t 202001010000 "$B/run/board/ready"
   start_board
   assert_file_not_exists "$B/run/board/.srv.tmp.old.txt" "an old temp file"
+  assert_file_not_exists "$B/run/board/ready" "an old shared ready file"
   assert_file_exists "$B/run/board/.srv.tmp.fresh.txt" "a fresh temp file is not touched"
   stop_board
 }
@@ -640,7 +769,7 @@ test_serve_two_boards() {
   wait_for 10 first_is_url || fail "no address of the second board:
 $(cat "$BOUT")"
   b2=$BP o2=$BOUT
-  s2=$(sed -n 2p "$B/run/board/ready")
+  s2=$(sed -n 2p "$B/run/board/ready.$BP")
   track_pid "$s2"
   p2=$(head -n 1 "$o2")
   p2=${p2#http://127.0.0.1:}
@@ -997,7 +1126,7 @@ test_serve_bind_not_saved_and_hook_narrows() {
   BADDR=127.0.0.1
   wait_for 10 first_is_url || fail "no address:
 $(cat "$BOUT")"
-  SPID=$(sed -n 2p "$B/run/board/ready")
+  SPID=$(sed -n 2p "$B/run/board/ready.$BP")
   track_pid "$SPID"
   assert_contains "$(head -n 1 "$BOUT")" "http://127.0.0.1:$p1/"
   assert_not_contains "$(cat "$BOUT")" "ВНИМАНИЕ"
@@ -1032,28 +1161,31 @@ s.bind(("192.0.2.1", 0))' 2>/dev/null && {
     return 0
   }
   for saved in "" 51234; do
-    rm -f "$B/run/board/port" "$B/run/board/ready"
+    rm -f "$B/run/board/port" "$B/run/board"/ready*
     [ -z "$saved" ] || printf '%s\n' "$saved" >"$B/run/board/port"
     BOUT=$(mk_tmpdir)/out
     bash "$BRG" board --interval 1 --bind 192.0.2.1 >"$BOUT" 2>&1 &
     BP=$!
     track_pid $BP
-    wait_for 10 grep -q "не на этой машине" "$BOUT" || fail "no word about the address (saved port [$saved]):
+    # the server's own line about the reason comes first; brg prints the file address
+    # and then its own note — wait for both, not for the server's line
+    wait_for 10 grep -q '^file://' "$BOUT" || fail "no file address (saved port [$saved]):
 $(cat "$BOUT")"
-    # (the server's own line about the reason comes first, as with a busy port)
+    wait_for 10 grep -q "не на этой машине — доска только для просмотра" "$BOUT" || fail "no word about the address (saved port [$saved]):
+$(cat "$BOUT")"
     assert_eq "file://$B/board.html" "$(grep '^file://' "$BOUT")" "the file address"
     assert_contains "$(cat "$BOUT")" "адрес 192.0.2.1 не на этой машине"
     assert_contains "$(cat "$BOUT")" "доска только для просмотра"
     assert_contains "$(cat "$BOUT")" "--bind 0.0.0.0"
     assert_not_contains "$(cat "$BOUT")" "порт занят"
     assert_not_contains "$(cat "$BOUT")" "ВНИМАНИЕ"
-    assert_file_not_exists "$B/run/board/ready"
+    no_ready || fail "a ready file is left"
     # brg board goes on without the server, as with a busy port
     wait_for 10 test -f "$B/run/board/data.js" || fail "no snapshot"
     is_alive "$BP" || fail "brg board exited"
     kill -TERM "$BP"
     wait_pid "$BP" 8 || fail "board did not exit on TERM"
-    assert_file_not_exists "$B/run/board/ready"
+    no_ready || fail "a ready file is left"
     rm -f "$B/run/board/data.js"
   done
 }

@@ -2039,7 +2039,7 @@ usage_print() {
       echo "Снять: brg resume [<имя>] или кнопкой на доске (brg board с Python); say паузу не снимает. Пауза при стопе — стоп сильнее."
       ;;
     resume) echo "Снять стоп и паузу: без имени — общие и все личные, с именем — только этого агента (общая пауза стоит, пока не вызван resume без имени). Остановленные агенты завершили ход — напиши им «продолжай»; агенты на паузе вернутся из wait сами." ;;
-    init) echo "Создать/обновить <проект>/.brigada: bin/brg, brg-serve.py, README.md, PROTOCOL.md, board.html, config.default, VERSION; состояние и config не трогает. В корне проекта дописывает (или обновляет) короткий блок brigada в AGENTS.md (нет — создаёт и исключает из git) и в CLAUDE.md, если он есть и не импортирует AGENTS.md: тогда агенту достаточно сказать «подключись к бригаде». --no-agents-md — эти файлы не трогать." ;;
+    init) echo "Создать/обновить <проект>/.brigada: bin/brg, bin/brg.cmd, brg-serve.py, README.md, PROTOCOL.md, board.html, config.default, VERSION; состояние и config не трогает (новый config — все настройки закомментированы, значения по умолчанию — из config.default). В корне проекта дописывает (или обновляет) короткий блок brigada в AGENTS.md (нет — создаёт и исключает из git) и в CLAUDE.md, если он есть и не импортирует AGENTS.md: тогда агенту достаточно сказать «подключись к бригаде». --no-agents-md — эти файлы не трогать." ;;
     task)
       echo "Задачи (одна активная): new — создать (ты lead; постановка человека дословно → brief.md; человек сам даёт задачу с --as human: lead выбирает brg — прежний lead, если на связи, иначе первый подключившийся); close — закрыть (lead; нужен непустой summary.md); cancel — отменить (lead или человек: --as human); show/list — посмотреть."
       echo "close отказывает, пока есть подзадачи в работе или идут прогоны (--force — отменить и остановить их). Есть непрочитанное для lead'а (то, что разбудило бы его wait) — close показывает его (оно считается доставленным) и отказывает: учти и повтори close."
@@ -2064,7 +2064,7 @@ usage_print() {
       echo "Сводка ✓/⚠/✗ с подсказками; код выхода 0 — ошибок (✗) нет, 1 — есть. Сломанную установку (например, bin/brg с CRLF) проверяй копией из репозитория brigada: bash /путь/к/brigada/bin/brg doctor <проект>."
       ;;
     board)
-      echo "Доска для человека в браузере. Раз в --interval с (по умолчанию 2, минимум 1) пишет снимок в .brigada/run/board/: задача и статус, бригада, подзадачи с ревью, прогоны, переписка, постановка, план, итог, прошлые задачи."
+      echo "Доска для человека в браузере. Раз в --interval с (по умолчанию 2, от 1 до 999999) пишет снимок в .brigada/run/board/: задача и статус, бригада, подзадачи с ревью, прогоны, переписка, постановка, план, итог, прошлые задачи."
       echo "Найден Python 3.8+ — brg board сам поднимает сервер (по умолчанию только 127.0.0.1) и первой строкой печатает адрес http://127.0.0.1:ПОРТ/?t=ТОКЕН: открой его в браузере — на странице можно писать бригаде, отвечать на вопросы, давать задачу, назначать lead'а, ставить паузу и стоп (каждое действие — вызов brg от имени человека; в терминале строка «── с доски: …»). Адрес держи при себе: токен — доступ к управлению (постоянный, лежит в .brigada/run/board/token; сменить — удалить файл и перезапустить brg board). Порт: --port P, иначе прошлый, иначе свободный (занят — новый адрес). С другой машины (виртуалка): лучше SSH-туннель с тем же номером порта (ssh -N -L ПОРТ:127.0.0.1:ПОРТ <машина>), либо --bind ADDR — слушать этот IPv4-адрес машины (десятичный, например 192.168.64.5) или 0.0.0.0 (все адреса); только на этот запуск (следующий brg board без --bind снова слушает 127.0.0.1) и только для доверенной сети: HTTP без шифрования, токен и переписка идут открытым текстом, с доски можно управлять бригадой и запускать агентов с полными правами. Открывай доску по IP-адресу, не по имени. Python нет, сервер не поднялся или --static — доска как файл: адрес file://…/.brigada/board.html, только просмотр (отвечать — brg say …)."
       echo "Работает до Ctrl+C (сервер останавливается вместе с ним); --once — один снимок и выход, без сервера. Снимок только читает: никого не будит, ничего в бригаде не меняет."
       ;;
@@ -2164,12 +2164,46 @@ git_dir_v() {
   GD_NOTE=
   eval "$1=\$_gd_d"
 }
+# A new project's config is the template with every setting commented out ("# key: value"),
+# so later defaults arrive through config.default; an existing config is never changed.
+# cfg_key_line_v VAR LINE — the key of a setting line "key: value" (one commented out with
+# "#" and blanks too); 1 if LINE is not one
+cfg_key_line_v() {
+  local _ck_l=${2%"$CR"} _ck_k
+  case $_ck_l in '#'*) _ck_l=${_ck_l#\#} ;; esac
+  while :; do case $_ck_l in [[:space:]]*) _ck_l=${_ck_l#?} ;; *) break ;; esac; done
+  case $_ck_l in *:*) ;; *) return 1 ;; esac
+  _ck_k=${_ck_l%%:*}
+  case $_ck_k in '' | *[!A-Za-z0-9_.-]*) return 1 ;; esac
+  eval "$1=\$_ck_k"
+}
+# cfg_commented_write SRC DST — SRC with "# " before every active setting line (tmp + mv)
+cfg_commented_write() {
+  local line k out=
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in '#'* | '') ;; *) cfg_key_line_v k "$line" && line="# $line" ;; esac
+    out=$out$line$NL
+  done <"$1"
+  printf '%s' "$out" >"$2.brg.$$" && mv_retry "$2.brg.$$" "$2"
+}
+# cfg_keys_any FILE → CFG_KEYS: the keys of its setting lines, active or commented out
+cfg_keys_any() {
+  local line k
+  CFG_KEYS=
+  [ -f "$1" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    cfg_key_line_v k "$line" && CFG_KEYS="$CFG_KEYS $k"
+  done <"$1"
+}
+
 # The whole .brigada is kept out of git (DESIGN §3). Up to 0.2.0 init excluded only
 # the correspondence and the runtime: those lines (and their comment) are replaced.
+# Existing exclude files are recognised by the lines (.brigada/, /AGENTS.md), never by
+# the comments: a comment in another language written by an older brg stays as it is.
 GIT_EXCLUDE=.brigada/
 GIT_EXCLUDES_OLD=".brigada/tasks/ .brigada/lobby/ .brigada/run/ .brigada/agents/"
 GIT_EXCLUDE_OLD_NOTE='# brigada: переписка и рантайм не коммитятся'
-GIT_EXCLUDE_NOTE='# brigada: служебный каталог агентов (brg init) не коммитится'
+GIT_EXCLUDE_NOTE='# brigada: the service directory of the agents (brg init) is not committed'
 
 # git_exclude_scan FILE → GE_FOUND (has .brigada/), GE_OLD (has lines of old brg),
 # GE_KEEP (the file without those old lines, original line endings kept)
@@ -2231,12 +2265,12 @@ exclude_append() {
 # "подключись к бригаде" is enough for any harness. Markers are matched by prefix.
 AM_BEGIN='<!-- brigada:begin'
 AM_END='<!-- brigada:end'
-AM_BLOCK="$AM_BEGIN — блок от brg init, init его обновляет; не нужен — удали по brigada:end включительно и запускай init с --no-agents-md -->
+AM_BLOCK="$AM_BEGIN — a block from brg init, which keeps it up to date; not needed — delete it through brigada:end and run init with --no-agents-md -->
 ## brigada
-Если человек просит «подключиться к бригаде» (brigada, .brigada) — прочитай \`.brigada/README.md\` и следуй ему. Подключиться — значит войти в рабочий цикл бригады и оставаться в нём до STOP: после \`join\` не отчитывайся человеку и не завершай ход — сразу \`wait\`. В бригаде ты только координатор: brg, переписка, решения, поручения подагентам и приём их результата; любую работу — чтение и правку кода, исследование, проверку чужой работы — делает твой подагент — одновременно один; больше — только с разрешения человека (харнесс без подагентов — делаешь сам, короткими шагами между \`wait\`). Без такой просьбы к бригаде не подключайся. Тебя запустил сам brg (первое сообщение — от brg, в нём твоё имя) — \`join\` уже сделан: следуй этому сообщению и разделу «Тебя запустил brg» в \`.brigada/README.md\`. Если работу тебе поручил другой агент (ты — подагент), к бригаде не подключайся и \`wait\` не вызывай ни при каких обстоятельствах — выполни поручение сам.
+If the human asks you to join the brigade («подключиться к бригаде», brigada, .brigada), read \`.brigada/README.md\` and follow it. To join means to enter the brigade's work loop and stay in it until STOP: after \`join\` do not report to the human and do not end your turn — call \`wait\` at once. In the brigade you are only a coordinator: brg, the correspondence, decisions, tasks for subagents and taking their results; all the work — reading and editing code, research, checking others' work — is done by your subagent, one at a time; more only with the human's permission (a harness without subagents — do it yourself, in short steps between \`wait\` calls). Without such a request do not join the brigade. If brg itself launched you (the first message is from brg and has your name), \`join\` is already done: follow that message and the section «Тебя запустил brg» in \`.brigada/README.md\`. If another agent gave you the work (you are a subagent), do not join the brigade and never call \`wait\`, whatever happens — do the task yourself.
 $AM_END -->"
 AM_EXCLUDE=/AGENTS.md
-AM_EXCLUDE_NOTE='# brigada: AGENTS.md создан brg init — чтобы коммитить его, удали строку ниже'
+AM_EXCLUDE_NOTE='# brigada: AGENTS.md was created by brg init — to commit it, delete the line below'
 AM_FULL='«подключись к .brigada, прочитай инструкцию в .brigada/README.md»'
 
 # am_scan FILE → AM_ALL (the file as is), AM_PRE/AM_POST (around the first block;
@@ -2417,10 +2451,9 @@ cmd_init() {
   [ -f "$tpl/board.html" ] && install_file "$tpl/board.html" "$B/board.html"
   install_file "$tpl/config" "$B/config.default"
   if [ ! -f "$B/config" ]; then
-    install_file "$tpl/config" "$B/config"
+    cfg_commented_write "$tpl/config" "$B/config" || die "не удалось создать $B/config"
   else
-    CFG_KEYS=
-    cfg_parse "$B/config" cfg_key_collect
+    cfg_keys_any "$B/config" # a commented-out key is there too: its value is the default
     local have=$CFG_KEYS
     CFG_KEYS=
     cfg_parse "$tpl/config" cfg_key_collect
@@ -2443,7 +2476,7 @@ cmd_init() {
   if [ -n "$fresh" ]; then
     echo "── brigada $BRG_VERSION: создано $B"
   else
-    echo "── brigada $BRG_VERSION: обновлено $B (bin/brg, brg-serve.py, README.md, PROTOCOL.md, board.html, config.default, VERSION); состояние и config не тронуты"
+    echo "── brigada $BRG_VERSION: обновлено $B (bin/brg, bin/brg.cmd, brg-serve.py, README.md, PROTOCOL.md, board.html, config.default, VERSION); состояние и config не тронуты"
   fi
   [ -n "$missing" ] && echo "В config нет ключей:$missing — действуют значения из config.default."
   echo "git: $GIT_NOTE"
@@ -10834,9 +10867,9 @@ board_task() {
 # board_settled DIR — a finished task whose data no longer change: closed longer than
 # BOARD_SETTLE ago, or none of its runs is still going
 board_settled() {
-  local f
+  local f e
   task_read "$1"
-  is_uint "$TK_CLOSED_EPOCH" && [ $((NOW - TK_CLOSED_EPOCH)) -gt "$BOARD_SETTLE" ] && return 0
+  dec_v e "$TK_CLOSED_EPOCH" && [ $((NOW - e)) -gt "$BOARD_SETTLE" ] && return 0
   for f in "$1"/shared/runs/R[0-9]*; do
     [ -f "$f" ] || continue
     case ${f##*/} in *.*) continue ;; esac
@@ -11127,13 +11160,17 @@ board_srv_stop() {
 # board_serve_start — start the server; on success B_URL is the address. 1 and B_NOTE (why
 # the board is view-only) otherwise.
 board_serve_start() {
-  local py nroot port x i=0 rc retry= tok bindopt= shown
+  local py nroot port x i=0 rc retry= tok bindopt= shown rdy
   B_NOTE=
   B_PRE=
   case $B_BIND in 127.0.0.1) ;; *) bindopt=$B_BIND ;; esac # the default address: no flag to the server
   py_find_v py
   if [ -z "$py" ]; then
-    B_NOTE="── Python 3.8+ не найден — доска только для просмотра (отвечать — brg say …); Python необязателен: с ним brg board сам поднимает сервер с управлением"
+    if [ -n "${BRG_PYTHON:-}" ]; then
+      B_NOTE="── BRG_PYTHON=$BRG_PYTHON — не Python 3.8+: доска только для просмотра (отвечать — brg say …)"
+    else
+      B_NOTE="── Python 3.8+ не найден — доска только для просмотра (отвечать — brg say …); Python необязателен: с ним brg board сам поднимает сервер с управлением; Python не в PATH — BRG_PYTHON=/путь/к/python3 brg board"
+    fi
     return 1
   fi
   if [ ! -f "$ROOT/bin/brg-serve.py" ]; then
@@ -11151,13 +11188,15 @@ board_serve_start() {
     retry=--retry-any
     x=
     [ -f "$BD/port" ] && IFS= read -r x <"$BD/port"
-    if is_uint "$x" && [ ${#x} -le 5 ] && [ $((10#$x)) -ge 1 ] && [ $((10#$x)) -le 65535 ]; then port=$((10#$x)); fi
+    if dec_v x "$x" && [ "$x" -ge 1 ] && [ "$x" -le 65535 ]; then port=$x; fi
   fi
-  rm -f "$BD/ready"
+  # our own ready file (ready.<our pid>), named like alive: the pid of Python is not $! in MSYS
+  rdy=$BD/ready.$$
+  rm -f "$rdy"
   board_alive
-  BRG_SERVE_BASH=$BASH BRG_CMD_LC_SET=$_brg_lc_set BRG_CMD_LC=$_brg_lc "$py" -I -X utf8 "$nroot/bin/brg-serve.py" --root "$nroot" --port "$port" ${retry:+"$retry"} ${bindopt:+--bind} ${bindopt:+"$bindopt"} --interval "$B_INT" --alive "alive.$$" </dev/null &
+  BRG_SERVE_BASH=$BASH BRG_CMD_LC_SET=$_brg_lc_set BRG_CMD_LC=$_brg_lc "$py" -I -X utf8 "$nroot/bin/brg-serve.py" --root "$nroot" --port "$port" ${retry:+"$retry"} ${bindopt:+--bind} ${bindopt:+"$bindopt"} --interval "$B_INT" --alive "alive.$$" --ready "ready.$$" </dev/null &
   B_SRV=$!
-  while [ ! -f "$BD/ready" ]; do
+  while [ ! -f "$rdy" ]; do
     if ! kill -0 "$B_SRV" 2>/dev/null; then
       wait "$B_SRV" 2>/dev/null
       rc=$?
@@ -11184,7 +11223,7 @@ board_serve_start() {
     IFS= read -r x # pid of the server (for the tests)
     x=
     IFS= read -r x # the saved port that was taken, if so
-  } <"$BD/ready"
+  } <"$rdy"
   IFS= read -r tok <"$BD/token"
   shown=127.0.0.1 # the address that surely works on this machine
   case $bindopt in '' | 0.0.0.0) ;; *) shown=$bindopt ;; esac
@@ -11224,7 +11263,7 @@ board_srv_check() {
 board_quit() {
   [ -n "$B_SLEEP" ] && kill "$B_SLEEP" 2>/dev/null
   board_srv_stop
-  rm -f "$BD"/.tmp.*."$$" "$BD/alive.$$" 2>/dev/null
+  rm -f "$BD"/.tmp.*."$$" "$BD/alive.$$" "$BD/ready.$$" 2>/dev/null
   exit 0
 }
 
@@ -11235,23 +11274,21 @@ cmd_board() {
   while [ $# -gt 0 ]; do
     case $1 in
       --interval)
-        x=${2:-}
-        if ! is_uint "$x" || [ "$x" -lt 1 ] || [ ${#x} -gt 6 ]; then
+        if ! dec_v x "${2:-}" || [ "$x" -lt 1 ] || [ "$x" -gt 999999 ]; then
           usage_line_v u board
-          say_err "── ОШИБКА: --interval — целое число секунд ≥ 1${2+: $2}" "Использование: $u"
+          say_err "── ОШИБКА: --interval — целое число секунд от 1 до 999999${2+: $2}" "Использование: $u"
           exit 1
         fi
-        B_INT=$((10#$x))
+        B_INT=$x
         shift 2
         ;;
       --port)
-        x=${2:-}
-        if ! is_uint "$x" || [ ${#x} -gt 5 ] || [ $((10#$x)) -gt 65535 ]; then
+        if ! dec_v x "${2:-}" || [ "$x" -gt 65535 ]; then
           usage_line_v u board
           say_err "── ОШИБКА: --port — номер порта 0–65535 (0 — любой свободный)${2+: $2}" "Использование: $u"
           exit 1
         fi
-        B_PORT=$((10#$x))
+        B_PORT=$x
         shift 2
         ;;
       --bind)
