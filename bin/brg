@@ -2039,7 +2039,7 @@ usage_print() {
       echo "Снять: brg resume [<имя>] или кнопкой на доске (brg board с Python); say паузу не снимает. Пауза при стопе — стоп сильнее."
       ;;
     resume) echo "Снять стоп и паузу: без имени — общие и все личные, с именем — только этого агента (общая пауза стоит, пока не вызван resume без имени). Остановленные агенты завершили ход — напиши им «продолжай»; агенты на паузе вернутся из wait сами." ;;
-    init) echo "Создать/обновить <проект>/.brigada: bin/brg, brg-serve.py, README.md, PROTOCOL.md, board.html, config.default, VERSION; состояние и config не трогает. В корне проекта дописывает (или обновляет) короткий блок brigada в AGENTS.md (нет — создаёт и исключает из git) и в CLAUDE.md, если он есть и не импортирует AGENTS.md: тогда агенту достаточно сказать «подключись к бригаде». --no-agents-md — эти файлы не трогать." ;;
+    init) echo "Создать/обновить <проект>/.brigada: bin/brg, bin/brg.cmd, brg-serve.py, README.md, PROTOCOL.md, board.html, config.default, VERSION; состояние и config не трогает (новый config — все настройки закомментированы, значения по умолчанию — из config.default). В корне проекта дописывает (или обновляет) короткий блок brigada в AGENTS.md (нет — создаёт и исключает из git) и в CLAUDE.md, если он есть и не импортирует AGENTS.md: тогда агенту достаточно сказать «подключись к бригаде». --no-agents-md — эти файлы не трогать." ;;
     task)
       echo "Задачи (одна активная): new — создать (ты lead; постановка человека дословно → brief.md; человек сам даёт задачу с --as human: lead выбирает brg — прежний lead, если на связи, иначе первый подключившийся); close — закрыть (lead; нужен непустой summary.md); cancel — отменить (lead или человек: --as human); show/list — посмотреть."
       echo "close отказывает, пока есть подзадачи в работе или идут прогоны (--force — отменить и остановить их). Есть непрочитанное для lead'а (то, что разбудило бы его wait) — close показывает его (оно считается доставленным) и отказывает: учти и повтори close."
@@ -2164,6 +2164,38 @@ git_dir_v() {
   GD_NOTE=
   eval "$1=\$_gd_d"
 }
+# A new project's config is the template with every setting commented out ("# key: value"),
+# so later defaults arrive through config.default; an existing config is never changed.
+# cfg_key_line_v VAR LINE — the key of a setting line "key: value" (one commented out with
+# "#" and blanks too); 1 if LINE is not one
+cfg_key_line_v() {
+  local _ck_l=${2%"$CR"} _ck_k
+  case $_ck_l in '#'*) _ck_l=${_ck_l#\#} ;; esac
+  while :; do case $_ck_l in [[:space:]]*) _ck_l=${_ck_l#?} ;; *) break ;; esac; done
+  case $_ck_l in *:*) ;; *) return 1 ;; esac
+  _ck_k=${_ck_l%%:*}
+  case $_ck_k in '' | *[!A-Za-z0-9_.-]*) return 1 ;; esac
+  eval "$1=\$_ck_k"
+}
+# cfg_commented_write SRC DST — SRC with "# " before every active setting line (tmp + mv)
+cfg_commented_write() {
+  local line k out=
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in '#'* | '') ;; *) cfg_key_line_v k "$line" && line="# $line" ;; esac
+    out=$out$line$NL
+  done <"$1"
+  printf '%s' "$out" >"$2.brg.$$" && mv_retry "$2.brg.$$" "$2"
+}
+# cfg_keys_any FILE → CFG_KEYS: the keys of its setting lines, active or commented out
+cfg_keys_any() {
+  local line k
+  CFG_KEYS=
+  [ -f "$1" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    cfg_key_line_v k "$line" && CFG_KEYS="$CFG_KEYS $k"
+  done <"$1"
+}
+
 # The whole .brigada is kept out of git (DESIGN §3). Up to 0.2.0 init excluded only
 # the correspondence and the runtime: those lines (and their comment) are replaced.
 GIT_EXCLUDE=.brigada/
@@ -2417,10 +2449,9 @@ cmd_init() {
   [ -f "$tpl/board.html" ] && install_file "$tpl/board.html" "$B/board.html"
   install_file "$tpl/config" "$B/config.default"
   if [ ! -f "$B/config" ]; then
-    install_file "$tpl/config" "$B/config"
+    cfg_commented_write "$tpl/config" "$B/config" || die "не удалось создать $B/config"
   else
-    CFG_KEYS=
-    cfg_parse "$B/config" cfg_key_collect
+    cfg_keys_any "$B/config" # a commented-out key is there too: its value is the default
     local have=$CFG_KEYS
     CFG_KEYS=
     cfg_parse "$tpl/config" cfg_key_collect
@@ -2443,7 +2474,7 @@ cmd_init() {
   if [ -n "$fresh" ]; then
     echo "── brigada $BRG_VERSION: создано $B"
   else
-    echo "── brigada $BRG_VERSION: обновлено $B (bin/brg, brg-serve.py, README.md, PROTOCOL.md, board.html, config.default, VERSION); состояние и config не тронуты"
+    echo "── brigada $BRG_VERSION: обновлено $B (bin/brg, bin/brg.cmd, brg-serve.py, README.md, PROTOCOL.md, board.html, config.default, VERSION); состояние и config не тронуты"
   fi
   [ -n "$missing" ] && echo "В config нет ключей:$missing — действуют значения из config.default."
   echo "git: $GIT_NOTE"

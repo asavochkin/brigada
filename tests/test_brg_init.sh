@@ -24,7 +24,8 @@ test_init_creates_layout() {
   done
   assert_eq "$(cat "$ROOT/bin/brg")" "$(cat "$p/.brigada/bin/brg")" "bin/brg copied"
   assert_eq "$(cat "$ROOT/template/README.md")" "$(cat "$p/.brigada/README.md")" "README copied"
-  assert_eq "$(cat "$ROOT/template/config")" "$(cat "$p/.brigada/config")" "config copied"
+  assert_eq "$(tpl_commented)" "$(cat "$p/.brigada/config")" "config: the template, settings commented out"
+  assert_eq "$(cat "$ROOT/template/config")" "$(cat "$p/.brigada/config.default")" "config.default copied"
   assert_eq 0 "$(cat "$p/.brigada/lobby/seq")" "seq"
   assert_eq "$(bash "$BRG_SRC" version)" "brg $(cat "$p/.brigada/VERSION")" "VERSION"
   assert_contains "$(cat "$p/.brigada/run/metrics.log")" " - init version="
@@ -32,6 +33,63 @@ test_init_creates_layout() {
   out=$(cd "$p" && bash .brigada/bin/brg who)
   assert_contains "$out" "агентов нет"
   assert_contains "$out" "bash .brigada/bin/brg join"
+}
+
+# tpl_commented — template/config with "# " before every setting line (what init writes)
+tpl_commented() { awk '/^[A-Za-z0-9_.-]+:/ { print "# " $0; next } { print }' "$ROOT/template/config"; }
+
+# S9: a new project's config has every setting commented out, so a later default (in
+# config.default) takes effect; an uncommented value still beats it; an existing config
+# is never changed; a commented-out key counts as present for "В config нет ключей".
+test_init_config_commented_defaults_flow() {
+  local p a c out k n
+  p=$(mk_tmpdir)
+  out=$(bash "$BRG_SRC" init "$p") || fail init
+  B=$p/.brigada BRG=$p/.brigada/bin/brg P=$p
+  assert_eq "" "$(grep -v '^#' "$B/config" | grep -v '^$')" "no active line in a new config"
+  n=$(awk '/^[A-Za-z0-9_.-]+:/' "$ROOT/template/config" | wc -l | tr -d ' ')
+  assert_eq "$n" "$(awk '/^# [A-Za-z0-9_.-]+:/' "$B/config" | wc -l | tr -d ' ')" "every setting is there, commented out"
+  for k in wait_timeout.codex.msys spawn.opencode.args runner_dead_grace; do
+    assert_contains "$(cat "$B/config")" "# $k: " "$k"
+  done
+  # the built-in values and config.default act alike: the template is the defaults
+  a=$(join_as claude)
+  assert_contains "$(brg status --as "$a")" "Таймаут wait: 100 с"
+  # a new default in config.default (as a later brg init would bring) takes effect
+  awk '{ sub(/^wait_timeout\.claude: 100$/, "wait_timeout.claude: 42"); print }' "$B/config.default" >"$B/cd.tmp" && mv "$B/cd.tmp" "$B/config.default"
+  assert_contains "$(brg status --as "$a")" "Таймаут wait: 42 с" "config.default is read"
+  # an uncommented value in config beats it
+  awk '{ sub(/^# wait_timeout\.claude: 100$/, "wait_timeout.claude: 9"); print }' "$B/config" >"$B/c.tmp" && mv "$B/c.tmp" "$B/config"
+  assert_contains "$(brg status --as "$a")" "Таймаут wait: 9 с" "config beats config.default"
+  # platform keys: config.default has wait_timeout.codex.msys: 100 and wait_timeout.codex: 25
+  brg leave --as "$a" >/dev/null || fail leave
+  c=$(join_as codex)
+  assert_contains "$(brg status --as "$c")" "Таймаут wait: 25 с" "codex here: the harness key of config.default"
+  brg leave --as "$c" >/dev/null || fail leave
+  c=$(BRG_PLATFORM=MSYS join_as codex)
+  assert_contains "$(BRG_PLATFORM=MSYS brg status --as "$c")" "Таймаут wait: 100 с" "codex on msys: the platform key of config.default"
+  # the harness key in config beats the platform key in config.default
+  printf 'wait_timeout.codex: 33\n' >>"$B/config"
+  assert_contains "$(BRG_PLATFORM=MSYS brg status --as "$c")" "Таймаут wait: 33 с" "config's harness key on msys"
+  # re-init: config byte for byte, no missing keys (commented ones count), config.default updated
+  cp "$B/config" "$B/config.before"
+  out=$(bash "$BRG_SRC" init "$p") || fail reinit
+  same_bytes "$B/config.before" "$B/config" "config changed by init"
+  assert_not_contains "$out" "В config нет ключей"
+  assert_eq "$(cat "$ROOT/template/config")" "$(cat "$B/config.default")" "config.default restored"
+  # an existing old-style config (active values, CRLF, no final newline) is never changed
+  printf 'heartbeat: 30\r\n# мой комментарий\r\nwait_timeout.claude: 100' >"$B/config"
+  cp "$B/config" "$B/config.before"
+  out=$(bash "$BRG_SRC" init "$p") || fail reinit
+  same_bytes "$B/config.before" "$B/config" "an old config changed by init"
+  assert_contains "$out" "В config нет ключей: wait_timeout.default wait_timeout.opencode wait_timeout.codex wait_timeout.codex.msys asleep_after"
+  # a commented key with spaces or CRLF counts as present too
+  printf '#   heartbeat: 30\r\n#wait_timeout.default: 1\n' >"$B/config"
+  out=$(bash "$BRG_SRC" init "$p") || fail reinit
+  assert_contains "$out" "В config нет ключей: wait_timeout.claude wait_timeout.opencode"
+  assert_not_contains "$out" " heartbeat"
+  assert_not_contains "$out" "нет ключей: wait_timeout.default"
+  rm -f "$B/config.before"
 }
 
 test_init_defaults_to_cwd_and_template_matches_builtin_defaults() {
