@@ -66,7 +66,8 @@ is_uint() {
 }
 
 # dec_v VAR VALUE — VALUE as a decimal integer into VAR: digits only, at most 9 of them;
-# leading zeros are decimal (08 is 8, not a bash octal error). Exit 1, VAR untouched, otherwise
+# leading zeros are decimal (08 is 8, not a bash octal error). Exit 1, VAR untouched, otherwise.
+# Not for epochs (10 digits) or other values that may exceed 9 digits: use is_uint there
 dec_v() {
   is_uint "$2" && [ ${#2} -le 9 ] || return 1
   eval "$1=\$((10#\$2))"
@@ -10975,9 +10976,10 @@ board_task() {
 # board_settled DIR — a finished task whose data no longer change: closed longer than
 # BOARD_SETTLE ago, or none of its runs is still going
 board_settled() {
-  local f e
+  local f
   task_read "$1"
-  dec_v e "$TK_CLOSED_EPOCH" && [ $((NOW - e)) -gt "$BOARD_SETTLE" ] && return 0
+  # an epoch has 10 digits: is_uint, not dec_v (≤ 9 digits)
+  is_uint "$TK_CLOSED_EPOCH" && [ $((NOW - TK_CLOSED_EPOCH)) -gt "$BOARD_SETTLE" ] && return 0
   for f in "$1"/shared/runs/R[0-9]*; do
     [ -f "$f" ] || continue
     case ${f##*/} in *.*) continue ;; esac

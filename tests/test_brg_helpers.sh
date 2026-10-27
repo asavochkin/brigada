@@ -27,3 +27,24 @@ test_dec_v() {
 [8x]!keep
 [0x10]!keep" "$out"
 }
+
+# board_settled: a task closed an hour ago is settled even with a run record still
+# "running" (the epoch has 10 digits — not dec_v); a fresh close with it is not
+test_board_settled_epoch() {
+  local a d out
+  new_proj
+  a=$(join_as claude)
+  task_new_as "$a" "задача"
+  brg task cancel --as human >/dev/null || fail "task cancel"
+  d=$B/tasks/T001
+  mkdir -p "$d/shared/runs"
+  printf 'Id: R001\nTask: T001\nAgent: claude-1\nCommand: make\nMode: bg\nTimeout: 100\nStatus: running\nRequested: x\nRequested-Epoch: 1\n\n' >"$d/shared/runs/R001"
+  out=$(BRG_SOURCE_ONLY=1 bash -c '
+    . "$1"
+    get_now
+    board_settled "$2" && echo fresh-settled || echo fresh-live
+    sed "s/^Closed-Epoch: .*/Closed-Epoch: $((NOW - 3600))/" "$2/task" >"$2/task.new" && mv "$2/task.new" "$2/task"
+    board_settled "$2" && echo old-settled || echo old-live' _ "$BRG" "$d")
+  assert_eq "fresh-live
+old-settled" "$out"
+}
