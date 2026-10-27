@@ -167,7 +167,7 @@ bash .brigada/bin/brg lead give <имя> --as <имя>      # передать �
 Подзадачи:
 
 ```
-bash .brigada/bin/brg item list [--as <имя>] [--mine] [--status todo]
+bash .brigada/bin/brg item list [--as <имя> [--mine]] [--status todo]
 bash .brigada/bin/brg item show I00N
 bash .brigada/bin/brg item add --as <имя> --title "…" --desc "что сделать, критерий готовности" --paths "src/auth,tests/auth"
 bash .brigada/bin/brg item add --as <имя> --title "…" --desc "…" --no-review       # проверка не нужна (решили заранее)

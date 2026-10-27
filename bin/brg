@@ -2060,7 +2060,7 @@ usage_line_v() { # VAR CMD
     resume) _ul_u="$BRG resume [<имя>]" ;;
     task) _ul_u="$BRG task new --as <имя> --title \"…\" [--cancel-current] [--file F] <<'BRG_EOF' постановка BRG_EOF | task new --as human --title \"…\" [--cancel-current] [--file F] (человек) | task close --as <lead> [--force] | task cancel --as <lead|human> | task show [T00N] | task list" ;;
     lead) _ul_u="$BRG lead give <имя> --as <lead> | lead take --as <имя> | lead give <имя> --as human (человек)" ;;
-    item) _ul_u="$BRG item add --as <имя> --title \"…\" [--desc \"описание\" | --file F | <<'BRG_EOF' описание BRG_EOF] [--paths \"предлагаемые пути\"] [--no-review] | item claim I00N --as <имя> [--paths \"src/a,tests/a\"|none] | item done I00N --as <имя> [--note \"итог\"] [--result <путь>] [--no-review] | item release I00N --as <имя> | item reassign I00N --to <имя> --as <lead> | item review I00N --as <имя> --start | item review I00N --as <имя> --verdict ok|changes [--comment \"…\" | --file F | <<'BRG_EOF' комментарий BRG_EOF] | item review I00N --as <имя> --verdict skip [--comment \"почему\" | --file F] | item cancel I00N --as <имя> [--comment \"почему\" | --file F] | item list [--as <имя>] [--mine] [--status todo,claimed,done,cancelled] | item show I00N" ;;
+    item) _ul_u="$BRG item add --as <имя> --title \"…\" [--desc \"описание\" | --file F | <<'BRG_EOF' описание BRG_EOF] [--paths \"предлагаемые пути\"] [--no-review] | item claim I00N --as <имя> [--paths \"src/a,tests/a\"|none] | item done I00N --as <имя> [--note \"итог\"] [--result <путь>] [--no-review] | item release I00N --as <имя> | item reassign I00N --to <имя> --as <lead> | item review I00N --as <имя> --start | item review I00N --as <имя> --verdict ok|changes [--comment \"…\" | --file F | <<'BRG_EOF' комментарий BRG_EOF] | item review I00N --as <имя> --verdict skip [--comment \"почему\" | --file F] | item cancel I00N --as <имя> [--comment \"почему\" | --file F] | item list [--as <имя> [--mine]] [--status todo,claimed,done,cancelled] | item show I00N" ;;
     run) _ul_u="$BRG run --as <имя> [--sync] [--timeout 10m] [--item I00N] -- <команда> [аргументы…]  |  run list · run show R00N · run cancel R00N --as <имя>" ;;
     doctor) _ul_u="$BRG doctor  |  из репозитория brigada: bash /путь/к/brigada/bin/brg doctor [каталог_проекта]" ;;
     board) _ul_u="$BRG board [--interval S] [--port P] [--bind ADDR] [--static] [--once]" ;;
@@ -2162,7 +2162,7 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
   item reassign I00N --to <имя> --as <lead>
   item review I00N --as <имя> --start · --verdict ok|changes [--comment "…"] < комментарий
   item review I00N --as <имя> --verdict skip [--comment "почему"]   проверка не нужна
-  item list [--as <имя>] [--mine] [--status todo] · item show I00N
+  item list [--as <имя> [--mine]] [--status todo] · item show I00N
   run --as <имя> [--sync] [--timeout 10m] [--item I00N] -- <команда>   тесты/сборка по очереди;
                                      результат придёт сообщением · run list · run show|cancel R00N
   who                                кто подключён
