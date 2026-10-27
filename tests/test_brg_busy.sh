@@ -578,3 +578,45 @@ test_empty_item_mark_note_only_for_the_acting_assignee() {
   out=$(brg item release I001 --as "$C")
   assert_contains "$out" "Ты отмечен «работает: возня»"
 }
+
+# a verdict on a handed-in item closes the round (DESIGN §7.1.1): the other reviewers are
+# out of Reviewing, get a message that wakes them alone, keep their marks, and their next
+# wait --busy keeps the mark; a verdict on an item in work takes out only its author
+test_verdict_closes_the_round_for_other_reviewers() {
+  local out E i=0 v last
+  busy_setup
+  E=$(join_as claude sonnet)
+  ack_all "$E"
+  ack_all "$E" "$D"
+  for v in ok changes skip; do
+    i=$((i + 1))
+    item_add_as "$A" "Сданная $v"
+    brg item claim "I00$i" --as "$Bn" --paths "src/$i" >/dev/null || fail "claim $i"
+    brg item done "I00$i" --as "$Bn" --note ok >/dev/null || fail "done $i"
+    brg item review "I00$i" --as "$C" --start >/dev/null || fail "start C $i"
+    brg item review "I00$i" --as "$E" --start >/dev/null || fail "start E $i"
+    out=$(brg item review "I00$i" --as "$C" --verdict "$v" --comment "по делу")
+    assert_contains "$out" "Круг проверки закрыт: ${E%%.*} больше не среди проверяющих"
+    assert_eq "" "$(hdr "$D/items/I00$i" Reviewing)" "$v: the round is over"
+    assert_eq "I00$i" "$(mk "$E" Item)" "$v: the other reviewer's mark stays"
+    last=$(tmsg T001 "$(cat "$D/seq")")
+    assert_eq "${E%%.*}" "$(hdr "$last" To)"
+    assert_eq "${E%%.*}" "$(hdr "$last" Wake)" "$v: wakes the other reviewer alone"
+    assert_contains "$(cat "$last")" "${E%%.*}: круг проверки I00$i «Сданная $v» закрыт вердиктом $v от ${C%%.*} — вас больше нет среди проверяющих. Продолжаете проверку — повторите bash $BRG item review I00$i --as <имя> --start"
+    out=$(brg wait --as "$E" --busy "проверка I00$i" --timeout 0)
+    assert_contains "$out" "закрыт вердиктом $v"
+    assert_not_contains "$out" "не твоя подзадача"
+    assert_eq "I00$i" "$(mk "$E" Item)" "$v: wait --busy keeps the mark"
+    assert_eq "── NEXT: обработай, затем: bash $BRG wait --as $E --busy \"проверка I00$i\" --timeout 0" "$(last_line "$out")"
+    brg wait --as "$E" --timeout 0 >/dev/null # the subagent is done: free
+  done
+  # an item in work: the verdict takes out only its author, nobody else is told
+  item_add_as "$A" "В работе"
+  brg item claim I004 --as "$Bn" --paths src/4 >/dev/null || fail "claim 4"
+  brg item review I004 --as "$C" --start >/dev/null
+  brg item review I004 --as "$E" --start >/dev/null
+  out=$(brg item review I004 --as "$C" --verdict changes --comment "поправь")
+  assert_not_contains "$out" "Круг проверки закрыт"
+  assert_eq "${E%%.*}" "$(hdr "$D/items/I004" Reviewing)"
+  assert_not_contains "$(cat "$(tmsg T001 "$(cat "$D/seq")")")" "круг проверки"
+}

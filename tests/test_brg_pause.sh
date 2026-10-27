@@ -327,8 +327,10 @@ test_pause_output_cap_text() {
   assert_not_contains "$out" "придут следующим wait сразу"
 }
 
-# say does not lift the pause (it only wakes the waits); a new task does
-test_pause_say_keeps_it_and_task_new_lifts_it() {
+# say does not lift the pause (it only wakes the waits); an agent's task new is refused under
+# the general pause and its own one (another agent's does not matter); the human's lifts the
+# general pause (DESIGN §6, §9)
+test_pause_say_keeps_it_and_task_new_is_refused() {
   local out
   paused_setup
   brg pause >/dev/null
@@ -340,18 +342,36 @@ test_pause_say_keeps_it_and_task_new_lifts_it() {
   out=$(brg say --to "${Bn%%.*}" "лично")
   assert_contains "$out" "На паузе: ${Bn%%.*} — сообщение их разбудило, но пауза не снята"
   assert_file_exists "$B/run/paused.${Bn%%.*}"
-  # an agent's task new (the human gave work in its chat) lifts the general pause and the author's own
-  brg pause >/dev/null
-  brg pause "${A%%.*}" >/dev/null
   brg task cancel --as human >/dev/null || fail cancel
-  out=$(printf 'x\n' | brg task new --as "$A" --title "После паузы")
+  # another agent's pause does not block
+  out=$(printf 'x\n' | brg task new --as "$A" --title "Чужая пауза")
+  assert_eq 0 "$?" "another agent's pause does not block"
+  assert_file_exists "$B/run/paused.${Bn%%.*}"
+  brg task cancel --as human >/dev/null || fail cancel2
+  # the general pause
+  brg pause >/dev/null
+  out=$(printf 'x\n' | brg task new --as "$A" --title "После паузы" 2>&1)
+  assert_eq 1 "$?" "refused under the general pause"
+  assert_eq "── ПАУЗА: человек поставил на паузу бригаду. Новую работу не начинай; сдай сделанное и жди (wait)." "$(printf '%s\n' "$out" | head -n 1)"
+  assert_contains "$out" "── ОШИБКА: человек поставил на паузу бригаду — task new не выполнено: на паузе задачу не создают, паузу снимает только человек"
+  assert_contains "$out" "снять паузу — brg resume, или дать задачу самому — task new --as human, или с доски (brg board)."
+  assert_eq "── NEXT: скажи человеку в чате, что задачу не создать, пока стоит пауза; затем bash $BRG wait --as $A" "$(printf '%s\n' "$out" | tail -n 1)"
+  assert_file_exists "$B/run/paused"
+  assert_file_not_exists "$B/tasks/active"
+  # the author's own pause
+  brg resume >/dev/null
+  brg pause "${A%%.*}" >/dev/null
+  out=$(printf 'x\n' | brg task new --as "$A" --title "После паузы" 2>&1)
+  assert_contains "$out" "── ОШИБКА: человек поставил на паузу тебя (${A%%.*}) — task new не выполнено"
+  assert_contains "$out" "снять твою паузу — brg resume ${A%%.*}."
+  assert_file_exists "$B/run/paused.${A%%.*}"
+  # the human's task lifts the general pause only
+  brg pause >/dev/null
+  out=$(printf 'x\n' | brg task new --as human --title "От человека")
   assert_eq 0 "$?"
-  assert_contains "$out" "Общая пауза снята: человек дал новую задачу."
-  assert_contains "$out" "Пауза, поставленная тебе человеком, снята"
-  assert_not_contains "$out" "ПАУЗА:" "task new lifts the pause: no banner"
+  assert_contains "$out" "Общая пауза снята."
   assert_file_not_exists "$B/run/paused"
-  assert_file_not_exists "$B/run/paused.${A%%.*}"
-  assert_file_exists "$B/run/paused.${Bn%%.*}" "other personal pauses stay"
+  assert_file_exists "$B/run/paused.${A%%.*}" "personal pauses stay"
 }
 
 # The human's own commands that wake a paused wait: say, task cancel --as human, lead give --as human
@@ -418,4 +438,31 @@ test_pause_self_assigned_lead_is_announced_after_the_pause() {
   assert_contains "$(cat "$P/wa")" "${A%%.*} — lead задачи T002 (назначен brg: первый на связи)"
   assert_contains "$(cat "$P/wb")" "${A%%.*} — lead задачи T002"
   assert_eq "── пауза снята: человек снял паузу — новую работу можно начинать." "$(head -n 1 "$P/wb")"
+}
+
+# A launched agent on a pause (DESIGN §5.5, §9; a synthetic spawn record, no harness): free —
+# the banner and the refusal say "end the turn"; its subagent works (a valid busy mark) —
+# "finish it in wait --busy", as its NEXT says; never both at once
+test_pause_banner_of_a_launched_agent() {
+  local out c
+  paused_setup
+  c=${C%%.*}
+  { printf 'Spawn: S009\n'; cat "$B/agents/$c"; } >"$B/agents/$c.tmp" && mv "$B/agents/$c.tmp" "$B/agents/$c"
+  mkdir -p "$B/run/spawn/S009"
+  printf 'Id: S009\nAgent: %s\nState: frozen\n\n' "$c" >"$B/run/spawn/S009/spawn"
+  brg pause >/dev/null
+  out=$(brg item list --as "$C")
+  assert_eq "── ПАУЗА: человек поставил на паузу бригаду. Новую работу не начинай; сдай сделанное и заверши ход — brg разбудит тебя при сообщении человека или снятии паузы." "$(printf '%s\n' "$out" | head -n 1)" "free: end the turn"
+  out=$(brg item add --as "$C" --title "Новая" --desc "о" 2>&1)
+  assert_eq 1 "$?"
+  assert_contains "$out" "её не снимает — заверши ход, brg разбудит тебя."
+  assert_eq "── NEXT: заверши ход — brg разбудит тебя, когда будет новое" "$(printf '%s\n' "$out" | tail -n 1)"
+  brg busy --as "$C" "пишу код" >/dev/null || fail busy
+  out=$(brg item list --as "$C")
+  assert_eq "── ПАУЗА: человек поставил на паузу бригаду. Новую работу не начинай; твой подагент работает — доведи начатое и жди в wait --busy (как в NEXT), ход не завершай." "$(printf '%s\n' "$out" | head -n 1)" "busy: finish in wait --busy"
+  out=$(brg item add --as "$C" --title "Новая" --desc "о" 2>&1)
+  assert_eq 1 "$?"
+  assert_contains "$out" "твой подагент работает: доведи начатое и жди в wait --busy (NEXT), ход не завершай."
+  assert_not_contains "$out" "заверши ход"
+  assert_eq "── NEXT: bash $BRG wait --as $C --busy \"пишу код\"" "$(printf '%s\n' "$out" | tail -n 1)"
 }

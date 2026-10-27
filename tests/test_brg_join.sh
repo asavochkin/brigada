@@ -367,3 +367,34 @@ test_who_shows_possible_dropouts() {
   printf 'dropout_after: 100\n' >>"$B/config"
   assert_contains "$(brg who | awk -v n="${c%%.*}" 'index($0, n " ") == 1')" " · не на связи 3 мин · возможно выпал"
 }
+
+# --model: at most 120 bytes, as spawn --model; longer — cut at a UTF-8 boundary with a
+# warning, never silently (the profile keeps what was printed)
+test_join_model_limit() {
+  local out m101 m120 n u
+  new_proj
+  m101=$(awk 'BEGIN { for (i = 0; i < 101; i++) printf "a" }')
+  m120=$(awk 'BEGIN { for (i = 0; i < 120; i++) printf "b" }')
+  out=$(brg join --harness claude --model "$m101")
+  assert_not_contains "$out" "Внимание"
+  n=$(printf '%s\n' "$out" | sed -n 's/^── подключён: \([^ ]*\) .*/\1/p')
+  assert_eq "$m101" "$(hdr "$B/agents/${n%%.*}" Model)" "101 bytes kept"
+  out=$(brg join --harness claude --model "$m120")
+  assert_not_contains "$out" "Внимание"
+  n=$(printf '%s\n' "$out" | sed -n 's/^── подключён: \([^ ]*\) .*/\1/p')
+  assert_eq "$m120" "$(hdr "$B/agents/${n%%.*}" Model)" "exactly 120 kept"
+  out=$(brg join --harness claude --model "${m120}c")
+  assert_contains "$out" "Внимание: --model длиннее 120 байт (121) — сохранено обрезанным, с пометкой «…(обрезано)». Модель записана так; имя — как в харнессе, короче."
+  n=$(printf '%s\n' "$out" | sed -n 's/^── подключён: \([^ ]*\) .*/\1/p')
+  m=$(hdr "$B/agents/${n%%.*}" Model)
+  [ ${#m} -le 120 ] || fail "stored ${#m} bytes"
+  assert_contains "$m" " …(обрезано)"
+  assert_contains "$out" "· $m ·"
+  # a UTF-8 character across the boundary is not split
+  u=$(awk 'BEGIN { for (i = 0; i < 96; i++) printf "x" }')ЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖ
+  n=$(join_as claude "$u")
+  m=$(hdr "$B/agents/${n%%.*}" Model)
+  [ ${#m} -le 120 ] || fail "stored ${#m} bytes"
+  assert_eq "$(printf '%s' "$m" | iconv -f UTF-8 -t UTF-8 2>/dev/null)" "$m" "valid UTF-8"
+  assert_contains "$m" "xЖ"
+}

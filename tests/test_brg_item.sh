@@ -1382,3 +1382,33 @@ BRG_EOF
   t1=$(date -u +%s)
   [ $((t1 - t0)) -le 2 ] || fail "cancel waited for the pipe ($((t1 - t0)) s)"
 }
+
+# Reservations compare without case for ASCII and Russian Cyrillic (DESIGN §7.2): Данные and
+# данные are one directory on macOS/Windows; different words and other scripts do not clash
+test_cyrillic_paths_case_insensitive() {
+  local out i=0 p
+  item_setup
+  for i in 1 2 3 4 5 6 7 8 9; do item_add_as "$A" "Пункт $i"; done
+  claim_ok "$Bn" I1 "Данные"
+  out=$(brg item claim I2 --as "$C" --paths "данные" 2>&1)
+  assert_eq 1 "$?" "Данные/данные conflict"
+  assert_contains "$out" "  данные ↔ Данные — I001 «Пункт 1», ${Bn%%.*}"
+  out=$(brg item claim I2 --as "$C" --paths "данные/x" 2>&1)
+  assert_eq 1 "$?" "nested under a folded parent"
+  claim_ok "$C" I2 "Дорога"
+  claim_ok "$Bn" I3 "ДАННЫЕ2/Отчёт"
+  out=$(brg item claim I4 --as "$C" --paths "данные2/отчёт" 2>&1)
+  assert_eq 1 "$?" "ДАННЫЕ2/Отчёт vs данные2/отчёт"
+  claim_ok "$Bn" I5 "Яя/Ёё"
+  out=$(brg item claim I4 --as "$C" --paths "яЯ/ЁЁ/файл" 2>&1)
+  assert_eq 1 "$?" "Я, Ё fold"
+  # no false conflicts: an em dash, CJK, other letters next to Cyrillic
+  claim_ok "$Bn" I6 "Отчёт—Итог,日本/Данные3"
+  claim_ok "$C" I4 "отчёт-итог,日本/Данные4,Éte"
+  claim_ok "$Bn" I7 "éte"
+  # ASCII refusals are unchanged
+  claim_ok "$Bn" I8 "src/auth"
+  out=$(brg item claim I9 --as "$C" --paths "SRC" 2>&1)
+  assert_eq 1 "$?" "ASCII case"
+  assert_contains "$out" "  SRC ↔ src/auth — I008 «Пункт 8», ${Bn%%.*}"
+}

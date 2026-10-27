@@ -70,6 +70,13 @@ dec_v() {
   eval "$1=\$((10#\$2))"
 }
 
+# frac_ok X — a sleep step (BRG_TICK, BRG_SPAWN_STEP): ^[0-9]+(\.[0-9]+)?$. Such values go
+# only to sleep and awk, never into bash arithmetic
+frac_ok() {
+  case $1 in '' | .* | *. | *.*.* | *[!0-9.]*) return 1 ;; esac
+  return 0
+}
+
 # ipv4_ok X — a decimal IPv4 address: four octets 0–255, no leading zeros (010 is ambiguous), no
 # empty octets (checked before the split: "1.2.3.4." and "1..2.3" give four fields too)
 ipv4_ok() {
@@ -157,8 +164,8 @@ parse_dur_v() {
     *m) _pd_n=${_pd_n%m} _pd_m=60 ;;
     *h) _pd_n=${_pd_n%h} _pd_m=3600 ;;
   esac
-  is_uint "$_pd_n" && [ ${#_pd_n} -le 6 ] || return 1
-  _pd_n=$((10#$_pd_n * _pd_m))
+  [ ${#_pd_n} -le 6 ] && dec_v _pd_n "$_pd_n" || return 1
+  _pd_n=$((_pd_n * _pd_m))
   [ "$_pd_n" -ge 1 ] && [ "$_pd_n" -le 86400 ] || return 1
   eval "$1=\$_pd_n"
 }
@@ -382,25 +389,37 @@ cfg_set() {
   eval "CFG_$k=\$2"
 }
 CFGL_VARS=
+CFGL_KEYS= # " PREFIX:key …" — the keys read from the files (doctor checks numbers)
 cfg_set_layer() { # PREFIX KEY VALUE — into CFG_ and the layer PREFIX_
   local k=${2//./_}
   k=${k//-/_}
   eval "CFG_$k=\$3; $1_$k=\$3"
   CFGL_VARS="$CFGL_VARS $1_$k"
+  case "$CFGL_KEYS " in *" $1:$2 "*) ;; *) CFGL_KEYS="$CFGL_KEYS $1:$2" ;; esac
 }
 cfg_set_d() { cfg_set_layer CFGD "$@"; } # config.default
 cfg_set_u() { cfg_set_layer CFGU "$@"; } # config
-cfg_num() { # VAR KEY DEFAULT
-  local _cn_k=${2//./_} _cn_v
+# cfg_num VAR KEY DEFAULT — the first decimal value (dec_v) of config, config.default, DEFAULT;
+# a value that is not one is skipped (doctor names it). CFG_NUMK " key=VAR …" for doctor.
+CFG_NUMK=
+cfg_num() {
+  local _cn_k=${2//./_} _cn_l _cn_v _cn_r=$3
   _cn_k=${_cn_k//-/_}
-  eval "_cn_v=\${CFG_$_cn_k-}"
-  is_uint "$_cn_v" || _cn_v=$3
-  eval "$1=\$_cn_v"
+  for _cn_l in CFGU CFGD; do
+    eval "_cn_v=\${${_cn_l}_$_cn_k-}"
+    [ -n "$_cn_v" ] || continue
+    if dec_v _cn_v "$_cn_v"; then
+      _cn_r=$_cn_v
+      break
+    fi
+  done
+  eval "$1=\$_cn_r"
+  CFG_NUMK="$CFG_NUMK $2=$1"
 }
 cfg_load() {
   local v
   for v in $CFGL_VARS; do unset "$v"; done # a second load (doctor: another .brigada)
-  CFGL_VARS=
+  CFGL_VARS= CFGL_KEYS= CFG_NUMK=
   cfg_defaults
   cfg_parse "$ROOT/config.default" cfg_set_d
   cfg_parse "$ROOT/config" cfg_set_u
@@ -443,7 +462,8 @@ platform_key_v() { # VAR PLATFORM — key part for config: Darwin → darwin, MS
 #   config: wait_timeout.<harness>.<platform>, wait_timeout.<harness>
 #   config.default: the same two, then the built-in values: the same two
 #   (codex.msys: Codex on Windows blocks instead of parking, DESIGN §5.1);
-# none of them — wait_timeout.default, in the same order of files.
+# none of them — wait_timeout.default, in the same order of files. A value that is not
+# decimal (dec_v) is skipped as if absent (doctor names it).
 wait_timeout_v() {
   local _wt_t= _wt_p= _wt_l _wt_k _wt_v _wt_h=${2//[!a-z0-9_]/_}
   if [ -n "${3:-}" ]; then
@@ -453,7 +473,7 @@ wait_timeout_v() {
   for _wt_l in CFGU CFGD CFGB; do
     for _wt_k in ${_wt_p:+"${_wt_h}_$_wt_p"} "$_wt_h"; do
       eval "_wt_v=\${${_wt_l}_wait_timeout_$_wt_k-}"
-      if is_uint "$_wt_v"; then
+      if dec_v _wt_v "$_wt_v"; then
         _wt_t=$_wt_v
         break 2
       fi
@@ -462,7 +482,7 @@ wait_timeout_v() {
   if [ -z "$_wt_t" ]; then
     for _wt_l in CFGU CFGD CFGB; do
       eval "_wt_v=\${${_wt_l}_wait_timeout_default-}"
-      if is_uint "$_wt_v"; then
+      if dec_v _wt_v "$_wt_v"; then
         _wt_t=$_wt_v
         break
       fi
@@ -850,8 +870,8 @@ pause_who_v() { # VAR — whom the human paused: "бригаду" | "тебя (N
   eval "$1=\$_pw_w"
 }
 # stop_banner — the first line of an agent command while stopped (else while paused);
-# once per process. wait and status print STOP/the pause themselves, task new lifts
-# both: they set STOP_SHOWN. PAUSE_SHOWN: the pause line was printed (who adds its own).
+# once per process. wait and status print STOP/the pause themselves: they set STOP_SHOWN.
+# PAUSE_SHOWN: the pause line was printed (who adds its own).
 STOP_SHOWN=
 PAUSE_SHOWN=
 stop_banner() {
@@ -862,7 +882,11 @@ stop_banner() {
     echo "── STOP: человек остановил $w. Новую работу не начинай: сдай сделанное, если нужно (send, item done), и заверши ход."
   elif pause_who_v w; then
     STOP_SHOWN=1 PAUSE_SHOWN=1
-    if [ -n "$AGENT" ] && spawned_v x "$AGENT"; then
+    # a launched agent (DESIGN §5.5): free — end the turn; its subagent works (a valid busy
+    # mark) — finish that in wait --busy, as its NEXT says
+    if [ -n "$AGENT" ] && spawned_v x "$AGENT" && busy_read "$AGENT"; then
+      echo "── ПАУЗА: человек поставил на паузу $w. Новую работу не начинай; твой подагент работает — доведи начатое и жди в wait --busy (как в NEXT), ход не завершай."
+    elif [ -n "$AGENT" ] && spawned_v x "$AGENT"; then
       echo "── ПАУЗА: человек поставил на паузу $w. Новую работу не начинай; сдай сделанное и заверши ход — brg разбудит тебя при сообщении человека или снятии паузы."
     else
       echo "── ПАУЗА: человек поставил на паузу $w. Новую работу не начинай; сдай сделанное и жди (wait)."
@@ -883,17 +907,51 @@ work_refuse() {
       NEXT_ON_ERR="заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
     fi
     die "человек остановил $w — $1 не выполнено: при стопе новую работу не начинают" \
-      "Можно сдать сделанное и сообщить: send, item done|release, item review --verdict, task close. Стоп снимает только человек."
+      "Можно сдать сделанное и сообщить: send, item done|release|cancel, item review --verdict, task close|cancel, run cancel, lead give|take, busy, leave, команды чтения. Стоп снимает только человек."
   fi
   [ "${2-}" != stoponly ] || return 0
   pause_who_v w || return 0
   NEXT_ON_ERR="$(next_wait)"
+  if [ -n "$sp" ] && busy_read "$AGENT"; then
+    die "человек поставил на паузу $w — $1 не выполнено: на паузе новую работу не начинают" \
+      "Можно сдать сделанное и сообщить: send, item done|release|cancel, item review --verdict, task close, run (проверка начатой работы). Паузу снимает человек: brg resume или с доски; сообщение (say) её не снимает — твой подагент работает: доведи начатое и жди в wait --busy (NEXT), ход не завершай."
+  fi
   if [ -n "$sp" ]; then
     die "человек поставил на паузу $w — $1 не выполнено: на паузе новую работу не начинают" \
       "Можно сдать сделанное и сообщить: send, item done|release|cancel, item review --verdict, task close, run (проверка начатой работы). Паузу снимает человек: brg resume или с доски; сообщение (say) её не снимает — заверши ход, brg разбудит тебя."
   fi
   die "человек поставил на паузу $w — $1 не выполнено: на паузе новую работу не начинают" \
     "Можно сдать сделанное и сообщить: send, item done|release|cancel, item review --verdict, task close, run (проверка начатой работы). Паузу снимает человек: brg resume или с доски; сообщение (say) её не снимает — жди в wait."
+}
+
+# task_new_refuse — an agent's task new under the human's stop or pause (DESIGN §6, §9): the
+# general flags and the author's own refuse it (before anything changes, --cancel-current
+# included); another agent's personal flags do not matter. Only the human lifts them.
+task_new_refuse() {
+  local w sp= h c="(в чате)" t="скажи человеку в чате"
+  [ -n "$AGENT" ] && spawned_v sp "$AGENT"
+  [ -z "$sp" ] || c="(send --to human)" t="сообщи человеку (send --to human)"
+  if stop_who_v w; then
+    if [ "$w" = бригаду ]; then
+      h="попроси человека $c: снять стоп — brg resume, или дать задачу самому — task new --as human, или с доски (brg board)."
+    else
+      h="попроси человека $c: снять твой стоп — brg resume $AGENT (или ответить тебе: say --to $AGENT)."
+    fi
+    if [ -n "$sp" ]; then
+      NEXT_ON_ERR="заверши ход (стоп снимет человек; если стоп прервал твою работу — brg разбудит тебя после его снятия)"
+    else
+      NEXT_ON_ERR="$t, что задачу не создать, пока стоит стоп, и заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
+    fi
+    die "человек остановил $w — task new не выполнено: при стопе задачу не создают, стоп снимает только человек" "Задачу дал человек — $h"
+  fi
+  pause_who_v w || return 0
+  if [ "$w" = бригаду ]; then
+    h="попроси человека $c: снять паузу — brg resume, или дать задачу самому — task new --as human, или с доски (brg board)."
+  else
+    h="попроси человека $c: снять твою паузу — brg resume $AGENT."
+  fi
+  NEXT_ON_ERR="$t, что задачу не создать, пока стоит пауза; затем $(next_wait)"
+  die "человек поставил на паузу $w — task new не выполнено: на паузе задачу не создают, паузу снимает только человек" "Задачу дал человек — $h"
 }
 
 touch_seen() { # [NAME] — Last-Seen := now (not for a read command without the key)
@@ -1030,7 +1088,9 @@ busy_drop_reviewers() {
 }
 # busy_item_ok CAPTION — 0 unless CAPTION names an item ("I002", "проверка I002") that is
 # not the caller's: not claimed by AGENT in the active task and AGENT is not in its
-# Reviewing: — a stale NEXT executed after the task changed must not mark the new one
+# Reviewing: — a stale NEXT executed after the task changed must not mark the new one.
+# AGENT's own valid mark for that item is kept too: a verdict by another reviewer closed
+# the round, but AGENT's subagent may still be checking (DESIGN §7.1.1)
 busy_item_ok() {
   local _bi_id
   case $1 in
@@ -1043,6 +1103,7 @@ busy_item_ok() {
   item_read "$ACT_DIR/items/I$(printf '%03d' "$((10#$_bi_id))")" || return 1
   [ "$IT_STATUS" = claimed ] && [ "$IT_ASSIGNEE" = "$AGENT" ] && return 0
   case ",$IT_REVIEWING," in *",$AGENT,"*) return 0 ;; esac
+  busy_read "$AGENT" && [ "$BZ_ITEM" = "$IT_ID" ] && return 0
   return 1
 }
 # busy_empty_note — after an item command by AGENT: a mark with no item stays however
@@ -1266,8 +1327,7 @@ BRIEF_MAX=65536
 task_norm_id_v() {
   local _tn_n=${2%%-*}
   case $_tn_n in [Tt]*) _tn_n=${_tn_n#?} ;; esac
-  is_uint "$_tn_n" && [ ${#_tn_n} -le 6 ] || return 1
-  _tn_n=$((10#$_tn_n))
+  [ ${#_tn_n} -le 6 ] && dec_v _tn_n "$_tn_n" || return 1
   [ "$_tn_n" -gt 0 ] || return 1
   printf -v _tn_n 'T%03d' "$_tn_n"
   eval "$1=\$_tn_n"
@@ -1894,7 +1954,7 @@ rb_cleanup() { # kill the reader, remove the temp file (also from release_all)
 # rb_pipe MAXBYTES — stdin (pipe) → fd 3 opened on a complete temp copy; dies on timeout
 rb_pipe() {
   local wait=${BRG_STDIN_WAIT:-10} t=0 step=1 rc
-  is_uint "$wait" && [ "$wait" -gt 0 ] || wait=10
+  dec_v wait "$wait" && [ "$wait" -gt 0 ] || wait=10
   RB_TMP=$RUN/.body.$$.$RANDOM
   head -c "$1" <&0 >"$RB_TMP" 2>/dev/null &
   RB_PID=$!
@@ -2017,11 +2077,12 @@ usage_print() {
   usage_line_v u "$1"
   printf 'Использование: %s\n' "$u"
   case $1 in
-    join) echo "Подключиться к бригаде: выдаёт полное имя <харнесс>-<n>.<ключ> (например, claude-1.k7f3q9) — его целиком передавай в --as каждой команды; кто онлайн, активную задачу, таймаут wait и NEXT. --as — вернуться под старым именем, если потерян ключ (тот же харнесс; курсоры сохраняются; ключ новый, прежний перестаёт работать); разрешено, только когда прежняя сессия «выпала» — ни wait, ни вызовов brg дольше max(таймаут wait + 60 с, dropout_after) — или asleep/gone, или после leave." ;;
+    join) echo "Подключиться к бригаде: выдаёт полное имя <харнесс>-<n>.<ключ> (например, claude-1.k7f3q9) — его целиком передавай в --as каждой команды; кто онлайн, активную задачу, таймаут wait и NEXT. --model — до 120 байт (длиннее обрезается с предупреждением). --as — вернуться под старым именем, если потерян ключ (тот же харнесс; курсоры сохраняются; ключ новый, прежний перестаёт работать); разрешено, только когда прежняя сессия «выпала» — ни wait, ни вызовов brg дольше max(таймаут wait + 60 с, dropout_after) — или asleep/gone, или после leave." ;;
     leave) echo "Отключиться (тихое системное сообщение в lobby). Живой wait агента завершится на ближайшем тике." ;;
     send) echo "Отправить сообщение (тело — stdin или --file; CRLF→LF; лимит msg_max_bytes). По умолчанию --to all, канал — активная задача (нет задачи — lobby). --reply-by: по сроку твой wait вернёт сводку, кто ответил. --ask (с --to human): вопрос человеку — открыт на доске, в who и в терминале brg board, пока его автор (переслав ответ человека) или человек не ответит с --re на него (задай его и текстом в своём чате; ответ получил — перешли суть бригаде с --re N; уточнить — новым --ask)." ;;
     wait)
       echo "Ждать сообщений (последнее действие каждого шага). Слушает lobby и активную задачу. Всегда код 0, последняя строка — NEXT (кроме STOP/SUPERSEDED)."
+      echo "--timeout S — секунды (десятичное число; по умолчанию — таймаут твоего харнесса из config). 0 возвращается сразу — не используй: NEXT повторит его, и цикл wait станет горячим."
       echo "На паузе (brg pause) wait просыпается только от сообщений человека и снятия паузы (тогда выводит «пауза снята» и накопленное); таймаут на паузе — строка «── пауза · нет новых от человека»."
       echo "wait без --busy значит «я свободен» (в списках — «ждёт»). --busy [\"подпись\"] — «мой подагент работает»: в who, status и на доске ты «работает: подпись» (подпись — до 2 слов, лишнее и кавычки, \$, \`, %, \\ обрезаются с предупреждением; без подписи — просто «работает»). Пометка действует в активной задаче; NEXT повторяет --busy, пока она стоит, поэтому копируй NEXT дословно. item claim и item review --start ставят её сами. Подагент закончил — следующий wait без --busy."
       ;;
@@ -2033,15 +2094,15 @@ usage_print() {
     tail) echo "Переписка в читаемом виде: без канала — lobby и активная задача (следит за сменой задачи); -f — следить (Ctrl-C — выход)." ;;
     say) echo "Сообщение от human (по умолчанию всем, в канал активной задачи); снимает общий стоп и стоп названных агентов (паузу не снимает — она будится человеком, но остаётся: resume). --re N — ответ на сообщение #N (на вопрос агента: закрывает его на доске)." ;;
     status) echo "Кто я, задача и моя роль, непрочитанное (без сдвига курсора), мои дедлайны, жив ли мой wait, NEXT. С именем без ключа — только просмотр (не подтверждает, что ты этот агент)." ;;
-    stop) echo "Остановить бригаду (или одного агента): wait возвращает STOP сразу и на ближайшем тике; любая команда агента печатает STOP первой строкой; item add|claim|reassign, item review --start и запуск run отказывают." ;;
+    stop) echo "Остановить бригаду (или одного агента): wait возвращает STOP сразу и на ближайшем тике; любая команда агента печатает STOP первой строкой; item add|claim|reassign, item review --start, запуск run и task new агента отказывают. Снять: resume, say (общий и адресатов), task new --as human (общий)." ;;
     pause)
-      echo "Пауза для всей бригады (или одного агента): мягче стопа — агент ход не завершает, а ждёт в wait. Новую работу он не начинает (item add|claim|reassign и item review --start откажут; сдать сделанное, отправить сообщение и run для начатой работы можно, подагент доводит своё); wait просыпается только от твоих сообщений (say, task new|cancel --as human, lead give --as human) и от снятия паузы."
+      echo "Пауза для всей бригады (или одного агента): мягче стопа — агент ход не завершает, а ждёт в wait. Новую работу он не начинает (item add|claim|reassign, item review --start и task new агента откажут; сдать сделанное, отправить сообщение и run для начатой работы можно, подагент доводит своё); wait просыпается только от твоих сообщений (say, task new|cancel --as human, lead give --as human) и от снятия паузы."
       echo "Снять: brg resume [<имя>] или кнопкой на доске (brg board с Python); say паузу не снимает. Пауза при стопе — стоп сильнее."
       ;;
     resume) echo "Снять стоп и паузу: без имени — общие и все личные, с именем — только этого агента (общая пауза стоит, пока не вызван resume без имени). Остановленные агенты завершили ход — напиши им «продолжай»; агенты на паузе вернутся из wait сами." ;;
     init) echo "Создать/обновить <проект>/.brigada: bin/brg, bin/brg.cmd, brg-serve.py, README.md, PROTOCOL.md, board.html, config.default, VERSION; состояние и config не трогает (новый config — все настройки закомментированы, значения по умолчанию — из config.default). В корне проекта дописывает (или обновляет) короткий блок brigada в AGENTS.md (нет — создаёт и исключает из git) и в CLAUDE.md, если он есть и не импортирует AGENTS.md: тогда агенту достаточно сказать «подключись к бригаде». --no-agents-md — эти файлы не трогать." ;;
     task)
-      echo "Задачи (одна активная): new — создать (ты lead; постановка человека дословно → brief.md; человек сам даёт задачу с --as human: lead выбирает brg — прежний lead, если на связи, иначе первый подключившийся); close — закрыть (lead; нужен непустой summary.md); cancel — отменить (lead или человек: --as human); show/list — посмотреть."
+      echo "Задачи (одна активная): new — создать (ты lead; постановка человека дословно → brief.md; при стопе или паузе — общих или твоих — отказ: снимает их только человек; человек сам даёт задачу с --as human: lead выбирает brg — прежний lead, если на связи, иначе первый подключившийся; так снимаются общие стоп и пауза); close — закрыть (lead; нужен непустой summary.md); cancel — отменить (lead или человек: --as human); show/list — посмотреть."
       echo "close отказывает, пока есть подзадачи в работе или идут прогоны (--force — отменить и остановить их). Есть непрочитанное для lead'а (то, что разбудило бы его wait) — close показывает его (оно считается доставленным) и отказывает: учти и повтори close."
       ;;
     lead) echo "Роль lead в активной задаче (фасилитатор и связь с человеком; lead есть всегда): give — передать (только текущий lead; человек — в любой момент: lead give <имя> --as human); take — взять, если текущий lead asleep/gone или lead нет." ;;
@@ -2049,7 +2110,7 @@ usage_print() {
       echo "Подзадачи активной задачи. Как работать — решает бригада; обязательно одно: стадия подзадачи в brg (её видит человек на доске) — такая, как на деле. Переводят её этими командами."
       echo "add — добавить (todo; описание — --desc \"…\", stdin (heredoc) или --file; --paths — предлагаемые пути; --no-review — проверка не нужна, решили заранее); claim — взять в работу с резервированием путей (--paths относительно корня проекта, через запятую; none — без правок файлов; без --paths — предлагаемые пути подзадачи; пересечение с чужими резервированиями — отказ, со своими (другие твои подзадачи) — предупреждение); повторный claim своей — сменить пути; claim исполнителем сданной (done) — вернуть её в работу (правки, переделка; прежние пути)."
       echo "done — сдать (только исполнитель; снимает резервирования; --note — итог одной строкой до 500 байт, --result — файл с подробностями): «на проверке», «готово» — после ревью ok; --no-review — сдать без проверки (сразу «готово · без проверки»). release — вернуть в todo (исполнитель; lead — если исполнитель asleep/gone); reassign — передать другому (lead, если исполнитель asleep/gone; так же — правки сданной). cancel — подзадача не нужна (todo — любой; в работе или сданная — исполнитель или lead; --comment или --file — почему, необязательно): «отменено», назад пути нет."
-      echo "review — проверка: --start — «взялся проверять» (не исполнитель; видно в сводке wait и item list; текста нет, stdin не читается); --verdict ok|changes — вердикт (не исполнитель; лучше агент другой модели), комментарий — --comment \"…\", stdin (heredoc) или --file; --verdict skip — проверка не нужна (любой, и исполнитель; комментарий необязателен — --comment или --file). Вердикт по сданной заканчивает круг проверки (Reviewing очищается). Результат получают исполнитель и lead. После changes исполнитель возвращает сданную подзадачу в работу тем же claim, правит и снова done."
+      echo "review — проверка: --start — «взялся проверять» (не исполнитель; видно в сводке wait и item list; текста нет, stdin не читается); --verdict ok|changes — вердикт (не исполнитель; лучше агент другой модели), комментарий — --comment \"…\", stdin (heredoc) или --file; --verdict skip — проверка не нужна (любой, и исполнитель; комментарий необязателен — --comment или --file). Вердикт по сданной заканчивает круг проверки (Reviewing очищается): остальные проверяющие получают сообщение (продолжаешь — повтори --start), их пометка «работает» остаётся. Результат получают исполнитель и lead. После changes исполнитель возвращает сданную подзадачу в работу тем же claim, правит и снова done."
       echo "list/show — посмотреть: стадия (todo · в работе · на проверке · правки · готово · отменено), кто проверяет; list --status — по статусу (todo, claimed, done, cancelled)."
       echo "Длинные --title, --note, --desc, --comment не отвергаются, а обрезаются с пометкой «…(обрезано)» и предупреждением."
       ;;
@@ -2692,7 +2753,9 @@ cmd_join() {
   norm_harness_v h "$raw_h"
   [ -n "$h" ] || usage_die "недопустимый --harness: $raw_h"
   m=${m//[[:cntrl:]]/}
-  m=${m:0:100}
+  # at most 120 bytes, the limit of spawn --model (ASCII there): longer — cut at a UTF-8
+  # boundary with a warning, never silently
+  fit_v m "$m" 120 "--model" "Модель записана так; имя — как в харнессе, короче."
   if [ -n "$re" ] && { ! valid_name "$re" || [ ! -f "$ROOT/agents/$re" ]; }; then
     die "нет агента $re — вернуться можно только под именем, которое уже выдавал join" \
       "Новое подключение: $BRG join --harness $h --model ${m:-<модель>}"
@@ -2851,8 +2914,10 @@ cmd_join() {
   metric join harness="$h" model="${m// /_}" platform="$PLATFORM" rejoin="${re:+1}"
   if [ -n "$re" ]; then
     echo "── переподключён: $ASN ($h · $m · $PLATFORM). Ключ новый, прежний недействителен. Твоё имя — целиком, с ключом после точки: передавай его в каждой команде (--as $ASN). Курсоры сохранены — непрочитанное придёт в wait."
+    fit_warn_print
   else
     echo "── подключён: $ASN ($h · $m · $PLATFORM). Твоё имя — целиком, с ключом после точки: передавай его в каждой команде (--as $ASN). Другие видят тебя как $AGENT, но без ключа команды, меняющие состояние, не примут."
+    fit_warn_print
   fi
   echo "Онлайн: ${online:-никого}"
   if active_task; then
@@ -3192,8 +3257,7 @@ cmd_send() {
     parse_dur_v rbs "$rb" || usage_die "--reply-by — срок вида 90s, 5m, 1h (от 1 с до 24 ч): $rb"
   fi
   if [ -n "$re" ]; then
-    is_uint "$re" && [ ${#re} -le 9 ] || die "--re — номер сообщения: $re"
-    re=$((10#$re))
+    dec_v re "$re" || die "--re — номер сообщения: $re"
     printf -v rf '%s/messages/%06d.msg' "$d" "$re"
     if [ ! -f "$rf" ]; then
       # numbering is per channel: point at the other channel if #re is there
@@ -3284,8 +3348,8 @@ cmd_say() {
   get_now
   check_to "$to" 0
   if [ -n "$re" ]; then # the human answers a question (DESIGN §9.2)
-    is_uint "$re" && [ ${#re} -le 9 ] || die "--re — номер сообщения: $re"
-    printf -v rf '%s/messages/%06d.msg' "$d" "$((10#$re))"
+    dec_v re "$re" || die "--re — номер сообщения: $re"
+    printf -v rf '%s/messages/%06d.msg' "$d" "$re"
     if [ ! -f "$rf" ]; then
       x=
       for o in lobby $ACT_ID; do
@@ -3372,7 +3436,7 @@ cmd_read() {
   need_root
   need_agent read
   NEXT_ON_ERR="$BRG read --as $ASN [--channel C] [--since N] [--all]"
-  [ -z "$since" ] || { is_uint "$since" && [ ${#since} -le 15 ]; } || usage_die "--since — номер сообщения: $since"
+  [ -z "$since" ] || dec_v since "$since" || usage_die "--since — номер сообщения: $since"
   if [ -n "$c" ]; then
     chan_dir d "$c" || die "нет канала: $c"
     chans=$CHAN_ID
@@ -3451,12 +3515,12 @@ cmd_tail() {
   done
   need_root
   AGENT=human
-  [ -z "$n" ] || { is_uint "$n" && [ ${#n} -le 9 ]; } || usage_die "-n — число сообщений: $n"
+  [ -z "$n" ] || dec_v n "$n" || usage_die "-n — число сообщений: $n"
   get_now
   metric tail channel="${c:-all}" follow="${follow:-0}"
   SCAN_LIMIT=1000000
   tick=${BRG_TICK:-1}
-  case $tick in '' | *[!0-9.]*) tick=1 ;; esac
+  frac_ok "$tick" || tick=1
   if [ -n "$c" ]; then
     chan_dir d "$c" || die "нет канала: $c"
     c=$CHAN_ID
@@ -4410,6 +4474,40 @@ dr_stops() {
   return 0
 }
 
+# dr_cfg_nums — numeric keys of config/config.default whose value is not a decimal number
+# (dec_v): brg skips them (the next layer or the built-in value); name the key and what is used
+dr_cfg_nums() {
+  local e l k v u r h p f
+  for e in $CFGL_KEYS; do
+    l=${e%%:*} k=${e#*:}
+    case $k in
+      wait_timeout.*)
+        r=${k#wait_timeout.} h=${r%%.*} p=
+        case $r in *.*) p=${r#*.} ;; esac
+        ;;
+      *)
+        case "$CFG_NUMK " in *" $k="*) ;; *) continue ;; esac
+        h= p=
+        ;;
+    esac
+    v=${k//./_}
+    v=${v//-/_}
+    eval "v=\${${l}_$v-}"
+    dec_v u "$v" && continue
+    if [ -n "$h" ]; then
+      wait_timeout_v u "$h" "$p"
+    else
+      r="$CFG_NUMK "
+      r=${r#*" $k="}
+      eval "u=\$${r%% *}"
+    fi
+    f=$RROOT/config
+    [ "$l" = CFGD ] && f=$RROOT/config.default
+    dr_warn "$f: $k: «$v» — не десятичное число (до 9 цифр): brg его пропускает и берёт $u" "Исправь значение в $RROOT/config (config.default перезаписывает brg init)."
+  done
+  return 0
+}
+
 # dr_config — wait timeouts must stay under the command limits of the harnesses
 # (DESIGN §5.1): 120 s by default (Claude Code, OpenCode, Codex on Windows), up to
 # 600 s when the agent passes a tool timeout; Codex elsewhere parks a command after
@@ -4444,6 +4542,7 @@ dr_config() {
     "Codex вне Windows паркует команду через 10–30 с: wait дольше 25 с стоит опросов (write_stdin)."
   [ -z "$low" ] || dr_warn "wait_timeout ($pk) меньше 5 с: $low" "Каждый возврат wait — вызов модели: слишком частые пробуждения дорого стоят."
   [ -n "$fail$high$low" ] || dr_ok "wait_timeout ($pk): $line — ниже лимитов команд харнессов (DESIGN §5.1)"
+  dr_cfg_nums
   if [ "$RUNNER_STALE" -le "$LOCK_STALE" ]; then
     dr_warn "runner_stale ($RUNNER_STALE) не больше lock_stale ($LOCK_STALE)" "Раннер, ждущий блокировку runs до lock_stale, могут счесть зависшим: сделай runner_stale больше lock_stale."
   fi
@@ -4702,8 +4801,9 @@ cmd_task() {
 
 # task new: an agent (the human gave it work in the chat: the author becomes the lead) or
 # the human himself (--as human: from the terminal or the browser — no agent is involved, so
-# no need_agent / touch_seen / NEXT; the lead is chosen by brg, DESIGN §6.2). A new task
-# lifts the stop and the pause the human put (general ones, and the author's own).
+# no need_agent / touch_seen / NEXT; the lead is chosen by brg, DESIGN §6.2). The human's
+# task lifts the general stop and pause; an agent's is refused under them and under its own
+# (task_new_refuse).
 task_new() {
   local title= file= cc= n slug name d brief cleared= cancelled= human= lead= lp lt cancel=
   if [ "$AS_HINT" = human ]; then NEXT_ON_ERR=; else NEXT_ON_ERR="исправь команду и повтори: $BRG task new --as $AS_HINT --title \"…\" <<'BRG_EOF' (постановка человека дословно) BRG_EOF; закончив шаг — $(next_wait)"; fi
@@ -4730,13 +4830,13 @@ task_new() {
     esac
   done
   need_root
-  STOP_SHOWN=1 # a new task lifts the stop and the pause (below)
   if [ "$OPT_AS" = human ]; then
     human=1
     AGENT=human
     NEXT_ON_ERR=
   else
     need_agent write
+    task_new_refuse
     NEXT_ON_ERR="исправь команду и повтори: $BRG task new --as $ASN --title \"…\" <<'BRG_EOF' (постановка человека дословно) BRG_EOF; закончив шаг — $(next_wait)"
   fi
   title=${title//[[:cntrl:]]/ }
@@ -4789,24 +4889,15 @@ task_new() {
   task_write "$d"
   { printf '%s\n' "$name" >"$ROOT/tasks/.tmp.active.$$" && mv_retry "$ROOT/tasks/.tmp.active.$$" "$ROOT/tasks/active"; } ||
     die "не удалось записать $ROOT/tasks/active"
-  # DESIGN §9: a new task lifts the stop and the pause — the human has just given work.
-  if [ -e "$RUN/stopped" ]; then
+  # DESIGN §9: the human's task lifts the general stop and pause (an agent's never gets here
+  # under them: task_new_refuse)
+  if [ -n "$human" ] && [ -e "$RUN/stopped" ]; then
     rm -f "$RUN/stopped"
     cleared=1
   fi
-  if [ -e "$RUN/paused" ]; then
+  if [ -n "$human" ] && [ -e "$RUN/paused" ]; then
     rm -f "$RUN/paused"
     cleared="$cleared${cleared:+ }pause"
-  fi
-  if [ -z "$human" ]; then
-    if [ -e "$RUN/stopped.$AGENT" ]; then
-      rm -f "$RUN/stopped.$AGENT"
-      cleared="$cleared${cleared:+ }me"
-    fi
-    if [ -e "$RUN/paused.$AGENT" ]; then
-      rm -f "$RUN/paused.$AGENT"
-      cleared="$cleared${cleared:+ }mepause"
-    fi
   fi
   if [ -n "$human" ]; then
     lt="lead: ${lead:-нет — назначится первому, кто выйдет на связь}"
@@ -4840,10 +4931,6 @@ task_new() {
   echo "── создана задача $n «$title»: ты lead."
   echo "Каталог: $RROOT/tasks/$name/ — brief.md (постановка), shared/ (план, решения, артефакты), summary.md (итог; нужен для task close, первая строка — итог одной фразой)."
   echo "Всем отправлено системное «новая задача» (lobby). Переписка по задаче — канал $n: send по умолчанию идёт туда."
-  case $cleared in 1*) echo "Общий стоп снят. Остановленные агенты завершили ход — попроси человека написать им «продолжай»." ;; esac
-  case " $cleared " in *" me "* | *" me") echo "Стоп, поставленный тебе человеком, снят: он дал новую задачу." ;; esac
-  case " $cleared " in *" pause "* | *" pause") echo "Общая пауза снята: человек дал новую задачу." ;; esac
-  case " $cleared " in *" mepause "* | *" mepause") echo "Пауза, поставленная тебе человеком, снята: он дал новую задачу." ;; esac
   echo "Как работать — решаете сообща; проверенный порядок (PROTOCOL.md, не обязателен): перекличка с --reply-by 10m (каждый один раз ответит: модель, сильные стороны, загрузка), затем план в shared/plan.md."
   echo "Lead — фасилитатор: план и подзадачи — вместе с бригадой, работу раздай участникам. Ты, как и все, только координатор: исследование и любую работу по своей части делает твой подагент — одновременно один; больше — только с разрешения человека; сам держи цикл wait. Как проверять подзадачи (другим участником — рекомендуется) — решаете сами; обязательно одно: стадии подзадач в brg — как на деле, человек смотрит их на доске (README, раздел 5)."
   echo "Ты — связь с человеком: он читает твой чат и смотрит доску. Отчёты и вопросы ему — обычным текстом в своём чате перед очередным wait и тем же текстом send --to human (его видно на доске; человек мог дать следующую задачу и ответить с доски, не в твоём чате). Вопрос — ещё и send --to human --ask: он виден человеку на доске, пока на него не ответят (ответ получил — перешли суть бригаде с --re N)."
@@ -5269,8 +5356,7 @@ US=$'\037' # field separator of the item table (never in titles/paths: control c
 item_norm_id_v() { # VAR RAW — I1 | i001 | 1 → I001; 1 if not an item id
   local _in_n=$2
   case $_in_n in [Ii]*) _in_n=${_in_n#?} ;; esac
-  is_uint "$_in_n" && [ ${#_in_n} -le 6 ] || return 1
-  _in_n=$((10#$_in_n))
+  [ ${#_in_n} -le 6 ] && dec_v _in_n "$_in_n" || return 1
   [ "$_in_n" -gt 0 ] || return 1
   printf -v _in_n 'I%03d' "$_in_n"
   eval "$1=\$_in_n"
@@ -5448,12 +5534,25 @@ paths_parse() {
 #   conflict: mine US agent US item US path    (overlaps of `mine` with others'
 #             paths; the agent `me` and the item `skip` are not others)
 #   own:      the same fields, overlaps with `me`'s own other items (not `skip`)
+# Paths compare without case (DESIGN §7.2): tolower folds ASCII A-Z (LC_ALL=C); fold() also
+# folds Russian Cyrillic А-Я, Ё (two-byte literals, 33 pairs). Other letters and NFC/NFD
+# forms are not folded (a known limit, DESIGN §12).
 AWK_RES='
+function fold(s,   i) {
+  s = tolower(s)
+  if (index(s, "\320") == 0) return s
+  for (i = 1; i <= 33; i++) if (index(s, CU[i])) gsub(CU[i], CL[i], s)
+  return s
+}
 function ov(a, b) {
-  a = tolower(a); b = tolower(b)
+  a = fold(a); b = fold(b)
   return a == "." || b == "." || a == b || index(b, a "/") == 1 || index(a, b "/") == 1
 }
-BEGIN { nm = split(mine, m, ",") }
+BEGIN {
+  nm = split(mine, m, ",")
+  u = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"; l = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
+  for (i = 1; i <= 33; i++) { CU[i] = substr(u, 2 * i - 1, 2); CL[i] = substr(l, 2 * i - 1, 2) }
+}
 {
   f = $0; id = f; sub(/^.*\//, "", id)
   ag = ""; hdr = 1; np = 0
@@ -6326,7 +6425,7 @@ item_to_v() {
 }
 
 item_review() {
-  local v= mk ak x t others= to body= warn= amodel= shown again= st was
+  local v= mk ak x t others= to body= warn= amodel= shown again= st was rv=
   item_opts "id verdict file comment start" "$@"
   if [ -n "$IO_START" ]; then
     [ -z "$IO_VERDICT$IO_TEXT$IO_FILE" ] ||
@@ -6417,6 +6516,7 @@ item_review() {
   # again); on an item in work it takes only its author out
   if [ "$IT_STATUS" = done ]; then
     x=
+    list_drop_v rv "$IT_REVIEWING" "$AGENT" # the other reviewers: told below, marks kept
   else
     list_drop_v x "$IT_REVIEWING" "$AGENT"
   fi
@@ -6456,6 +6556,12 @@ item_review() {
   else
     item_say all no # the assignee and the lead wrote it themselves: for the record
   fi
+  if [ -n "$rv" ]; then
+    # DESIGN §7.1.1: the others who reviewed it are out of Reviewing — tell them and wake
+    # them; their busy marks stay (a subagent may still be checking)
+    BODY="${rv//,/, }: круг проверки $IT_ID «$IT_TITLE» закрыт вердиктом $v от $AGENT — вас больше нет среди проверяющих. Продолжаете проверку — повторите $BRG item review $IT_ID --as <имя> --start; не нужна — дайте подагенту закончить, затем wait без --busy.${NL}Стадия: $st."
+    item_say "$rv" "$rv"
+  fi
   lock_release task
   touch_seen
   metric item.review task="$ACT_ID" id="$IT_ID" verdict="$v" n="$RW_N" same_model="${warn:+1}" stage="$IS_STAGE"
@@ -6464,6 +6570,7 @@ item_review() {
   else
     echo "── ревью #$RW_N по $IT_ID записано ($v); сообщение отправлено: ${to//,/, }."
   fi
+  [ -z "$rv" ] || echo "Круг проверки закрыт: ${rv//,/, } больше не среди проверяющих — им отправлено «повторите review --start, если продолжаете»."
   case $IS_STAGE in
     fix) echo "Стадия $IT_ID: $st — исполнитель вернёт её в работу (item claim) и пересдаст." ;;
     *) echo "Стадия $IT_ID: $st." ;;
@@ -6754,13 +6861,12 @@ BRG_MI_EOF
 # taken away stops its command and leaves.
 RUN_FINAL=" done failed timeout killed cancelled "
 RUN_KILL_GRACE=${BRG_KILL_GRACE:-5}
-is_uint "$RUN_KILL_GRACE" || RUN_KILL_GRACE=5
+dec_v RUN_KILL_GRACE "$RUN_KILL_GRACE" || RUN_KILL_GRACE=5
 
 run_norm_id_v() { # VAR RAW — R3 | r003 | 3 → R003; 1 if not a run id
   local _rn_n=$2
   case $_rn_n in [Rr]*) _rn_n=${_rn_n#?} ;; esac
-  is_uint "$_rn_n" && [ ${#_rn_n} -le 6 ] || return 1
-  _rn_n=$((10#$_rn_n))
+  [ ${#_rn_n} -le 6 ] && dec_v _rn_n "$_rn_n" || return 1
   [ "$_rn_n" -gt 0 ] || return 1
   printf -v _rn_n 'R%03d' "$_rn_n"
   eval "$1=\$_rn_n"
@@ -7348,7 +7454,7 @@ run_runner() {
   lock_release runs
   # tick: 0.1 s growing to BRG_TICK (1 s)
   x=${BRG_TICK:-1}
-  case $x in '' | *[!0-9.]*) x=1 ;; esac
+  frac_ok "$x" || x=1
   maxstep=$(awk -v t="$x" 'BEGIN { s = int(t * 10 + 0.5); if (s < 1) s = 1; print s }')
   # Wait for the turn: head of the queue, then the exec lock. Every second: the
   # heartbeat in our queue entry, and a look at our run — settled by someone
@@ -8234,7 +8340,7 @@ cmd_wait() {
       *) usage_die "неизвестный параметр: $1" ;;
     esac
   done
-  [ -z "$opt_t" ] || { is_uint "$opt_t" && [ ${#opt_t} -le 9 ]; } || usage_die "--timeout — целое число секунд: $opt_t"
+  [ -z "$opt_t" ] || dec_v opt_t "$opt_t" || usage_die "--timeout — целое число секунд: $opt_t"
   need_root
   STOP_SHOWN=1 # wait returns STOP itself
   need_agent write
@@ -8263,7 +8369,7 @@ cmd_wait() {
   W_PID=$RUN/wait/$AGENT.pid
   W_HB=$RUN/wait/$AGENT.hb
   TICK=${BRG_TICK:-1}
-  case $TICK in '' | *[!0-9.]*) TICK=1 ;; esac
+  frac_ok "$TICK" || TICK=1
   trap '' PIPE # a closed stdout must not kill us before the log line
   trap 'w_on_signal TERM' TERM
   trap 'w_on_signal INT' INT
@@ -8462,8 +8568,7 @@ sp_write() {
 spawn_norm_id_v() {
   local _sn_n=$2
   case $_sn_n in [Ss]*) _sn_n=${_sn_n#?} ;; *) return 1 ;; esac
-  is_uint "$_sn_n" && [ ${#_sn_n} -le 6 ] || return 1
-  _sn_n=$((10#$_sn_n))
+  [ ${#_sn_n} -le 6 ] && dec_v _sn_n "$_sn_n" || return 1
   [ "$_sn_n" -gt 0 ] || return 1
   printf -v _sn_n 'S%03d' "$_sn_n"
   eval "$1=\$_sn_n"
@@ -8860,9 +8965,9 @@ SV_HB_AT=0
 SV_T0=0
 sv_setup() {
   SV_STEP=${BRG_SPAWN_STEP:-1} # a test hook: the step of sleeps
-  case $SV_STEP in '' | *[!0-9.]* | .*) SV_STEP=1 ;; esac
+  frac_ok "$SV_STEP" || SV_STEP=1
   SV_MAXLIFE=${BRG_SPAWN_TEST_MAXLIFE:-} # a test hook: leave after N s (or when the project is gone)
-  is_uint "$SV_MAXLIFE" || SV_MAXLIFE=
+  dec_v SV_MAXLIFE "$SV_MAXLIFE" || SV_MAXLIFE=
   SV_HB_EVERY=$((SPAWN_STALE / 3))
   [ "$SV_HB_EVERY" -le 5 ] || SV_HB_EVERY=5
   [ "$SV_HB_EVERY" -ge 1 ] || SV_HB_EVERY=1
@@ -9077,7 +9182,7 @@ sv_notify_lead() {
 # only the head of its output is read.
 sv_export_one() {
   local t=$SD/.export.$$.$RANDOM p i=0 lim=${BRG_SPAWN_EXPORT_TIMEOUT:-20} bin=${CFG_spawn_opencode_bin:-opencode} args=${CFG_spawn_opencode_args-}
-  is_uint "$lim" || lim=20
+  dec_v lim "$lim" || lim=20
   EX=
   # its own group (set -m): a background command without job control would ignore SIGINT
   set -f -m

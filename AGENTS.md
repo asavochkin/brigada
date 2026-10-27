@@ -58,6 +58,7 @@ An experiment: any number of agents from different harnesses (Claude Code, Codex
 - **Python only for the human's server** `bin/brg-serve.py` (optional, stdlib, ≥ 3.8; DESIGN §1 item 4, §9.1). `bin/brg` calls Python only in `board` and `doctor`, always through `py_find_v` (it does not call the macOS shim or the Windows Store stubs); the agents' tool is bash 3.2. Without Python `brg board` works in `file://` mode, view only. The server writes no state itself — only through `brg` calls.
 - Compatibility with Git Bash on Windows: no GNU/BSD-specific flags; `mv` with retries.
 - Record format: `Key: value` headers + an empty line + the body.
+- Numbers from options, `config` and the environment are parsed with `dec_v` (decimal, leading zeros allowed: `08` is 8, not a bash octal error). Fractional sleep steps (`BRG_TICK`, `BRG_SPAWN_STEP`) are checked as `^[0-9]+(\.[0-9]+)?$` (`frac_ok`) and never go into bash arithmetic.
 - Invariants that are easy to break (details: DESIGN §4–§7):
   - a write is tmp + `mv` under a `mkdir` lock; a stale lock is removed atomically (`mv lock lock.stale.$$`), only by its owner;
   - **no signals by a pid from a file** (the pid may have been reused): the `wait` takeover goes through the pid file, stopping goes through flags;

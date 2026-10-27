@@ -1335,3 +1335,73 @@ test_spawn_zz_nothing_left() {
   done
   [ -z "$left" ] || fail "alive after the tests:$left"
 }
+
+# spawn --model of the full 120 bytes: the join inside spawn keeps it whole — the profile and
+# the record name the same model (the limits are one, nothing is cut silently)
+test_spawn_model_120_bytes() {
+  local m out
+  sp_proj
+  m=p/$(awk 'BEGIN { for (i = 0; i < 118; i++) printf "m" }')
+  script 1 <<'EOF2'
+sleep 0.2
+EOF2
+  sp_spawn --model "$m"
+  assert_not_contains "$SPOUT" "обрезано"
+  assert_eq "$m" "$(rec S001 Model)" "the record"
+  assert_eq "$m" "$(hdr "$B/agents/opencode-1" Model)" "the profile"
+  out=$(cd "$P" && bash "$BRG" spawn opencode --model "${m}x" 2>&1)
+  assert_eq 1 "$?"
+  assert_contains "$out" "--model длиннее 120 символов"
+  wait_turn S001 1
+}
+
+# An old supervisor (the 0.9.2 code, from git) running when the project gets the current code:
+# it serves the wake-up of its old wait (wait.res of the old code), then execs the current
+# code with --continue, which takes over its record, and the next turns run on the new code.
+# Skipped without git or without the 0.9.2 commit (a copy of the repository without history).
+test_spawn_old_supervisor_execs_the_current_code() {
+  local old sp
+  old=$(git -C "$ROOT" show 699e45e:bin/brg 2>/dev/null) || {
+    echo "SKIP: нет git или коммита 0.9.2"
+    return 0
+  }
+  sp_proj
+  printf '%s\n' "$old" >"$B/bin/brg.old" && mv "$B/bin/brg.old" "$B/bin/brg"
+  printf '0.9.2\n' >"$B/VERSION"
+  script 1 <<'EOF2'
+sleep 1.2
+EOF2
+  sp_spawn
+  wait_turn S001 1
+  wait_state S001 frozen
+  wait_for 15 [ -f "$B/run/wait/opencode-1.pid" ] || fail "no supervisor's wait (old code)"
+  # the export of turn 1 is over: an export in progress holds the exec back (sv_maybe_exec)
+  wait_for 25 rec_is S001 Tokens-Source export || fail "no export of turn 1"
+  sp=$(sv_pid S001)
+  # the update: the current code under another version
+  sed 's/^BRG_VERSION=.*/BRG_VERSION=9.9.9-test/' "$ROOT/bin/brg" >"$B/bin/brg.new" && mv "$B/bin/brg.new" "$B/bin/brg"
+  printf '9.9.9-test\n' >"$B/VERSION"
+  script 2 <<'EOF2'
+sleep 1.2
+EOF2
+  brg say --to opencode-1 "после обновления" >/dev/null
+  wait_turn S001 2
+  assert_contains "$(cat "$FK/run.2/prompt")" "после обновления" "the old wait's result was served"
+  wait_for 20 grep -q 'надзор продолжает на новом коде' "$B/run/spawn/S001/supervisor.log" || fail "no exec: $(cat "$B/run/spawn/S001/supervisor.log")"
+  wait_for 15 grep -q 'продолжает после обновления brg' "$B/run/spawn/S001/supervisor.log" || fail "the new image did not start"
+  assert_eq "$sp" "$(sv_pid S001)" "the same supervisor (pid), the lock kept"
+  wait_state S001 frozen
+  sleep 1.2
+  assert_eq 2 "$(runs)" "no rollback after exec"
+  script 3 <<'EOF2'
+sleep 1.2
+EOF2
+  brg say --to opencode-1 "на новом коде" >/dev/null
+  wait_turn S001 3
+  assert_contains "$(cat "$FK/run.3/prompt")" "на новом коде"
+  assert_not_contains "$(cat "$FK/run.3/prompt")" "после обновления"
+  wait_state S001 frozen
+  brg spawn rm S001 >/dev/null
+  wait_state S001 removed
+  sp_assert_clean
+}
