@@ -422,6 +422,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     do_OPTIONS = do_HEAD = do_PUT = do_DELETE = do_PATCH = method_not_allowed
 
+    def __getattr__(self, name):
+        # any other method (TRACE, CONNECT, …): 405 as well, not the stdlib's 501
+        if name.startswith('do_'):
+            return self.method_not_allowed
+        raise AttributeError(name)
+
     def host_check(self):
         # None if the Host is ours, else why not. The port is ours always (a tunnel keeps the
         # same number on both sides). 127.0.0.1 and localhost are always fine (also through an SSH
@@ -437,9 +443,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 or (b == '0.0.0.0' and name != '0.0.0.0' and is_ipv4(name)):
             return None
         return 'Host не тот: открой доску по адресу из вывода brg board (IP-адрес, не имя)'
-
-    def host_ok(self):
-        return self.host_check() is None
 
     def remote(self):
         # the request came to an address that is not loopback: no Sec-Fetch-*, the snapshot needs k

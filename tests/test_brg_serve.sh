@@ -181,9 +181,10 @@ test_serve_address_auth_and_headers() {
     assert_eq 404 "$HTTP_ST" "path $n"
   done
   # methods
-  for n in OPTIONS PUT DELETE; do
+  for n in OPTIONS PUT DELETE PATCH TRACE CONNECT PROPFIND FOO; do
     http $n /api/say -H "Cookie: $COOKIE"
     assert_eq 405 "$HTTP_ST" "$n"
+    assert_eq "GET, POST" "$(hdr_of Allow)" "Allow ($n)"
     assert_eq "" "$(hdr_of Access-Control-Allow-Origin)" "no CORS"
   done
   # the token is printed once (in the address), the log has no URLs
