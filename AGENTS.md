@@ -48,7 +48,7 @@ An experiment: any number of agents from different harnesses (Claude Code, Codex
 | `template/` | what `brg init` puts into `.brigada/`: README and PROTOCOL for participant agents, config, `board.html` (the human's board) |
 | `tests/` | tests in pure bash: `run.sh`, `lib.sh`, `brg_lib.sh`, `spawn_lib.sh` (helpers of the launched-agent tests), `test_*.sh`, `pingpong.sh`; `test_install.sh` — `install.sh` (no network: the source is a temporary `file://` repository, HOME is replaced; skipped without git); `test_brg_serve.sh` — the board server (the client is Python; skipped without Python); `test_brg_spawn.sh` + `fake_opencode` — agents launched by brg (a fake OpenCode, no LLM) |
 | `WINDOWS.md` | the human's checklist for Windows |
-| `/plans` | plans, reviews, reports, status, backlog; never committed (`.gitignore`). For the human it is a symlink to `../brigada-archive`; elsewhere create the directory locally |
+| `/plans` | plans, reviews, reports, status, backlog; never committed (`.gitignore`). it may be a symlink to a private directory outside the repository; otherwise create the directory locally |
 
 ## Technical constraints of `bin/brg` (hard)
 
