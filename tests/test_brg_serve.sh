@@ -480,6 +480,7 @@ test_serve_foreign_and_stale_ready() {
   assert_eq "$PORT" "$(sed -n 1p "$B/run/board/ready.$BP")" "our own ready"
   assert_file_not_exists "$B/run/board/ready.99999999" "the stale ready is removed"
   assert_file_exists "$B/run/board/ready.88888888" "the ready of a live board is kept"
+  assert_file_exists "$B/run/board/ready" "a fresh shared ready file is kept (removed after 60 s)"
   stop_board
   assert_file_not_exists "$B/run/board/ready.$BP"
   assert_file_exists "$B/run/board/ready.88888888"
@@ -656,8 +657,11 @@ test_serve_old_temp_files_are_cleaned() {
   : >"$B/run/board/.srv.tmp.old.txt"
   touch -t 202001010000 "$B/run/board/.srv.tmp.old.txt"
   : >"$B/run/board/.srv.tmp.fresh.txt"
+  printf '1\n1\n' >"$B/run/board/ready" # the shared ready file of an older brg
+  touch -t 202001010000 "$B/run/board/ready"
   start_board
   assert_file_not_exists "$B/run/board/.srv.tmp.old.txt" "an old temp file"
+  assert_file_not_exists "$B/run/board/ready" "an old shared ready file"
   assert_file_exists "$B/run/board/.srv.tmp.fresh.txt" "a fresh temp file is not touched"
   stop_board
 }

@@ -151,7 +151,8 @@ def clean_tmp(bd):
         return
     for n in names:
         p = os.path.join(bd, n)
-        if n.startswith(TMP_PREFIX) or n.startswith('alive.'):  # heartbeats of killed boards
+        # temp files, heartbeats of killed boards, the shared ready file of an older brg
+        if n.startswith(TMP_PREFIX) or n.startswith('alive.') or n == 'ready':
             try:
                 if now - os.path.getmtime(p) > 60:
                     os.unlink(p)
