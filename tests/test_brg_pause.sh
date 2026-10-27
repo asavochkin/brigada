@@ -439,3 +439,30 @@ test_pause_self_assigned_lead_is_announced_after_the_pause() {
   assert_contains "$(cat "$P/wb")" "${A%%.*} — lead задачи T002"
   assert_eq "── пауза снята: человек снял паузу — новую работу можно начинать." "$(head -n 1 "$P/wb")"
 }
+
+# A launched agent on a pause (DESIGN §5.5, §9; a synthetic spawn record, no harness): free —
+# the banner and the refusal say "end the turn"; its subagent works (a valid busy mark) —
+# "finish it in wait --busy", as its NEXT says; never both at once
+test_pause_banner_of_a_launched_agent() {
+  local out c
+  paused_setup
+  c=${C%%.*}
+  { printf 'Spawn: S009\n'; cat "$B/agents/$c"; } >"$B/agents/$c.tmp" && mv "$B/agents/$c.tmp" "$B/agents/$c"
+  mkdir -p "$B/run/spawn/S009"
+  printf 'Id: S009\nAgent: %s\nState: frozen\n\n' "$c" >"$B/run/spawn/S009/spawn"
+  brg pause >/dev/null
+  out=$(brg item list --as "$C")
+  assert_eq "── ПАУЗА: человек поставил на паузу бригаду. Новую работу не начинай; сдай сделанное и заверши ход — brg разбудит тебя при сообщении человека или снятии паузы." "$(printf '%s\n' "$out" | head -n 1)" "free: end the turn"
+  out=$(brg item add --as "$C" --title "Новая" --desc "о" 2>&1)
+  assert_eq 1 "$?"
+  assert_contains "$out" "её не снимает — заверши ход, brg разбудит тебя."
+  assert_eq "── NEXT: заверши ход — brg разбудит тебя, когда будет новое" "$(printf '%s\n' "$out" | tail -n 1)"
+  brg busy --as "$C" "пишу код" >/dev/null || fail busy
+  out=$(brg item list --as "$C")
+  assert_eq "── ПАУЗА: человек поставил на паузу бригаду. Новую работу не начинай; твой подагент работает — доведи начатое и жди в wait --busy (как в NEXT), ход не завершай." "$(printf '%s\n' "$out" | head -n 1)" "busy: finish in wait --busy"
+  out=$(brg item add --as "$C" --title "Новая" --desc "о" 2>&1)
+  assert_eq 1 "$?"
+  assert_contains "$out" "твой подагент работает: доведи начатое и жди в wait --busy (NEXT), ход не завершай."
+  assert_not_contains "$out" "заверши ход"
+  assert_eq "── NEXT: bash $BRG wait --as $C --busy \"пишу код\"" "$(printf '%s\n' "$out" | tail -n 1)"
+}

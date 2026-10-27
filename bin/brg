@@ -882,7 +882,11 @@ stop_banner() {
     echo "── STOP: человек остановил $w. Новую работу не начинай: сдай сделанное, если нужно (send, item done), и заверши ход."
   elif pause_who_v w; then
     STOP_SHOWN=1 PAUSE_SHOWN=1
-    if [ -n "$AGENT" ] && spawned_v x "$AGENT"; then
+    # a launched agent (DESIGN §5.5): free — end the turn; its subagent works (a valid busy
+    # mark) — finish that in wait --busy, as its NEXT says
+    if [ -n "$AGENT" ] && spawned_v x "$AGENT" && busy_read "$AGENT"; then
+      echo "── ПАУЗА: человек поставил на паузу $w. Новую работу не начинай; твой подагент работает — доведи начатое и жди в wait --busy (как в NEXT), ход не завершай."
+    elif [ -n "$AGENT" ] && spawned_v x "$AGENT"; then
       echo "── ПАУЗА: человек поставил на паузу $w. Новую работу не начинай; сдай сделанное и заверши ход — brg разбудит тебя при сообщении человека или снятии паузы."
     else
       echo "── ПАУЗА: человек поставил на паузу $w. Новую работу не начинай; сдай сделанное и жди (wait)."
@@ -908,6 +912,10 @@ work_refuse() {
   [ "${2-}" != stoponly ] || return 0
   pause_who_v w || return 0
   NEXT_ON_ERR="$(next_wait)"
+  if [ -n "$sp" ] && busy_read "$AGENT"; then
+    die "человек поставил на паузу $w — $1 не выполнено: на паузе новую работу не начинают" \
+      "Можно сдать сделанное и сообщить: send, item done|release|cancel, item review --verdict, task close, run (проверка начатой работы). Паузу снимает человек: brg resume или с доски; сообщение (say) её не снимает — твой подагент работает: доведи начатое и жди в wait --busy (NEXT), ход не завершай."
+  fi
   if [ -n "$sp" ]; then
     die "человек поставил на паузу $w — $1 не выполнено: на паузе новую работу не начинают" \
       "Можно сдать сделанное и сообщить: send, item done|release|cancel, item review --verdict, task close, run (проверка начатой работы). Паузу снимает человек: brg resume или с доски; сообщение (say) её не снимает — заверши ход, brg разбудит тебя."
@@ -920,28 +928,29 @@ work_refuse() {
 # general flags and the author's own refuse it (before anything changes, --cancel-current
 # included); another agent's personal flags do not matter. Only the human lifts them.
 task_new_refuse() {
-  local w sp= h
+  local w sp= h c="(в чате)" t="скажи человеку в чате"
   [ -n "$AGENT" ] && spawned_v sp "$AGENT"
+  [ -z "$sp" ] || c="(send --to human)" t="сообщи человеку (send --to human)"
   if stop_who_v w; then
     if [ "$w" = бригаду ]; then
-      h="попроси человека (в чате): снять стоп — brg resume, или дать задачу самому — task new --as human, или с доски (brg board)."
+      h="попроси человека $c: снять стоп — brg resume, или дать задачу самому — task new --as human, или с доски (brg board)."
     else
-      h="попроси человека (в чате): снять твой стоп — brg resume $AGENT (или ответить тебе: say --to $AGENT)."
+      h="попроси человека $c: снять твой стоп — brg resume $AGENT (или ответить тебе: say --to $AGENT)."
     fi
     if [ -n "$sp" ]; then
       NEXT_ON_ERR="заверши ход (стоп снимет человек; если стоп прервал твою работу — brg разбудит тебя после его снятия)"
     else
-      NEXT_ON_ERR="скажи человеку в чате, что задачу не создать, пока стоит стоп, и заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
+      NEXT_ON_ERR="$t, что задачу не создать, пока стоит стоп, и заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
     fi
     die "человек остановил $w — task new не выполнено: при стопе задачу не создают, стоп снимает только человек" "Задачу дал человек — $h"
   fi
   pause_who_v w || return 0
   if [ "$w" = бригаду ]; then
-    h="попроси человека (в чате): снять паузу — brg resume, или дать задачу самому — task new --as human, или с доски (brg board)."
+    h="попроси человека $c: снять паузу — brg resume, или дать задачу самому — task new --as human, или с доски (brg board)."
   else
-    h="попроси человека (в чате): снять твою паузу — brg resume $AGENT."
+    h="попроси человека $c: снять твою паузу — brg resume $AGENT."
   fi
-  NEXT_ON_ERR="скажи человеку в чате, что задачу не создать, пока стоит пауза; затем $(next_wait)"
+  NEXT_ON_ERR="$t, что задачу не создать, пока стоит пауза; затем $(next_wait)"
   die "человек поставил на паузу $w — task new не выполнено: на паузе задачу не создают, паузу снимает только человек" "Задачу дал человек — $h"
 }
 
