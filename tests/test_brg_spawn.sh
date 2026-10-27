@@ -1335,3 +1335,22 @@ test_spawn_zz_nothing_left() {
   done
   [ -z "$left" ] || fail "alive after the tests:$left"
 }
+
+# spawn --model of the full 120 bytes: the join inside spawn keeps it whole — the profile and
+# the record name the same model (the limits are one, nothing is cut silently)
+test_spawn_model_120_bytes() {
+  local m out
+  sp_proj
+  m=p/$(awk 'BEGIN { for (i = 0; i < 118; i++) printf "m" }')
+  script 1 <<'EOF2'
+sleep 0.2
+EOF2
+  sp_spawn --model "$m"
+  assert_not_contains "$SPOUT" "обрезано"
+  assert_eq "$m" "$(rec S001 Model)" "the record"
+  assert_eq "$m" "$(hdr "$B/agents/opencode-1" Model)" "the profile"
+  out=$(cd "$P" && bash "$BRG" spawn opencode --model "${m}x" 2>&1)
+  assert_eq 1 "$?"
+  assert_contains "$out" "--model длиннее 120 символов"
+  wait_turn S001 1
+}
