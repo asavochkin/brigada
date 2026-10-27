@@ -1116,6 +1116,8 @@ busy_empty_note() {
 # NEXT = the current state of the agent's mark, so that a wait of a participant whose
 # subagent works carries --busy again (a plain wait would say "free"). An empty caption
 # gives a bare --busy. Before need_agent (AGENT empty) the name comes from AS_HINT.
+# Under the human's stop (general or the agent's own) it is "end the turn", as the STOP
+# banner says: a wait would only return STOP.
 next_wait() {
   local _nw_n _nw_b= _nw_r
   if [ -n "$AGENT" ]; then
@@ -1125,6 +1127,14 @@ next_wait() {
     _nw_n=$AS_HINT
     _nw_b=${AS_HINT%%.*}
     valid_name "$_nw_b" && [ -f "$ROOT/agents/$_nw_b" ] || _nw_b=
+  fi
+  if [ -n "$_nw_b" ] && { [ -e "$RUN/stopped" ] || [ -e "$RUN/stopped.$_nw_b" ]; }; then
+    if spawned_v _nw_r "$_nw_b"; then
+      printf '%s' "заверши ход (стоп снимет человек; если стоп прервал твою работу — brg разбудит тебя после его снятия)"
+    else
+      printf '%s' "заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
+    fi
+    return 0
   fi
   # an agent launched by brg (DESIGN §5.5): free — it ends its turn, the supervisor waits for it
   if [ -n "$_nw_b" ] && spawned_v _nw_r "$_nw_b" && { [ "${2-}" = plain ] || ! busy_read "$_nw_b"; }; then
