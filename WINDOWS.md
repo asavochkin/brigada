@@ -1,6 +1,6 @@
 # brigada on Windows — test checklist
 
-Criterion: `doctor` is green; `brg.cmd` works from PowerShell and cmd, including `send --file` with Cyrillic; an agent keeps its loop for 30 min. None of this has been run on Windows yet — write every difference from "Expected" into the template at the end. Time: ≈15 min by hand + 30 min of the agent's loop.
+Criterion: `doctor` is green; `brg.cmd` works from PowerShell and cmd, including `send --file` with Cyrillic; an agent keeps its loop for 30 min. None of this has been run on Windows — write every difference from "Expected" into the template at the end. Time: ≈15 min by hand + 30 min of the agent's loop.
 
 The paths below are examples: brigada in `C:\work\brigada`, a toy project in `C:\work\toy`.
 

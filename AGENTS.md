@@ -65,7 +65,7 @@ An experiment: any number of agents from different harnesses (Claude Code, Codex
   - one `wait` per agent; delivery at least once (`Acked`/`Pending`, the next `wait` acknowledges);
   - `wait` always exits with code 0 and prints `NEXT:` as its last line (except STOP/SUPERSEDED/LEFT and the orphan exit: `wait` exits silently when the process that started it died), argument errors included;
   - the `brg run` exec lock is never broken by age, only by the owner's death or a stale runner heartbeat; the same holds for the supervisor lock `spawn.S00N` (DESIGN §5.5); the lock order is `spawn.S → roster → task → runs → chan`;
-  - no line of brg output tells an agent launched by brg «не завершать ход» (all waiting phrases go through `next_wait`); the supervisor and the turn wrapper signal only their own children.
+  - no line of brg output tells a **free** agent launched by brg «не завершать ход» or to wait in a plain `wait` (all waiting phrases go through `next_wait`); a busy one (its subagent works, a valid mark) is told to wait in `wait --busy` without ending the turn; the supervisor and the turn wrapper signal only their own children.
 
 ## Pitfalls we have already hit
 

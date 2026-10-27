@@ -525,3 +525,24 @@ test_config_and_options_with_leading_zeros() {
   printf '%s\n' "$out" | grep -qx '  m1' && fail "tail -n 08 shows m1: $out"
   assert_not_contains "$out" "value too great"
 }
+
+# Under a stop the NEXT of the allowed commands (item cancel, task cancel, send) says
+# «заверши ход», as the STOP banner does — not a wait that would only return STOP
+test_next_under_stop_ends_the_turn() {
+  local a out
+  new_proj
+  a=$(join_as claude)
+  task_new_as "$a" "задача"
+  printf 'd\n' | brg item add --as "$a" --title "одна" >/dev/null || fail "item add"
+  brg stop >/dev/null || fail stop
+  out=$(brg item cancel I001 --as "$a")
+  assert_contains "$(printf '%s\n' "$out" | head -n 1)" "── STOP: человек остановил бригаду."
+  assert_eq "── NEXT: продолжай; закончив шаг — заверши ход (стоп снимет человек и напишет тебе «продолжай»)" "$(printf '%s\n' "$out" | tail -n 1)"
+  out=$(printf 'итог\n' | brg send --as "$a")
+  assert_not_contains "$out" "wait --as"
+  out=$(brg task cancel --as "$a")
+  assert_eq "── NEXT: заверши ход (стоп снимет человек и напишет тебе «продолжай»)" "$(printf '%s\n' "$out" | tail -n 1)"
+  brg resume >/dev/null || fail resume
+  out=$(printf 'снова\n' | brg send --as "$a")
+  assert_contains "$(printf '%s\n' "$out" | tail -n 1)" "wait --as $a"
+}

@@ -66,7 +66,8 @@ is_uint() {
 }
 
 # dec_v VAR VALUE — VALUE as a decimal integer into VAR: digits only, at most 9 of them;
-# leading zeros are decimal (08 is 8, not a bash octal error). Exit 1, VAR untouched, otherwise
+# leading zeros are decimal (08 is 8, not a bash octal error). Exit 1, VAR untouched, otherwise.
+# Not for epochs (10 digits) or other values that may exceed 9 digits: use is_uint there
 dec_v() {
   is_uint "$2" && [ ${#2} -le 9 ] || return 1
   eval "$1=\$((10#\$2))"
@@ -1115,6 +1116,8 @@ busy_empty_note() {
 # NEXT = the current state of the agent's mark, so that a wait of a participant whose
 # subagent works carries --busy again (a plain wait would say "free"). An empty caption
 # gives a bare --busy. Before need_agent (AGENT empty) the name comes from AS_HINT.
+# Under the human's stop (general or the agent's own) it is "end the turn", as the STOP
+# banner says: a wait would only return STOP.
 next_wait() {
   local _nw_n _nw_b= _nw_r
   if [ -n "$AGENT" ]; then
@@ -1124,6 +1127,14 @@ next_wait() {
     _nw_n=$AS_HINT
     _nw_b=${AS_HINT%%.*}
     valid_name "$_nw_b" && [ -f "$ROOT/agents/$_nw_b" ] || _nw_b=
+  fi
+  if [ -n "$_nw_b" ] && { [ -e "$RUN/stopped" ] || [ -e "$RUN/stopped.$_nw_b" ]; }; then
+    if spawned_v _nw_r "$_nw_b"; then
+      printf '%s' "заверши ход (стоп снимет человек; если стоп прервал твою работу — brg разбудит тебя после его снятия)"
+    else
+      printf '%s' "заверши ход (стоп снимет человек и напишет тебе «продолжай»)"
+    fi
+    return 0
   fi
   # an agent launched by brg (DESIGN §5.5): free — it ends its turn, the supervisor waits for it
   if [ -n "$_nw_b" ] && spawned_v _nw_r "$_nw_b" && { [ "${2-}" = plain ] || ! busy_read "$_nw_b"; }; then
@@ -2059,7 +2070,7 @@ usage_line_v() { # VAR CMD
     resume) _ul_u="$BRG resume [<имя>]" ;;
     task) _ul_u="$BRG task new --as <имя> --title \"…\" [--cancel-current] [--file F] <<'BRG_EOF' постановка BRG_EOF | task new --as human --title \"…\" [--cancel-current] [--file F] (человек) | task close --as <lead> [--force] | task cancel --as <lead|human> | task show [T00N] | task list" ;;
     lead) _ul_u="$BRG lead give <имя> --as <lead> | lead take --as <имя> | lead give <имя> --as human (человек)" ;;
-    item) _ul_u="$BRG item add --as <имя> --title \"…\" [--desc \"описание\" | --file F | <<'BRG_EOF' описание BRG_EOF] [--paths \"предлагаемые пути\"] [--no-review] | item claim I00N --as <имя> [--paths \"src/a,tests/a\"|none] | item done I00N --as <имя> [--note \"итог\"] [--result <путь>] [--no-review] | item release I00N --as <имя> | item reassign I00N --to <имя> --as <lead> | item review I00N --as <имя> --start | item review I00N --as <имя> --verdict ok|changes [--comment \"…\" | --file F | <<'BRG_EOF' комментарий BRG_EOF] | item review I00N --as <имя> --verdict skip [--comment \"почему\" | --file F] | item cancel I00N --as <имя> [--comment \"почему\" | --file F] | item list [--as <имя>] [--mine] [--status todo,claimed,done,cancelled] | item show I00N" ;;
+    item) _ul_u="$BRG item add --as <имя> --title \"…\" [--desc \"описание\" | --file F | <<'BRG_EOF' описание BRG_EOF] [--paths \"предлагаемые пути\"] [--no-review] | item claim I00N --as <имя> [--paths \"src/a,tests/a\"|none] | item done I00N --as <имя> [--note \"итог\"] [--result <путь>] [--no-review] | item release I00N --as <имя> | item reassign I00N --to <имя> --as <lead> | item review I00N --as <имя> --start | item review I00N --as <имя> --verdict ok|changes [--comment \"…\" | --file F | <<'BRG_EOF' комментарий BRG_EOF] | item review I00N --as <имя> --verdict skip [--comment \"почему\" | --file F] | item cancel I00N --as <имя> [--comment \"почему\" | --file F] | item list [--as <имя> [--mine]] [--status todo,claimed,done,cancelled] | item show I00N" ;;
     run) _ul_u="$BRG run --as <имя> [--sync] [--timeout 10m] [--item I00N] -- <команда> [аргументы…]  |  run list · run show R00N · run cancel R00N --as <имя>" ;;
     doctor) _ul_u="$BRG doctor  |  из репозитория brigada: bash /путь/к/brigada/bin/brg doctor [каталог_проекта]" ;;
     board) _ul_u="$BRG board [--interval S] [--port P] [--bind ADDR] [--static] [--once]" ;;
@@ -2161,7 +2172,7 @@ brg $BRG_VERSION — транспорт бригады агентов. Из ко
   item reassign I00N --to <имя> --as <lead>
   item review I00N --as <имя> --start · --verdict ok|changes [--comment "…"] < комментарий
   item review I00N --as <имя> --verdict skip [--comment "почему"]   проверка не нужна
-  item list [--as <имя>] [--mine] [--status todo] · item show I00N
+  item list [--as <имя> [--mine]] [--status todo] · item show I00N
   run --as <имя> [--sync] [--timeout 10m] [--item I00N] -- <команда>   тесты/сборка по очереди;
                                      результат придёт сообщением · run list · run show|cancel R00N
   who                                кто подключён
@@ -2930,7 +2941,7 @@ cmd_join() {
     join_spawn_tail
     return 0
   fi
-  [ -e "$RUN/stopped.$AGENT" ] && echo "ВНИМАНИЕ: человек остановил $AGENT (stop) — wait вернёт STOP. Снять может только человек: $BRG resume $AGENT"
+  [ -e "$RUN/stopped.$AGENT" ] && echo "ВНИМАНИЕ: человек остановил $AGENT (stop) — заверши ход; снять может только человек: $BRG resume $AGENT"
   if [ -e "$RUN/paused" ]; then
     echo "ВНИМАНИЕ: бригада на паузе (человек): новую работу не начинай, жди в wait — он вернётся при сообщении человека или снятии паузы."
   elif [ -e "$RUN/paused.$AGENT" ]; then
@@ -2939,10 +2950,14 @@ cmd_join() {
   if [ -n "$LEAD_SELF" ]; then
     echo "── ты lead задачи $LEAD_SELF: lead у неё не было, brg назначил тебя — ты первый на связи. Прочитай постановку и PROTOCOL.md (раздел 4); человек мог дать задачу не в твоём чате — он смотрит доску: вопросы ему — send --to human --ask, отчёты — send --to human. Остальным ушло сообщение «ты lead»."
   fi
-  echo "Ожидание: $(next_wait) — возвращается при сообщениях или через $T с."
+  if [ -e "$RUN/stopped" ] || [ -e "$RUN/stopped.$AGENT" ]; then # under a stop next_wait ends the turn
+    echo "Ожидание: нет — стоп, $(next_wait)."
+  else
+    echo "Ожидание: $(next_wait) — возвращается при сообщениях или через $T с."
+  fi
   echo "Таймаут инструмента: $hint"
   win_note
-  echo "Правило: подключиться — значит работать в бригаде до STOP. Человеку о подключении не отчитывайся — сразу выполни NEXT (дал задачу в той же просьбе — сначала task new). Последнее действие каждого шага — wait; ход не завершай (кроме STOP). Ты только координатор: любую работу (код, исследование, проверку) делает твой подагент — одновременно один; больше — только с разрешения человека; сам держишь цикл wait (PROTOCOL.md, раздел 2)."
+  echo "Правило: подключиться — значит работать в бригаде до STOP. Человеку о подключении не отчитывайся — сразу выполни NEXT (дал задачу в той же просьбе — сначала task new). Последнее действие каждого шага — wait; ход не завершай (кроме STOP и LEFT). Ты только координатор: любую работу (код, исследование, проверку) делает твой подагент — одновременно один; больше — только с разрешения человека; сам держишь цикл wait (PROTOCOL.md, раздел 2)."
   if [ -n "$LEAD_SELF" ]; then
     echo "── NEXT: прочитай постановку $RROOT/tasks/$ACT_NAME/brief.md и PROTOCOL.md, раздел 4; закончив шаг — $(next_wait)"
   else
@@ -10975,9 +10990,10 @@ board_task() {
 # board_settled DIR — a finished task whose data no longer change: closed longer than
 # BOARD_SETTLE ago, or none of its runs is still going
 board_settled() {
-  local f e
+  local f
   task_read "$1"
-  dec_v e "$TK_CLOSED_EPOCH" && [ $((NOW - e)) -gt "$BOARD_SETTLE" ] && return 0
+  # an epoch has 10 digits: is_uint, not dec_v (≤ 9 digits)
+  is_uint "$TK_CLOSED_EPOCH" && [ $((NOW - TK_CLOSED_EPOCH)) -gt "$BOARD_SETTLE" ] && return 0
   for f in "$1"/shared/runs/R[0-9]*; do
     [ -f "$f" ] || continue
     case ${f##*/} in *.*) continue ;; esac
