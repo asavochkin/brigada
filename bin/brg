@@ -383,11 +383,6 @@ cfg_parse() {
     "$2" "$k" "$v"
   done <"$1"
 }
-cfg_set() {
-  local k=${1//./_}
-  k=${k//-/_}
-  eval "CFG_$k=\$2"
-}
 CFGL_VARS=
 CFGL_KEYS= # " PREFIX:key …" — the keys read from the files (doctor checks numbers)
 cfg_set_layer() { # PREFIX KEY VALUE — into CFG_ and the layer PREFIX_
@@ -998,11 +993,11 @@ busy_task_v() { # VAR — id of the active task ("" if none); ACT_* are not touc
   [ -n "$_bt_r" ] && [ -f "$ROOT/tasks/$_bt_r/task" ] && _bt_i=${_bt_r%%-*}
   eval "$1=\$_bt_i"
 }
-# busy_read NAME [TASK] → BZ_ON (1 = a valid mark), BZ_NOTE, BZ_SINCE, BZ_ITEM, BZ_VIA;
+# busy_read NAME [TASK] → status 0 = a valid mark; BZ_NOTE, BZ_SINCE, BZ_ITEM, BZ_VIA;
 # TASK — the active task if the caller knows it ("" = none), else it is looked up
 busy_read() {
   local line t= cur f=$RUN/busy/$1
-  BZ_ON= BZ_NOTE= BZ_SINCE= BZ_ITEM= BZ_VIA=
+  BZ_NOTE= BZ_SINCE= BZ_ITEM= BZ_VIA=
   [ -f "$f" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     case $line in
@@ -1019,7 +1014,6 @@ busy_read() {
     BZ_NOTE= BZ_SINCE= BZ_ITEM= BZ_VIA=
     return 1
   fi
-  BZ_ON=1
 }
 # busy_text_v VAR RAW — the caption of a mark: cut, not refused (DESIGN §4.2). Control
 # characters and " ' \ $ ` % (cmd.exe expands %…% even inside quotes; the caption goes
@@ -2985,7 +2979,6 @@ roles_note_v() {
 }
 
 cmd_leave() {
-  local f note take= newlead= lead_chan= lead_chan_body
   NEXT_ON_ERR=
   while [ $# -gt 0 ]; do
     case $1 in
@@ -4033,7 +4026,7 @@ dr_platform() {
 }
 
 dr_files() {
-  local f x crlf= tot cr na
+  local f x crlf=
   f=$ROOT/bin/brg
   if [ -f "$f" ]; then
     cr_count_v x "$f"
@@ -4117,7 +4110,7 @@ dr_group_kill() {
   return 0
 }
 dr_env() {
-  local x missing= bad= notes=
+  local x missing= bad=
   for x in mkdir mv rm cat sed awk date sleep kill ls head tail wc sort tr printf cp uname; do
     command -v "$x" >/dev/null 2>&1 || missing="$missing $x"
   done
@@ -4268,7 +4261,7 @@ dr_agents_md() {
 # (1 s apart) is in normal use.
 DR_PIDS=" " # runner pids already reported (no duplicate lines for runs)
 dr_lock_problem_v() { # VAR LOCKDIR — the problem with that lock ("" if none)
-  local _lp_o _lp_r= _lp_f _lp_x=
+  local _lp_o _lp_r= _lp_f
   lock_owner_v _lp_o "$2"
   if [ -z "$_lp_o" ]; then
     [ -d "$2" ] && _lp_r=noowner
@@ -4352,7 +4345,7 @@ dr_locks() {
 
 # dr_runs — the queue of brg run and runs in progress whose runner is dead or silent
 dr_runs() {
-  local f line a x hf tn bad=0
+  local f line a x hf bad=0
   for f in "$RUN"/execq/[0-9]*; do
     [ -f "$f" ] || continue
     case ${f##*/} in *.*) continue ;; esac
@@ -5587,7 +5580,7 @@ res_awk() { # DIR MODE MINE ME SKIP → RES_OUT
 }
 # res_conflicts DIR PATHS AGENT ITEM → RC_LINES (human-readable, one per conflict; "" if none)
 res_conflicts() {
-  local mine ag id path st t
+  local mine ag id path t
   RC_LINES=
   [ "$2" = none ] && return 0
   res_awk "$1" conflict "$2" "$3" "$4"
@@ -6043,7 +6036,7 @@ item_opt_body() {
 }
 
 item_add() {
-  local title id gist w hint= hshown= norev=
+  local title id gist hint= hshown= norev=
   item_opts "title file desc paths no-review" "$@"
   [ -z "$IO_ID" ] || usage_die "лишний аргумент: $IO_ID"
   one_line_v title "$IO_TITLE" 100000
@@ -6631,7 +6624,7 @@ item_cancel() {
 }
 
 item_list() {
-  local id st as ti pa ce cr no re hi rv dr ri rn rvv rvr line shown age ok cnt=0 x rest s sd
+  local id st as ti pa ce cr no re hi rv dr ri rn rvv rvr line shown age cnt=0 x rest s sd
   local ct=0 cw=0 cf=0 cr_=0 ca=0 cx=0
   item_opts "mine status" "$@"
   [ -z "$IO_ID" ] || usage_die "лишний аргумент: $IO_ID (одну подзадачу покажет item show)"
@@ -8508,7 +8501,6 @@ cmd_wait() {
 SPAWN_IDLE="заверши ход — brg разбудит тебя, когда будет новое"
 SPAWN_SUPPORTED=opencode
 TAB=$'\t'
-ESC=$'\033'
 SP_FIELDS="Id Agent Harness Model Rights Session State Note Created Created-Epoch Supervisor Turn Turn-Start Turn-End Turn-Result Turn-Stopped Last-Error Perm-Denied Rights-Note Rights-Note-Turn Last-Event Hold Context Tokens-In Tokens-Out Tokens-Reasoning Tokens-Cache-Read Tokens-Cache-Write Tokens-Main-In Tokens-Main-Out Tokens-Sub-In Tokens-Sub-Out Cost Tokens-Source Sub-Sessions Last-Text-Turn Locale-Set Locale"
 
 # hdr_v VAR FILE KEY — one header of a record ("" if none)
@@ -9211,7 +9203,7 @@ sv_export_one() {
 # total has not changed for 2 turns in a row and whose id was not seen again this turn is
 # not exported again. → tokens.res: "main six-tuple · subagents six-tuple · subs" | fail
 sv_export_run() {
-  local id ids= a b c d e f k line tot="0 0 0 0 0 0" subs=0 out= main
+  local id ids= d f k line tot="0 0 0 0 0 0" subs=0 out= main
   if ! sv_export_one "$SP_Session"; then
     printf 'fail\n' >"$SD/tokens.res.tmp" && mv -f "$SD/tokens.res.tmp" "$SD/tokens.res"
     return 0
