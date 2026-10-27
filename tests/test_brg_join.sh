@@ -13,6 +13,7 @@ test_join_output_roster_and_system_message() {
   assert_contains "$out" "Онлайн: никого"
   assert_contains "$out" "через 3 с"
   assert_contains "$out" "timeout: 63000 (мс)"
+  assert_contains "$out" "ход не завершай (кроме STOP и LEFT)"
   assert_eq "── NEXT: bash $BRG wait --as claude-1.$k" "$(printf '%s\n' "$out" | tail -n 1)"
   assert_eq claude "$(hdr "$B/agents/claude-1" Harness)"
   assert_eq "opus 4" "$(hdr "$B/agents/claude-1" Model)"
